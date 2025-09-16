@@ -9,9 +9,11 @@ from matplotlib.backends.backend_pdf import PdfPages
 import streamlit_authenticator as stauth
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.api_core.exceptions import NotFound, FailedPrecondition
 import json
 from xlsxwriter.utility import xl_rowcol_to_cell
 import time
+
 
 # Build Firebase credentials from secrets
 firebase_creds = {
@@ -33,32 +35,55 @@ cred = credentials.Certificate(firebase_creds)
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 
-@st.cache_data(ttl=3600)
-def load_all_calls(page_size: int = 1000):
-    """
-    Paginate through 'calls' in Firestore 1,000 docs at a time,
-    assemble into a single list, and cache the result for 1h.
-    """
-    client = firestore.client()            # uses your default credentials
-    coll = client.collection("calls")
-    all_calls = []
-    last_doc = None
-
-    while True:
-        query = coll.order_by("call_date")
-        if last_doc:
-            query = query.start_after(last_doc)
-        batch = list(query.limit(page_size).stream())
-        if not batch:
-            break
-        # accumulate and advance cursor
-        all_calls.extend(d.to_dict() for d in batch)
-        last_doc = batch[-1]
-
-    return all_calls
-
 # Connect to Firestore
 db = firestore.client()
+
+# for debugging
+# Debug: list available collections
+def list_root_collections():
+    try:
+        return [c.id for c in db.collections()]
+    except Exception as e:
+        return [f"list error: {type(e).__name__}: {e}"]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_all_calls(page_size: int = 1000, use_group: bool = False, coll_name: str = "calls"):
+    """
+    Loads docs from Firestore, paginated. If the collection doesn't exist yet,
+    returns an empty list instead of crashing. Set use_group=True if your data
+    lives in subcollections and you want a collection group query.
+    """
+    try:
+        coll_ref = db.collection_group(coll_name) if use_group else db.collection(coll_name)
+
+        # order_by may require an index if you later add where() filters; handle that gracefully
+        try:
+            query = coll_ref.order_by("call_date")
+        except Exception:
+            # fall back to no ordering if index not present yet
+            query = coll_ref
+
+        all_calls = []
+        last_doc = None
+
+        while True:
+            q = query
+            if last_doc:
+                q = q.start_after(last_doc)
+            batch = list(q.limit(page_size).stream())
+            if not batch:
+                break
+            all_calls.extend({**d.to_dict(), "_id": d.id} for d in batch)
+            last_doc = batch[-1]
+
+        return all_calls
+
+    except NotFound:
+        # collection (or group) doesn't exist yet in this project
+        return []
+
+st.write("Root collections visible:", list_root_collections())
 
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
 
