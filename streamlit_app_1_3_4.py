@@ -80,6 +80,10 @@ credentials = st.secrets["credentials"].to_dict()
 cookie = st.secrets["cookie"]
 auto_hash = st.secrets.get("auto_hash", False)
 
+if st.button("Refresh data"):
+    st.cache_data.clear()
+    st.rerun()
+
 # --- Fetch Call Metadata ---
 with st.spinner("⏳ Loading call data…"):
     t0 = time.time()
