@@ -1,0 +1,10 @@
+streamlit
+pandas
+matplotlib
+seaborn
+streamlit-authenticator
+numpy
+openpyxl
+xlsxwriter
+firebase-admin
+
