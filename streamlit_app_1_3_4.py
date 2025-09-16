@@ -74,8 +74,6 @@ def load_all_calls(page_size: int = 1000, use_group: bool = False, coll_name: st
         # collection (or group) doesn't exist yet in this project
         return []
 
-st.write("Root collections visible:", list_root_collections())
-
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
 
 credentials = st.secrets["credentials"].to_dict()
