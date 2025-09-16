@@ -1,1 +1,3 @@
 .streamlit/secrets.toml
+skipped_files.txt
+.streamlit/skipped_files_first_run.txt
