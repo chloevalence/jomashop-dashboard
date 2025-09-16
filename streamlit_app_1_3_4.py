@@ -38,15 +38,6 @@ if not firebase_admin._apps:
 # Connect to Firestore
 db = firestore.client()
 
-# for debugging
-# Debug: list available collections
-def list_root_collections():
-    try:
-        return [c.id for c in db.collections()]
-    except Exception as e:
-        return [f"list error: {type(e).__name__}: {e}"]
-
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_all_calls(page_size: int = 1000, use_group: bool = False, coll_name: str = "calls"):
     """
