@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import Dict, Optional, Any
 import io
+from urllib.parse import unquote
 
 
 def parse_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> Optional[Dict[str, Any]]:
@@ -43,13 +44,16 @@ def extract_data_from_text(text: str, filename: str) -> Dict[str, Any]:
     Extract structured data from PDF text content.
     
     This function uses regex patterns to find key-value pairs and structured data
-    in the PDF text. Adjust patterns based on actual PDF format.
+    in the PDF text. Handles QA report format.
     """
     data = {}
     
+    # Decode URL-encoded filename (e.g., %40 -> @, %2B -> +)
+    decoded_filename = unquote(filename)
+    
     # Extract metadata from filename if possible
     # Format: YYYYMMDD_HHMMSS_TYIO-email-phone-IN.pdf
-    filename_parts = filename.replace('.pdf', '').split('_')
+    filename_parts = decoded_filename.replace('.pdf', '').split('_')
     if len(filename_parts) >= 2:
         try:
             date_str = filename_parts[0]  # YYYYMMDD
@@ -63,150 +67,157 @@ def extract_data_from_text(text: str, filename: str) -> Dict[str, Any]:
         except:
             pass
     
-    # Extract email and phone from filename if present
-    if len(filename_parts) >= 3:
-        email_phone = filename_parts[2]
-        # Try to extract email (before @) and phone
-        if '@' in email_phone:
-            parts = email_phone.split('-')
-            if len(parts) >= 2:
-                data['agent'] = parts[1].split('@')[0] if '@' in parts[1] else parts[1]
+    # Extract agent from PDF text first (format: "BPO Agent 01", "BPO Agent 02", etc.)
+    # Convert to "bpagent01", "bpagent02" format
+    bpo_agent_match = re.search(r'(?i)BPO Agent\s*(\d+)', text)
+    if bpo_agent_match:
+        agent_number = bpo_agent_match.group(1)
+        # Zero-pad to 2 digits (01, 02, 03, etc.)
+        agent_number_padded = agent_number.zfill(2)
+        data['agent'] = f"bpagent{agent_number_padded}"
+    else:
+        # Fall back to filename extraction if not found in PDF text
+        if len(filename_parts) >= 3:
+            email_phone = filename_parts[2]
+            # Extract agent ID (e.g., bpagent030844482 from bpagent030844482@nextiva.com)
+            # Handle both URL-encoded and normal formats
+            if '@' in email_phone:
+                # Split by @ and get the part before @
+                agent_part = email_phone.split('@')[0]
+                # Remove any prefixes like "TYIO-" or "bp"
+                agent_part = re.sub(r'^[^-]*-', '', agent_part)  # Remove prefix before first -
+                if agent_part:
+                    data['agent'] = agent_part
+            else:
+                # Try to find agent pattern even without @
+                agent_match = re.search(r'([a-z]*agent\d+)', email_phone, re.IGNORECASE)
+                if agent_match:
+                    data['agent'] = agent_match.group(1)
     
-    # Common patterns to look for in PDF text
-    # Adjust these based on actual PDF structure
+    # Extract Call ID from PDF text
+    call_id_match = re.search(r'(?i)Call ID:\s*([^\n]+)', text)
+    if call_id_match:
+        data['call_id'] = call_id_match.group(1).strip()
     
-    # Look for emotion counts
-    emotion_patterns = {
-        'happy': r'(?i)(?:happy|happiness)[:\s]+(\d+)',
-        'angry': r'(?i)(?:angry|anger)[:\s]+(\d+)',
-        'sad': r'(?i)(?:sad|sadness)[:\s]+(\d+)',
-        'neutral': r'(?i)(?:neutral)[:\s]+(\d+)',
-    }
+    # Extract QA Score
+    qa_score_match = re.search(r'(?i)QA Score:\s*(\d+\.?\d*)%?', text)
+    if qa_score_match:
+        try:
+            data['qa_score'] = float(qa_score_match.group(1))
+        except:
+            data['qa_score'] = None
+    else:
+        data['qa_score'] = None
     
-    for emotion, pattern in emotion_patterns.items():
-        match = re.search(pattern, text)
-        if match:
-            try:
-                data[emotion] = int(match.group(1))
-            except:
-                data[emotion] = 0
-        else:
-            data[emotion] = 0
+    # Extract Label
+    label_match = re.search(r'(?i)Label:\s*(\w+)', text)
+    if label_match:
+        data['label'] = label_match.group(1).strip()
+    else:
+        data['label'] = None
     
-    # Look for average happiness value
-    happiness_patterns = [
-        r'(?i)(?:average\s+)?happiness[:\s]+(\d+\.?\d*)%?',
-        r'(?i)avg\s+happiness[:\s]+(\d+\.?\d*)%?',
-        r'(?i)happiness\s+score[:\s]+(\d+\.?\d*)%?',
-    ]
+    # Extract Reason
+    reason_match = re.search(r'(?i)Reason:\s*([^\n]+)', text)
+    if reason_match:
+        data['reason'] = reason_match.group(1).strip()
+    else:
+        data['reason'] = None
     
-    for pattern in happiness_patterns:
-        match = re.search(pattern, text)
-        if match:
-            try:
-                data['average_happiness_value'] = float(match.group(1))
-                break
-            except:
-                pass
+    # Extract Outcome
+    outcome_match = re.search(r'(?i)Outcome:\s*([^\n]+)', text)
+    if outcome_match:
+        data['outcome'] = outcome_match.group(1).strip()
+    else:
+        data['outcome'] = None
     
-    # If not found, calculate from emotion counts
-    if 'average_happiness_value' not in data:
-        total_emotions = sum([data.get(e, 0) for e in ['happy', 'angry', 'sad', 'neutral']])
-        if total_emotions > 0:
-            data['average_happiness_value'] = (data.get('happy', 0) / total_emotions) * 100
-        else:
-            data['average_happiness_value'] = 0.0
+    # Extract Summary (multi-line, until next section)
+    summary_match = re.search(r'(?i)Summary:\s*([^\n]+(?:\n(?!Strengths:)[^\n]+)*)', text)
+    if summary_match:
+        data['summary'] = summary_match.group(1).strip()
+    else:
+        data['summary'] = None
     
-    # Look for low confidences
-    confidence_patterns = [
-        r'(?i)(?:low\s+)?confidence[:\s]+(\d+\.?\d*)%?',
-        r'(?i)confidence\s+level[:\s]+(\d+\.?\d*)%?',
-    ]
+    # Extract Strengths
+    strengths_match = re.search(r'(?i)Strengths:\s*([^\n]+(?:\n(?!Challenges:)[^\n]+)*)', text)
+    if strengths_match:
+        data['strengths'] = strengths_match.group(1).strip()
+    else:
+        data['strengths'] = None
     
-    for pattern in confidence_patterns:
-        match = re.search(pattern, text)
-        if match:
-            try:
-                data['low_confidences'] = float(match.group(1))
-                break
-            except:
-                pass
+    # Extract Challenges
+    challenges_match = re.search(r'(?i)Challenges:\s*([^\n]+(?:\n(?!Coaching)[^\n]+)*)', text)
+    if challenges_match:
+        data['challenges'] = challenges_match.group(1).strip()
+    else:
+        data['challenges'] = None
     
-    if 'low_confidences' not in data:
-        data['low_confidences'] = 0.0
+    # Extract Coaching Suggestions (multi-line)
+    coaching_match = re.search(r'(?i)Coaching Suggestions:\s*([^\n]+(?:\n(?!Rubric)[^\n]+)*)', text)
+    if coaching_match:
+        coaching_text = coaching_match.group(1).strip()
+        # Split by lines starting with "-"
+        data['coaching_suggestions'] = [line.strip().lstrip('- ').strip() for line in coaching_text.split('\n') if line.strip()]
+    else:
+        data['coaching_suggestions'] = []
     
-    # Look for call duration or speaking time
-    duration_patterns = [
-        r'(?i)(?:call\s+)?duration[:\s]+(\d+):(\d+):(\d+)',
-        r'(?i)(?:call\s+)?duration[:\s]+(\d+):(\d+)',
-        r'(?i)(?:total\s+)?time[:\s]+(\d+):(\d+):(\d+)',
-    ]
+    # Extract Rubric Details (all lines with format "CODE: Status" or "CODE: Status - Note")
+    rubric_pattern = r'(\d+\.\d+\.\d+):\s*(Pass|Fail|N/A)(?:\s*-\s*([^\n]+))?'
+    rubric_matches = re.findall(rubric_pattern, text)
+    rubric_details = {}
+    for code, status, note in rubric_matches:
+        rubric_details[code] = {
+            'status': status,
+            'note': note.strip() if note else None
+        }
+    data['rubric_details'] = rubric_details
     
-    speaking_time = {}
-    for pattern in duration_patterns:
-        matches = re.finditer(pattern, text)
-        for match in matches:
-            try:
-                if len(match.groups()) == 3:
-                    hours, minutes, seconds = map(int, match.groups())
-                    total_seconds = hours * 3600 + minutes * 60 + seconds
-                else:
-                    minutes, seconds = map(int, match.groups())
-                    total_seconds = minutes * 60 + seconds
-                
-                # Try to identify speaker (agent/customer)
-                context = text[max(0, match.start()-50):match.end()+50].lower()
-                if 'agent' in context:
-                    speaking_time['agent'] = f"{minutes}:{seconds:02d}"
-                elif 'customer' in context or 'caller' in context:
-                    speaking_time['customer'] = f"{minutes}:{seconds:02d}"
-                else:
-                    speaking_time['total'] = f"{minutes}:{seconds:02d}"
-            except:
-                pass
+    # Calculate rubric statistics
+    total_rubric_items = len(rubric_details)
+    pass_count = sum(1 for r in rubric_details.values() if r['status'] == 'Pass')
+    fail_count = sum(1 for r in rubric_details.values() if r['status'] == 'Fail')
+    na_count = sum(1 for r in rubric_details.values() if r['status'] == 'N/A')
     
-    if speaking_time:
-        data['speaking_time_per_speaker'] = speaking_time
+    data['rubric_pass_count'] = pass_count
+    data['rubric_fail_count'] = fail_count
+    data['rubric_na_count'] = na_count
+    data['rubric_total_count'] = total_rubric_items
     
-    # Extract company name (look for common patterns)
-    company_patterns = [
-        r'(?i)company[:\s]+([A-Za-z0-9\s]+)',
-        r'(?i)client[:\s]+([A-Za-z0-9\s]+)',
-    ]
+    # For backward compatibility, keep average_happiness_value as qa_score
+    if data.get('qa_score') is not None:
+        data['average_happiness_value'] = data['qa_score']
+    else:
+        data['average_happiness_value'] = 0.0
     
-    for pattern in company_patterns:
-        match = re.search(pattern, text)
-        if match:
-            company = match.group(1).strip()
-            # Clean up common suffixes
-            company = re.sub(r'\s+', ' ', company)
-            if company and len(company) < 50:  # Reasonable length check
-                data['company'] = company
-                break
+    # Legacy emotion fields (set to defaults for compatibility)
+    data['happy'] = 0
+    data['angry'] = 0
+    data['sad'] = 0
+    data['neutral'] = 1 if data.get('label', '').lower() == 'neutral' else 0
     
-    # Extract agent name if not from filename
-    if 'agent' not in data:
-        agent_patterns = [
-            r'(?i)agent[:\s]+([A-Za-z0-9\s]+)',
-            r'(?i)representative[:\s]+([A-Za-z0-9\s]+)',
-        ]
-        
-        for pattern in agent_patterns:
-            match = re.search(pattern, text)
-            if match:
-                agent = match.group(1).strip()
-                agent = re.sub(r'\s+', ' ', agent)
-                if agent and len(agent) < 50:
-                    data['agent'] = agent
-                    break
+    # Look for Call Length (format: "Call Length: 2.58 min")
+    call_length_match = re.search(r'(?i)Call Length:\s*(\d+\.?\d*)\s*min', text)
+    if call_length_match:
+        try:
+            minutes = float(call_length_match.group(1))
+            total_seconds = int(minutes * 60)
+            # Store as speaking_time_per_speaker format for compatibility
+            data['speaking_time_per_speaker'] = {
+                'total': f"{int(minutes)}:{int((minutes % 1) * 60):02d}"
+            }
+        except:
+            pass
     
-    # Generate call_id from filename if not found
+    # Low confidences not needed - always set to 0
+    data['low_confidences'] = 0.0
+    
+    # Company name is hardcoded to Jomashop
+    data['company'] = 'Jomashop'
+    
+    # Generate call_id from filename if not found in text
     if 'call_id' not in data:
         data['call_id'] = filename.replace('.pdf', '').replace('%', '_')
     
-    # Set defaults for missing fields
-    if 'company' not in data:
-        data['company'] = 'Unknown'
+    # Set default for missing agent field
     if 'agent' not in data:
         data['agent'] = 'Unknown'
     
