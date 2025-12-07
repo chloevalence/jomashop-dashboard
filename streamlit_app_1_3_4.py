@@ -7,71 +7,105 @@ from datetime import datetime, timedelta, date
 from pandas import ExcelWriter
 from matplotlib.backends.backend_pdf import PdfPages
 import streamlit_authenticator as stauth
-import firebase_admin
-from firebase_admin import credentials, firestore
-from google.api_core.exceptions import NotFound, FailedPrecondition
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
 import json
 from xlsxwriter.utility import xl_rowcol_to_cell
 import time
+from pdf_parser import parse_pdf_from_bytes
 
-
-# Build Firebase credentials from secrets
-firebase_creds = {
-    "type": st.secrets["firebase"]["type"],
-    "project_id": st.secrets["firebase"]["project_id"],
-    "private_key_id": st.secrets["firebase"]["private_key_id"],
-    "private_key": st.secrets["firebase"]["private_key"].replace('\\n', '\n'),
-    "client_email": st.secrets["firebase"]["client_email"],
-    "client_id": st.secrets["firebase"]["client_id"],
-    "auth_uri": st.secrets["firebase"]["auth_uri"],
-    "token_uri": st.secrets["firebase"]["token_uri"],
-    "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
-    "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
-}
-
-cred = credentials.Certificate(firebase_creds)
-
-# Initialize Firebase app
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
-
-# Connect to Firestore
-db = firestore.client()
+# Initialize S3 client from secrets
+try:
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+        region_name=st.secrets["s3"].get("region_name", "us-east-1")
+    )
+    s3_bucket_name = st.secrets["s3"]["bucket_name"]
+    s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
+except KeyError as e:
+    st.error(f"❌ Missing S3 configuration in secrets: {e}")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Error initializing S3 client: {e}")
+    st.stop()
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_all_calls(page_size: int = 1000, use_group: bool = False, coll_name: str = "calls"):
+def load_all_calls():
     """
-    Loads docs from Firestore, paginated. If the collection doesn't exist yet,
-    returns an empty list instead of crashing. Set use_group=True if your data
-    lives in subcollections and you want a collection group query.
+    Loads PDF files from S3 bucket, parses them, and returns call data.
+    Returns an empty list if there's an error accessing S3.
     """
     try:
-        coll_ref = db.collection_group(coll_name) if use_group else db.collection(coll_name)
-
-        # order_by may require an index if you later add where() filters; handle that gracefully
-        try:
-            query = coll_ref.order_by("call_date")
-        except Exception:
-            # fall back to no ordering if index not present yet
-            query = coll_ref
-
         all_calls = []
-        last_doc = None
-
-        while True:
-            q = query
-            if last_doc:
-                q = q.start_after(last_doc)
-            batch = list(q.limit(page_size).stream())
-            if not batch:
-                break
-            all_calls.extend({**d.to_dict(), "_id": d.id} for d in batch)
-            last_doc = batch[-1]
-
+        
+        # List all PDF files in the S3 bucket
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(
+            Bucket=s3_bucket_name,
+            Prefix=s3_prefix
+        )
+        
+        # Collect all PDF file keys
+        pdf_keys = []
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    if key.lower().endswith('.pdf'):
+                        pdf_keys.append(key)
+        
+        if not pdf_keys:
+            st.warning("⚠️ No PDF files found in S3 bucket.")
+            return []
+        
+        # Download and parse each PDF
+        for key in pdf_keys:
+            try:
+                # Download PDF from S3
+                response = s3_client.get_object(Bucket=s3_bucket_name, Key=key)
+                pdf_bytes = response['Body'].read()
+                
+                # Extract filename from key
+                filename = key.split('/')[-1]
+                
+                # Parse PDF
+                parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
+                
+                if parsed_data:
+                    # Add S3 metadata
+                    parsed_data['_id'] = key
+                    parsed_data['_s3_key'] = key
+                    all_calls.append(parsed_data)
+                    
+            except Exception as e:
+                # Log error but continue with other files
+                st.warning(f"⚠️ Error processing {key}: {e}")
+                continue
+        
+        # Sort by call_date if available
+        try:
+            all_calls.sort(key=lambda x: x.get('call_date', datetime.min) if isinstance(x.get('call_date'), datetime) else datetime.min)
+        except:
+            pass  # If sorting fails, just return unsorted
+        
         return all_calls
-
-    except NotFound:
-        # collection (or group) doesn't exist yet in this project
+        
+    except NoCredentialsError:
+        st.error("❌ AWS credentials not found. Please configure S3 credentials in secrets.")
+        return []
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        if error_code == 'NoSuchBucket':
+            st.error(f"❌ S3 bucket '{s3_bucket_name}' not found.")
+        elif error_code == 'AccessDenied':
+            st.error(f"❌ Access denied to S3 bucket '{s3_bucket_name}'. Check your credentials.")
+        else:
+            st.error(f"❌ S3 error: {e}")
+        return []
+    except Exception as e:
+        st.error(f"❌ Unexpected error loading from S3: {e}")
         return []
 
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
@@ -85,13 +119,24 @@ if st.button("Refresh data"):
     st.rerun()
 
 # --- Fetch Call Metadata ---
-with st.spinner("⏳ Loading call data…"):
+with st.spinner("⏳ Loading call data from S3…"):
     t0 = time.time()
-    call_data = load_all_calls(page_size=1000)
+    call_data = load_all_calls()
     elapsed = time.time() - t0
 
 st.success(f"✅ Loaded {len(call_data)} calls in {elapsed:.2f}s")
+
+if not call_data:
+    st.warning("⚠️ No call data found. Please check your S3 bucket configuration and ensure PDF files are present.")
+    st.stop()
+
 meta_df = pd.DataFrame(call_data)
+
+# Convert call_date to datetime if it's not already
+if "call_date" in meta_df.columns:
+    # If call_date is already datetime, keep it; otherwise try to parse
+    if meta_df["call_date"].dtype == 'object':
+        meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
 
 # --- Normalize raw fields into your canonical names: ---
 
