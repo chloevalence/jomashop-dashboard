@@ -6,5 +6,6 @@ streamlit-authenticator
 numpy
 openpyxl
 xlsxwriter
-firebase-admin
+boto3
+pdfplumber
 
