@@ -1099,31 +1099,25 @@ if rubric_data:
     with col_rubric_header1:
         st.info(f"📋 Complete rubric with {len(rubric_data)} items. Use the tabs below to browse by section or search all items.")
     with col_rubric_header2:
-        # Create Excel export for rubric
-        rubric_excel_buffer = io.BytesIO()
-        rubric_df = pd.DataFrame(rubric_data)
-        # Reorder columns for better readability
-        column_order = ['code', 'section', 'item', 'criterion', 'pass', 'fail', 'na', 'agent_script_example', 'weight']
-        rubric_df_export = rubric_df[[col for col in column_order if col in rubric_df.columns]]
-        
-        with ExcelWriter(rubric_excel_buffer, engine="xlsxwriter") as writer:
-            rubric_df_export.to_excel(writer, sheet_name="QA Rubric", index=False)
-            
-            # Auto-adjust column widths
-            worksheet = writer.sheets["QA Rubric"]
-            for idx, col in enumerate(rubric_df_export.columns):
-                max_length = max(
-                    rubric_df_export[col].astype(str).map(len).max(),
-                    len(str(col))
+        # Load and serve the pre-formatted Excel rubric file
+        try:
+            import os
+            rubric_excel_path = os.path.join(os.path.dirname(__file__), "Separatetab-rubric33.xlsx")
+            if os.path.exists(rubric_excel_path):
+                with open(rubric_excel_path, 'rb') as f:
+                    rubric_excel_bytes = f.read()
+                
+                st.download_button(
+                    label="📥 Download Rubric (Excel)",
+                    data=rubric_excel_bytes,
+                    file_name="QA_Rubric_v33.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-                worksheet.set_column(idx, idx, min(max_length + 2, 50))
-        
-        st.download_button(
-            label="📥 Download Rubric (Excel)",
-            data=rubric_excel_buffer.getvalue(),
-            file_name="QA_Rubric_v33.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            else:
+                st.warning("⚠️ Rubric Excel file not found")
+                st.info("Place 'Separatetab-rubric33.xlsx' in the dashboard directory")
+        except Exception as e:
+            st.error(f"Error loading rubric Excel: {e}")
     
     rubric_tab1, rubric_tab2 = st.tabs(["🔍 Search All Items", "📂 Browse by Section"])
     
