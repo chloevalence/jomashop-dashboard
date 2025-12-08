@@ -390,31 +390,29 @@ def load_all_calls_cached():
     # Check if user explicitly requested full reload
     reload_all_triggered = st.session_state.get('reload_all_triggered', False)
     
-    # First, try to load from persistent disk cache (survives restarts)
-    # Skip disk cache if user explicitly requested reload
+    # Strategy: Always use the most up-to-date cache
+    # 1. Check disk cache first (if not reloading)
+    # 2. Try to load (will use Streamlit cache if available, or load from S3)
+    # 3. Compare and use the best/most recent data
+    # 4. Update disk cache with the best data
+    
+    disk_call_data = None
+    disk_errors = None
+    disk_cache_timestamp = None
+    
     if not reload_all_triggered:
-        disk_call_data, disk_errors = load_cached_data_from_disk()
-        if disk_call_data is not None and len(disk_call_data) > 0:
-            elapsed = time.time() - start_time
-            logger.info(f"✅ Loaded {len(disk_call_data)} calls from persistent disk cache (loaded in {elapsed:.2f}s)")
-            logger.info(f"💾 Populating Streamlit's in-memory cache from disk cache for faster access")
-            # Return the data - Streamlit's @st.cache_data will automatically cache this return value
-            # This gives us the best of both worlds: disk cache (persistent) + Streamlit cache (fast)
-            return disk_call_data, disk_errors
-        
-        # SAFEGUARD: Check if Streamlit's in-memory cache has data (from old code or previous session)
-        # If it does, save it to disk immediately so it survives restarts
-        # We detect this by calling load_all_calls_internal with a small test - if it returns instantly, it's cached
-        try:
-            # Try to get cached data by calling with a small limit - if Streamlit cache has it, this is instant
-            # We use a wrapper that bypasses our disk cache check temporarily
-            test_start = time.time()
-            # Directly check if Streamlit's cache has the function result
-            # Since @st.cache_data caches the function result, if it's cached, calling it again is instant
-            # We'll detect this by timing - if it returns in < 1 second with data, it's likely cached
-            pass  # Can't directly check Streamlit cache, but we'll handle it after loading
-        except:
-            pass
+        # Load disk cache to compare later
+        disk_result = load_cached_data_from_disk()
+        if disk_result[0] is not None:
+            disk_call_data, disk_errors = disk_result
+            # Get timestamp from cache file
+            if CACHE_FILE.exists():
+                try:
+                    with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                        cached_data = json.load(f)
+                        disk_cache_timestamp = cached_data.get('timestamp', None)
+                except:
+                    pass
     
     # Determine what to load
     if reload_all_triggered:
@@ -435,37 +433,79 @@ def load_all_calls_cached():
         load_duration = time.time() - load_start
         elapsed = time.time() - start_time
         
-        # SAFEGUARD: If load was very fast (< 2 seconds) and has substantial data (> 1000 files),
-        # it's likely from Streamlit's in-memory cache (from old code or previous session)
-        # Save it to disk immediately so it survives restarts
-        if isinstance(result, tuple) and len(result) == 2:
-            call_data, errors = result
-            if call_data and len(call_data) > 1000 and load_duration < 2.0:
-                logger.info(f"💾 Detected cached data from Streamlit cache ({len(call_data)} calls loaded in {load_duration:.2f}s) - saving to disk cache to preserve it")
-                save_cached_data_to_disk(call_data, errors)
-        
-        logger.info(f"⏱️ Load completed in {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
-        
         # Ensure we always return a tuple
-        if isinstance(result, tuple) and len(result) == 2:
-            call_data, errors = result
-            # Save to disk cache so it survives restarts (if not already saved above)
-            if call_data:
-                # Only save if we didn't already save it (to avoid duplicate writes)
-                if not (len(call_data) > 1000 and load_duration < 2.0):
-                    save_cached_data_to_disk(call_data, errors)
-                # Log that Streamlit will cache this in memory automatically
-                logger.info(f"💾 Data will be cached in Streamlit's in-memory cache for fast access")
-            if reload_all_triggered:
-                logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from FULL dataset")
+        if not isinstance(result, tuple) or len(result) != 2:
+            result = (result if isinstance(result, list) else [], [])
+        
+        streamlit_call_data, streamlit_errors = result
+        
+        # Determine which cache is better (more recent or more complete)
+        use_streamlit_cache = False
+        use_disk_cache = False
+        
+        if streamlit_call_data and len(streamlit_call_data) > 0:
+            # Streamlit cache has data - check if it's better than disk cache
+            if load_duration < 2.0:
+                # Fast load = likely from Streamlit's in-memory cache
+                logger.info(f"⚡ Detected Streamlit in-memory cache ({len(streamlit_call_data)} calls loaded in {load_duration:.2f}s)")
+                
+                if disk_call_data and len(disk_call_data) > 0:
+                    # Compare: use whichever has more data (more complete) or is newer
+                    if len(streamlit_call_data) > len(disk_call_data):
+                        logger.info(f"✅ Streamlit cache is more complete ({len(streamlit_call_data)} vs {len(disk_call_data)} calls) - using it")
+                        use_streamlit_cache = True
+                    elif len(streamlit_call_data) == len(disk_call_data):
+                        # Same size - use Streamlit cache (it's in memory, faster)
+                        logger.info(f"✅ Streamlit cache matches disk cache - using in-memory version for speed")
+                        use_streamlit_cache = True
+                    else:
+                        # Disk cache has more data - but Streamlit cache might be newer
+                        # Since we can't easily compare timestamps, prefer Streamlit cache if it's substantial
+                        if len(streamlit_call_data) > 1000:
+                            logger.info(f"✅ Using Streamlit cache ({len(streamlit_call_data)} calls) - will update disk cache")
+                            use_streamlit_cache = True
+                        else:
+                            logger.info(f"✅ Disk cache has more data ({len(disk_call_data)} vs {len(streamlit_call_data)}) - using disk cache")
+                            use_disk_cache = True
+                else:
+                    # No disk cache - use Streamlit cache
+                    use_streamlit_cache = True
             else:
-                logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from initial batch (use 'Reload ALL Data' for complete dataset)")
-            # Return the data - Streamlit's @st.cache_data automatically caches this return value
-            # This populates both: disk cache (persistent) + Streamlit cache (fast)
-            return result
+                # Slow load = loaded from S3, not from cache
+                # This is new data, use it
+                logger.info(f"📥 Loaded {len(streamlit_call_data)} calls from S3 (took {load_duration:.1f}s)")
+                use_streamlit_cache = True
+        elif disk_call_data and len(disk_call_data) > 0:
+            # Only disk cache has data
+            logger.info(f"✅ Using disk cache ({len(disk_call_data)} calls)")
+            use_disk_cache = True
+        
+        # Use the best cache
+        if use_streamlit_cache:
+            final_call_data, final_errors = streamlit_call_data, streamlit_errors
+            # Update disk cache with Streamlit cache data (it's more recent)
+            if final_call_data:
+                save_cached_data_to_disk(final_call_data, final_errors)
+                logger.info(f"💾 Updated disk cache with Streamlit cache data ({len(final_call_data)} calls)")
+        elif use_disk_cache:
+            final_call_data, final_errors = disk_call_data, disk_errors
+            logger.info(f"💾 Using disk cache - populating Streamlit's in-memory cache for faster access")
         else:
-            # If result is not a tuple, wrap it
-            return result if isinstance(result, list) else [], []
+            # No cache available - use what we loaded
+            final_call_data, final_errors = streamlit_call_data, streamlit_errors
+            if final_call_data:
+                save_cached_data_to_disk(final_call_data, final_errors)
+        
+        logger.info(f"⏱️ Total time: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
+        
+        if reload_all_triggered:
+            logger.info(f"✅ Returning {len(final_call_data) if final_call_data else 0} calls from FULL dataset")
+        else:
+            logger.info(f"✅ Returning {len(final_call_data) if final_call_data else 0} calls")
+        
+        # Return the data - Streamlit's @st.cache_data automatically caches this return value
+        # This ensures both caches are in sync with the most recent data
+        return final_call_data, final_errors
     except Exception as e:
         elapsed = time.time() - start_time
         logger.exception(f"❌ Error in load_all_calls_cached after {elapsed:.1f} seconds: {e}")
