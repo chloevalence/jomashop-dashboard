@@ -227,11 +227,15 @@ def load_all_calls_internal(max_files=None):
         
         # Initialize progress tracking in session state
         if 'pdf_processing_progress' not in st.session_state:
-            st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0}
+            st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0, 'processing_start_time': None}
         else:
             st.session_state.pdf_processing_progress['total'] = total
             st.session_state.pdf_processing_progress['processed'] = 0
             st.session_state.pdf_processing_progress['errors'] = 0
+        
+        # Track actual processing start time
+        processing_start_time = time.time()
+        st.session_state.pdf_processing_progress['processing_start_time'] = processing_start_time
         
         # Process PDFs in parallel (max 10 workers to avoid overwhelming S3/CPU)
         with ThreadPoolExecutor(max_workers=10) as executor:
@@ -261,6 +265,12 @@ def load_all_calls_internal(max_files=None):
             st.session_state['processed_s3_keys'] = set()
         processed_keys = {call.get('_s3_key') for call in all_calls if call.get('_s3_key')}
         st.session_state['processed_s3_keys'].update(processed_keys)
+        
+        # Store actual processing time in session state
+        if 'processing_start_time' in st.session_state.pdf_processing_progress:
+            actual_processing_time = time.time() - st.session_state.pdf_processing_progress['processing_start_time']
+            st.session_state['last_actual_processing_time'] = actual_processing_time
+            st.session_state['last_processing_file_count'] = len(all_calls)
         
         # Return with info about total vs loaded
         return all_calls, errors
@@ -293,10 +303,21 @@ def load_all_calls_internal(max_files=None):
 # First load will take time, subsequent loads will be instant
 # Use "Refresh Data" button when new PDFs are added to S3
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
-@st.cache_data(ttl=None, max_entries=1, show_spinner=False)
+@st.cache_data(ttl=None, max_entries=1, show_spinner=True)
 def load_all_calls_cached(max_files=None):
     """Cached wrapper - loads data once, then serves from cache indefinitely until manually refreshed."""
-    return load_all_calls_internal(max_files=max_files)
+    try:
+        result = load_all_calls_internal(max_files=max_files)
+        # Ensure we always return a tuple
+        if isinstance(result, tuple) and len(result) == 2:
+            return result
+        else:
+            # If result is not a tuple, wrap it
+            return result if isinstance(result, list) else [], []
+    except Exception as e:
+        logger.exception("Error in load_all_calls_cached")
+        # Return empty data with error message
+        return [], [f"Failed to load data: {str(e)}"]
 
 # Chart caching helper - cache chart figures based on data hash
 @st.cache_data(ttl=3600, show_spinner=False)  # Cache charts for 1 hour
@@ -777,6 +798,7 @@ try:
     status_text.text("📥 Loading PDF files from S3...")
     
     t0 = time.time()
+    was_processing = False  # Track if we actually processed files
     
     # Check if we have merged data from smart refresh
     if 'merged_calls' in st.session_state:
@@ -815,15 +837,36 @@ try:
                 progress_placeholder.progress(progress, text=f"Processing PDFs: {processed}/{total} ({errors} errors)")
         
         # Load data (this will trigger processing if not cached)
-        call_data, errors = load_all_calls_cached(max_files=None)
+        # Add timeout protection - if loading takes more than 5 minutes, show error
+        try:
+            with st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets."):
+                call_data, errors = load_all_calls_cached(max_files=None)
+        except Exception as e:
+            logger.exception("Error during data loading")
+            status_text.empty()
+            st.error(f"❌ Error loading data: {str(e)}")
+            st.error("The app may be trying to load too many files at once.")
+            st.info("💡 **Try this:**")
+            st.info("1. Clear the cache by clicking '🔄 Reload ALL Data (Admin Only)' button")
+            st.info("2. Or wait a few minutes and refresh the page")
+            st.info("3. If the problem persists, check the terminal/logs for detailed errors")
+            st.stop()
         
         # Clear progress after loading
-        if st.session_state.pdf_processing_progress['total'] > 0:
+        was_processing = st.session_state.pdf_processing_progress.get('total', 0) > 0
+        if was_processing:
             progress_placeholder.empty()
-            st.session_state.pdf_processing_progress = {'processed': 0, 'total': 0, 'errors': 0}
+            st.session_state.pdf_processing_progress = {'processed': 0, 'total': 0, 'errors': 0, 'processing_start_time': None}
         
         elapsed = time.time() - t0
         status_text.empty()
+    
+    # Check if we got valid data
+    if not call_data and not errors:
+        status_text.empty()
+        st.warning("⚠️ No data loaded. This might be the first time loading, or there may be an issue.")
+        st.info("💡 Try refreshing the page or clicking '🔄 Reload ALL Data (Admin Only)' if you're an admin.")
+        st.stop()
     
     # Handle errors - could be a tuple (errors_list, info_message) or just errors
     if errors:
@@ -852,7 +895,27 @@ try:
             st.stop()
     
     if call_data:
-        st.success(f"✅ Loaded {len(call_data)} calls in {elapsed:.2f}s")
+        # Check if we actually processed files or loaded from cache
+        if was_processing and 'last_actual_processing_time' in st.session_state:
+            # We actually processed files - show actual processing time
+            actual_time = st.session_state['last_actual_processing_time']
+            file_count = st.session_state.get('last_processing_file_count', len(call_data))
+            if actual_time > 60:
+                time_str = f"{actual_time/60:.1f} minutes"
+            else:
+                time_str = f"{actual_time:.1f}s"
+            st.success(f"✅ Loaded {file_count} calls in {time_str}")
+        elif 'last_actual_processing_time' in st.session_state:
+            # Data loaded from cache - show when it was last processed
+            last_time = st.session_state['last_actual_processing_time']
+            if last_time > 60:
+                time_str = f"{last_time/60:.1f} minutes"
+            else:
+                time_str = f"{last_time:.1f}s"
+            st.success(f"✅ Loaded {len(call_data)} calls (from cache, originally processed in {time_str})")
+        else:
+            # First time or no processing time tracked - show cache retrieval time
+            st.success(f"✅ Loaded {len(call_data)} calls (from cache)")
     else:
         st.error("❌ No call data found!")
         st.error("Possible issues:")
@@ -1665,15 +1728,15 @@ else:
     comparison_table = pd.DataFrame({
         'Metric': ['Total Calls', 'Avg QA Score', 'Pass Rate', 'Avg Call Duration (min)'],
         'My Performance': [
-            int(my_performance["Total_Calls"].iloc[0]),
+            str(int(my_performance["Total_Calls"].iloc[0])),
             f"{my_performance['Avg_QA_Score'].iloc[0]:.1f}%",
             f"{my_performance['Pass_Rate'].iloc[0]:.1f}%",
             f"{my_performance['Avg_Call_Duration'].iloc[0]:.1f}" if not pd.isna(my_performance['Avg_Call_Duration'].iloc[0]) else "N/A"
         ],
         'Team Average': [
-            overall_total_calls if overall_total_calls else "N/A",
-            f"{overall_avg_score:.1f}%" if overall_avg_score else "N/A",
-            f"{overall_pass_rate:.1f}%" if overall_pass_rate else "N/A",
+            str(overall_total_calls) if overall_total_calls else "0",
+            f"{overall_avg_score:.1f}%" if overall_avg_score else "0.0%",
+            f"{overall_pass_rate:.1f}%" if overall_pass_rate else "0.0%",
             "N/A"  # Could calculate if needed
         ]
     })
@@ -2667,7 +2730,7 @@ with analytics_tab3:
                 if failure_info['notes']:
                     st.write("**Sample Failure Notes:**")
                     for note in failure_info['notes'][:5]:  # Show first 5 notes
-                        st.text_area("", value=note, height=50, disabled=True, key=f"note_{hash(note)}")
+                        st.text_area("Note", value=note, height=50, disabled=True, key=f"note_{hash(note)}", label_visibility="collapsed")
         else:
             st.info("ℹ️ No failed rubric items found in the filtered data")
     else:
