@@ -288,7 +288,9 @@ def load_all_calls_internal(max_files=None):
                     # This prevents losing all progress if app restarts during long loads
                     last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
                     time_since_last_save = time.time() - last_save_time
-                    if processed % 500 == 0 or time_since_last_save > 120:  # Every 500 files or every 2 minutes
+                    # Save more frequently: every 500 files OR every 2 minutes OR every 100 files if > 10 min elapsed
+                    should_save = (processed % 500 == 0) or (time_since_last_save > 120) or (processed % 100 == 0 and elapsed > 600)
+                    if should_save:
                         try:
                             # Save current progress to disk cache incrementally
                             cache_data = {
@@ -436,12 +438,20 @@ def load_all_calls_cached():
         disk_result = load_cached_data_from_disk()
         if disk_result[0] is not None:
             disk_call_data, disk_errors = disk_result
-            # Get timestamp from cache file
+            # Get timestamp and check if it's a partial cache
             if CACHE_FILE.exists():
                 try:
                     with open(CACHE_FILE, 'r', encoding='utf-8') as f:
                         cached_data = json.load(f)
                         disk_cache_timestamp = cached_data.get('timestamp', None)
+                        is_partial = cached_data.get('partial', False)
+                        partial_processed = cached_data.get('processed', 0)
+                        partial_total = cached_data.get('total', 0)
+                        
+                        # If we have a partial cache with substantial progress, use it instead of starting fresh
+                        if is_partial and len(disk_call_data) > 1000 and partial_processed > 0:
+                            progress_pct = (partial_processed * 100 // partial_total) if partial_total > 0 else 0
+                            logger.info(f"📦 Found partial cache with {len(disk_call_data)} calls ({progress_pct}% complete) - will use if more complete than fresh load")
                 except:
                     pass
     
