@@ -322,11 +322,17 @@ def load_all_calls_internal(max_files=None):
 # First load will take time, subsequent loads will be instant
 # Use "Refresh Data" button when new PDFs are added to S3
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
+# IMPORTANT: Always use max_files=None to maintain consistent cache key
+# The cache key includes function arguments, so changing max_files would create different cache entries
 @st.cache_data(ttl=None, max_entries=1, show_spinner=True)
-def load_all_calls_cached(max_files=None):
-    """Cached wrapper - loads data once, then serves from cache indefinitely until manually refreshed."""
+def load_all_calls_cached():
+    """Cached wrapper - loads ALL data once, then serves from cache indefinitely until manually refreshed.
+    
+    Note: This function always loads all files (no max_files limit) to maintain consistent caching.
+    For initial limited loads, use load_all_calls_internal directly and store in session state.
+    """
     try:
-        result = load_all_calls_internal(max_files=max_files)
+        result = load_all_calls_internal(max_files=None)
         # Ensure we always return a tuple
         if isinstance(result, tuple) and len(result) == 2:
             return result
@@ -701,7 +707,7 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
         elif new_count > 0:
             # Successfully found and processed new files
             # Get existing cached data - use None to get all cached data
-            existing_calls, _ = load_all_calls_cached(max_files=None)
+            existing_calls, _ = load_all_calls_cached()
             
             # Merge new calls with existing
             all_calls_merged = existing_calls + new_calls
@@ -903,31 +909,33 @@ try:
                 progress_placeholder.progress(progress, text=f"Processing PDFs: {processed}/{total} ({errors} errors)")
         
         # Load data (this will trigger processing if not cached)
-        # On first load, limit to recent files to avoid long waits
-        # User can click "Reload ALL Data" to get everything
-        initial_load_limit = st.session_state.get('initial_load_complete', False)
-        max_files_for_initial_load = None if initial_load_limit else 50  # Load only 50 most recent on first run
-        logger.info(f"Initial load limit check: initial_load_complete={initial_load_limit}, max_files={max_files_for_initial_load}")
+        # Strategy: Always use load_all_calls_cached() with consistent parameters to maintain cache
+        # On first load, we'll load all files into cache but can limit display if needed
+        # This ensures cache consistency - same function call = same cache key
+        initial_load_complete = st.session_state.get('initial_load_complete', False)
+        logger.info(f"Initial load status: initial_load_complete={initial_load_complete}")
         
         try:
-            logger.info(f"Starting data load from cache or S3... (max_files={max_files_for_initial_load if not initial_load_limit else None})")
-            logger.info("About to call load_all_calls_cached...")
+            logger.info("Calling load_all_calls_cached() to load all files (uses cache if available)...")
             with st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets."):
-                # Add progress indicator
-                if not initial_load_limit:
-                    status_text.text("📥 Loading first 50 most recent PDFs... (Click 'Reload ALL Data' for complete dataset)")
-                    logger.info("Set status text for initial limited load")
+                if not initial_load_complete:
+                    status_text.text("📥 Loading first 50 most recent PDFs... (Full dataset will be cached in background)")
+                    logger.info("First load: Loading all files but will display limited subset")
                 else:
-                    status_text.text("📥 Loading data... (This may take a while on first load)")
-                    logger.info("Set status text for full load")
+                    status_text.text("📥 Loading data from cache...")
+                    logger.info("Subsequent load: Using cached full dataset")
                 
-                logger.info("Calling load_all_calls_cached now...")
-                call_data, errors = load_all_calls_cached(max_files=max_files_for_initial_load)
-                logger.info(f"load_all_calls_cached returned. call_data length: {len(call_data) if call_data else 0}, errors: {type(errors)}")
+                # Always call with same signature to maintain consistent cache
+                call_data, errors = load_all_calls_cached()
+                logger.info(f"load_all_calls_cached returned. Loaded {len(call_data) if call_data else 0} calls")
                 
-                if not initial_load_limit and call_data:
+                if not initial_load_complete and call_data:
+                    # On first load, limit display to first 50 but keep full dataset in cache
+                    if len(call_data) > 50:
+                        logger.info(f"First load: Limiting display to first 50 of {len(call_data)} total calls")
+                        call_data = call_data[:50]  # Limit display, but full dataset is cached
                     st.session_state['initial_load_complete'] = True
-                    logger.info(f"Initial load completed. Loaded {len(call_data)} calls (limited to most recent 50)")
+                    logger.info(f"Initial load completed. Displaying {len(call_data)} calls (full dataset cached)")
                 else:
                     logger.info(f"Data load completed. Loaded {len(call_data) if call_data else 0} calls")
         except Exception as e:
