@@ -22,7 +22,12 @@ from utils import log_audit_event, check_session_timeout, load_metrics, track_fe
 
 # --- Logging Setup ---
 log_dir = Path("logs")
-log_dir.mkdir(exist_ok=True)
+try:
+    log_dir.mkdir(exist_ok=True)
+except Exception as e:
+    # Fallback: try to create in current directory if logs/ fails
+    print(f"Warning: Could not create logs directory: {e}")
+    log_dir = Path(".")
 log_file = log_dir / f"app_{datetime.now().strftime('%Y%m%d')}.log"
 
 logging.basicConfig(
@@ -34,6 +39,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+logger.info(f"Logging initialized. Log file: {log_file}")
 
 # --- Usage Metrics Tracking ---
 metrics_file = log_dir / "usage_metrics.json"
@@ -95,9 +101,15 @@ if 'session_started' not in st.session_state:
     logger.info(f"New session started. Total sessions: {metrics['sessions']}")
 
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
+logger.info("Page config set, starting app initialization...")
 
 # Initialize S3 client from secrets
+logger.info("Initializing S3 client from secrets...")
 try:
+    # Check if secrets are available
+    if "s3" not in st.secrets:
+        raise KeyError("s3 section not found in secrets")
+    
     s3_client = boto3.client(
         's3',
         aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
@@ -106,11 +118,18 @@ try:
     )
     s3_bucket_name = st.secrets["s3"]["bucket_name"]
     s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
+    logger.info(f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}")
 except KeyError as e:
+    logger.error(f"Missing S3 configuration in secrets: {e}")
+    logger.error(f"Available secrets sections: {list(st.secrets.keys()) if hasattr(st.secrets, 'keys') else 'N/A'}")
     st.error(f"❌ Missing S3 configuration in secrets: {e}")
     st.error("Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set.")
+    st.error(f"**Current working directory:** `{os.getcwd()}`")
+    st.error(f"**Expected secrets path:** `.streamlit/secrets.toml` in the project directory")
+    st.error(f"**Make sure you're running Streamlit from:** `/Users/Chloe/Downloads/jomashop-dashboard`")
     st.stop()
 except Exception as e:
+    logger.exception(f"Error initializing S3 client: {e}")
     st.error(f"❌ Error initializing S3 client: {e}")
     st.error("Please check your AWS credentials and try again.")
     st.stop()
@@ -750,13 +769,16 @@ else:
 # --- Fetch Call Metadata ---
 status_text = st.empty()
 status_text.text("📋 Connecting to S3...")
+logger.info("Starting S3 connection test...")
 
 try:
-    # Quick connection test first
+    # Quick connection test first with aggressive timeouts
     import botocore.config
+    import signal
+    
     config = botocore.config.Config(
-        connect_timeout=5,
-        read_timeout=10,
+        connect_timeout=3,  # Reduced from 5 to 3 seconds
+        read_timeout=5,     # Reduced from 10 to 5 seconds
         retries={'max_attempts': 1}
     )
     test_client = boto3.client(
@@ -768,17 +790,29 @@ try:
     )
     
     status_text.text("📋 Testing S3 connection...")
-    # Quick test - just check if we can access the bucket
-    test_client.head_bucket(Bucket=s3_bucket_name)
-    status_text.text("✅ Connected! Listing PDF files...")
+    logger.info(f"Testing connection to bucket: {s3_bucket_name}")
     
-    # Quick count of PDFs (approximate, for display)
+    # Quick test - just check if we can access the bucket with timeout
+    try:
+        test_client.head_bucket(Bucket=s3_bucket_name)
+        logger.info("S3 connection test successful")
+    except Exception as bucket_error:
+        logger.error(f"S3 bucket access failed: {bucket_error}")
+        raise
+    
+    status_text.text("✅ Connected! Listing PDF files...")
+    logger.info("Starting PDF file listing...")
+    
+    # Quick count of PDFs (approximate, for display) with timeout
+    pdf_count = None
     try:
         paginator = test_client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=100)
         pdf_count = sum(1 for page in pages for obj in page.get('Contents', []) if obj['Key'].lower().endswith('.pdf'))
+        logger.info(f"Found approximately {pdf_count} PDF files")
         # Note: This is approximate if there are >100 files, actual count will be shown after loading
-    except:
+    except Exception as list_error:
+        logger.warning(f"Could not count PDFs: {list_error}")
         pdf_count = None  # If counting fails, just continue
     
 except ClientError as e:
@@ -852,10 +886,25 @@ try:
                 progress_placeholder.progress(progress, text=f"Processing PDFs: {processed}/{total} ({errors} errors)")
         
         # Load data (this will trigger processing if not cached)
-        # Add timeout protection - if loading takes more than 5 minutes, show error
+        # On first load, limit to recent files to avoid long waits
+        # User can click "Reload ALL Data" to get everything
+        initial_load_limit = st.session_state.get('initial_load_complete', False)
+        max_files_for_initial_load = None if initial_load_limit else 50  # Load only 50 most recent on first run
+        
         try:
+            logger.info(f"Starting data load from cache or S3... (max_files={max_files_for_initial_load if not initial_load_limit else None})")
             with st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets."):
-                call_data, errors = load_all_calls_cached(max_files=None)
+                # Add progress indicator
+                if not initial_load_limit:
+                    status_text.text("📥 Loading first 50 most recent PDFs... (Click 'Reload ALL Data' for complete dataset)")
+                else:
+                    status_text.text("📥 Loading data... (This may take a while on first load)")
+                call_data, errors = load_all_calls_cached(max_files=max_files_for_initial_load)
+                if not initial_load_limit and call_data:
+                    st.session_state['initial_load_complete'] = True
+                    logger.info(f"Initial load completed. Loaded {len(call_data)} calls (limited to most recent 50)")
+                else:
+                    logger.info(f"Data load completed. Loaded {len(call_data) if call_data else 0} calls")
         except Exception as e:
             logger.exception("Error during data loading")
             status_text.empty()
