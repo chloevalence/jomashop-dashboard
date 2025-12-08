@@ -70,26 +70,36 @@ def load_all_calls_internal(max_files=None):
                 MaxKeys=1000  # Limit to prevent huge lists
             )
             
-            # Collect all PDF file keys
-            pdf_keys = []
+            # Collect all PDF file keys with their modification dates
+            pdf_keys_with_dates = []
             for page in pages:
                 if 'Contents' in page:
                     for obj in page['Contents']:
                         key = obj['Key']
                         if key.lower().endswith('.pdf'):
-                            pdf_keys.append(key)
+                            # Store key and last modified date for sorting
+                            pdf_keys_with_dates.append({
+                                'key': key,
+                                'last_modified': obj.get('LastModified', datetime.min)
+                            })
         except Exception as e:
             return [], f"Error listing S3 objects: {e}"
         
-        if not pdf_keys:
+        if not pdf_keys_with_dates:
             return [], "No PDF files found in S3 bucket"
         
-        # Store total count before limiting
-        total_pdfs = len(pdf_keys)
+        # Sort by modification date (most recent first)
+        pdf_keys_with_dates.sort(key=lambda x: x['last_modified'], reverse=True)
         
-        # Limit the number of files if specified
+        # Store total count before limiting
+        total_pdfs = len(pdf_keys_with_dates)
+        
+        # Limit the number of files if specified (most recent files first)
         if max_files and max_files > 0:
-            pdf_keys = pdf_keys[:max_files]
+            pdf_keys_with_dates = pdf_keys_with_dates[:max_files]
+        
+        # Extract just the keys for processing
+        pdf_keys = [item['key'] for item in pdf_keys_with_dates]
         
         # Download and parse each PDF
         errors = []
@@ -120,15 +130,15 @@ def load_all_calls_internal(max_files=None):
                 errors.append(f"{key}: {str(e)}")
                 continue
         
-        # Sort by call_date if available
+        # Sort by call_date if available (already sorted by S3 date, but this ensures call_date order)
         try:
-            all_calls.sort(key=lambda x: x.get('call_date', datetime.min) if isinstance(x.get('call_date'), datetime) else datetime.min)
+            all_calls.sort(key=lambda x: x.get('call_date', datetime.min) if isinstance(x.get('call_date'), datetime) else datetime.min, reverse=True)
         except:
             pass  # If sorting fails, just return unsorted
         
         # Return with info about total vs loaded
         if max_files and total_pdfs > max_files:
-            return all_calls, (errors, f"Loaded {len(all_calls)} of {total_pdfs} PDF files (limited to {max_files})")
+            return all_calls, (errors, f"⚡ Fast Mode: Loaded {len(all_calls)} most recent files out of {total_pdfs} total PDF files. Use 'Load All Files' button for complete data.")
         else:
             return all_calls, errors
         
@@ -145,11 +155,12 @@ def load_all_calls_internal(max_files=None):
     except Exception as e:
         return [], f"Unexpected error loading from S3: {e}"
 
+# Cached wrapper - data is cached for 1 hour
+# First load will take time, subsequent loads within 1 hour will be instant
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_all_calls():
-    """Cached wrapper for loading calls."""
-    calls, errors = load_all_calls_internal()
-    return calls
+def load_all_calls_cached(max_files=None):
+    """Cached wrapper - loads data once, then serves from cache for 1 hour."""
+    return load_all_calls_internal(max_files=max_files)
 
 credentials = st.secrets["credentials"].to_dict()
 cookie = st.secrets["cookie"]
@@ -268,20 +279,14 @@ try:
     test_client.head_bucket(Bucket=s3_bucket_name)
     status_text.text("✅ Connected! Listing PDF files...")
     
-    # Quick count of PDFs
+    # Quick count of PDFs (approximate, for display)
     try:
         paginator = test_client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=100)
         pdf_count = sum(1 for page in pages for obj in page.get('Contents', []) if obj['Key'].lower().endswith('.pdf'))
-        if pdf_count > 0:
-            # Limit to first 20 files for initial load (can be increased later)
-            max_files_to_load = 20
-            if pdf_count > max_files_to_load:
-                status_text.text(f"✅ Found {pdf_count} PDF file(s). Loading first {max_files_to_load} for testing...")
-            else:
-                status_text.text(f"✅ Found {pdf_count} PDF file(s). Loading...")
+        # Note: This is approximate if there are >100 files, actual count will be shown after loading
     except:
-        pass  # If counting fails, just continue
+        pdf_count = None  # If counting fails, just continue
     
 except ClientError as e:
     status_text.empty()
@@ -307,17 +312,48 @@ except Exception as e:
         st.code(traceback.format_exc())
     st.stop()
 
+# --- Smart Loading: Load most recent files first for fast access ---
+# Load 150 most recent files by default for fast access
+DEFAULT_LOAD_LIMIT = 150
+
+# Check if user wants to load all files
+if 'load_all_files' not in st.session_state:
+    st.session_state.load_all_files = False
+
+# Sidebar info about loading mode
+st.sidebar.markdown("---")
+if st.session_state.load_all_files:
+    st.sidebar.info("📊 **Loading Mode:** All Files")
+else:
+    st.sidebar.success(f"⚡ **Fast Mode:** Loading {DEFAULT_LOAD_LIMIT} most recent files")
+
+# Button in sidebar to toggle loading all files
+if st.sidebar.button("🔄 Load All Files", help="Load all PDF files (may take longer)", use_container_width=True):
+    st.session_state.load_all_files = True
+    st.cache_data.clear()  # Clear cache to reload
+    st.rerun()
+
+if st.sidebar.button("⚡ Fast Mode (Recent Only)", help=f"Load only the {DEFAULT_LOAD_LIMIT} most recent files for faster access", use_container_width=True):
+    st.session_state.load_all_files = False
+    st.cache_data.clear()  # Clear cache to reload
+    st.rerun()
+
+# Determine how many files to load
+files_to_load = None if st.session_state.load_all_files else DEFAULT_LOAD_LIMIT
+
 # Now load the actual data
 try:
-    status_text.text("📥 Loading PDF files from S3...")
-    
-    # Limit to first 20 files for initial testing (increase this number later)
-    max_files_to_load = 20
+    if files_to_load:
+        status_text.text(f"⚡ Loading {files_to_load} most recent PDF files (fast mode)...")
+    else:
+        status_text.text("📥 Loading ALL PDF files from S3 (this may take a while)...")
     
     t0 = time.time()
     
-    # Load data - limited to max_files_to_load
-    call_data, errors = load_all_calls_internal(max_files=max_files_to_load)
+    # Load data with smart limit - most recent files first
+    # After first load, data is CACHED for 1 hour - subsequent loads will be INSTANT
+    with st.spinner("⏳ Processing PDFs..."):
+        call_data, errors = load_all_calls_cached(max_files=files_to_load)
     
     elapsed = time.time() - t0
     status_text.empty()
