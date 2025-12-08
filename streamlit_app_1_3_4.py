@@ -663,16 +663,38 @@ def load_new_calls_only():
         
         # Process in parallel
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
+        
+        total_new = len(new_pdf_keys)
+        logger.info(f"🔄 Refresh New Data: Found {total_new} new PDF files to process")
+        logger.info(f"📥 Starting to process {total_new} new PDF files in parallel")
+        
+        processing_start_time = time.time()
+        last_log_time = time.time()
+        processed_count = 0
         
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_key = {executor.submit(process_pdf, item['key']): item['key'] for item in new_pdf_keys}
             
             for future in as_completed(future_to_key):
                 parsed_data, error = future.result()
+                processed_count += 1
+                
                 if parsed_data:
                     new_calls.append(parsed_data)
                 elif error:
                     errors.append(error)
+                
+                # Log progress every 100 files or every 30 seconds
+                if processed_count % 100 == 0 or (time.time() - last_log_time) > 30:
+                    elapsed = time.time() - processing_start_time
+                    rate = processed_count / elapsed if elapsed > 0 else 0
+                    remaining = (total_new - processed_count) / rate if rate > 0 else 0
+                    logger.info(f"📊 Refresh Progress: {processed_count}/{total_new} files processed ({processed_count*100//total_new}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
+                    last_log_time = time.time()
+        
+        elapsed_total = time.time() - processing_start_time
+        logger.info(f"✅ Refresh completed: Processed {total_new} new files in {elapsed_total/60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}")
         
         return new_calls, errors if errors else None, len(new_calls)
         
