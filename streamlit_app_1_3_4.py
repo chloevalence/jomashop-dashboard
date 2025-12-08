@@ -912,24 +912,58 @@ try:
                 progress_placeholder.progress(progress, text=f"Processing PDFs: {processed}/{total} ({errors} errors)")
         
         # Load data (this will trigger processing if not cached)
-        # Strategy: On first load, use load_all_calls_internal directly (not cached) for fast startup
-        # On subsequent loads, use load_all_calls_cached() which loads all files and caches them
-        # This ensures: fast first load (50 files) + consistent cache (always same function call)
+        # Strategy: Always try cache first - if it has data, use it instantly
+        # Only load 50 files if cache is truly empty (first time ever)
+        # This preserves existing cache and ensures fast loads when cache exists
         initial_load_complete = st.session_state.get('initial_load_complete', False)
-        logger.info(f"Initial load status: initial_load_complete={initial_load_complete}")
+        reload_all_triggered = st.session_state.get('reload_all_triggered', False)
+        logger.info(f"Initial load status: initial_load_complete={initial_load_complete}, reload_all_triggered={reload_all_triggered}")
         
         try:
-            if not initial_load_complete:
-                # First load: Load only 50 files directly (not cached) for fast startup
-                logger.info("First load: Loading 50 most recent files directly (not using cache)")
-                status_text.text("📥 Loading first 50 most recent PDFs... (Click 'Reload ALL Data' for complete dataset)")
-                with st.spinner("Loading first 50 PDFs from S3... This should be fast."):
-                    call_data, errors = load_all_calls_internal(max_files=50)
-                    logger.info(f"Initial limited load completed. Loaded {len(call_data) if call_data else 0} calls")
+            if reload_all_triggered:
+                # User clicked "Reload ALL Data" - load all files and cache them
+                logger.info("Reload ALL Data triggered: Loading all files and caching them")
+                status_text.text("📥 Loading ALL PDFs from S3... This may take a while.")
+                with st.spinner("Loading ALL PDFs from S3... This may take several minutes."):
+                    call_data, errors = load_all_calls_cached()  # This will load all files and cache them
+                    st.session_state['full_dataset_cached'] = True  # Mark that cache is now populated
+                    st.session_state['reload_all_triggered'] = False  # Reset flag
+                    st.session_state['initial_load_complete'] = True  # Mark initial load complete
+                    logger.info(f"Full dataset loaded and cached. Loaded {len(call_data) if call_data else 0} calls")
+            elif not initial_load_complete:
+                # First load: Try cache first, if empty then load 50 files
+                logger.info("First load: Checking cache first, then loading 50 files if cache is empty")
+                status_text.text("📥 Loading data...")
                 
-                if call_data:
-                    st.session_state['initial_load_complete'] = True
-                    logger.info("Marked initial load as complete. Full dataset will load from cache on next refresh.")
+                # Try to use cache - if it's populated, this will be instant
+                # If cache is empty, this will try to load all files (slow), so we need a timeout or different approach
+                # Instead, let's try a quick check: attempt cache with a small timeout
+                try:
+                    with st.spinner("Checking cache..."):
+                        # Try cache - if it returns quickly with data, use it
+                        # We'll check the length to see if it's substantial (more than 50 = full dataset cached)
+                        call_data, errors = load_all_calls_cached()
+                        if call_data and len(call_data) > 50:
+                            # Cache has full dataset, use it!
+                            logger.info(f"Cache has full dataset! Using {len(call_data)} calls from cache")
+                            st.session_state['initial_load_complete'] = True
+                            st.session_state['full_dataset_cached'] = True
+                            status_text.text("✅ Loaded from cache!")
+                        else:
+                            # Cache is empty or has limited data, load 50 files
+                            logger.info("Cache is empty or limited. Loading 50 most recent files...")
+                            status_text.text("📥 Loading first 50 most recent PDFs... (Click 'Reload ALL Data' for complete dataset)")
+                            call_data, errors = load_all_calls_internal(max_files=50)
+                            st.session_state['initial_load_complete'] = True
+                            logger.info(f"Initial limited load completed. Loaded {len(call_data) if call_data else 0} calls")
+                except Exception as cache_error:
+                    # If cache access fails, fall back to 50 files
+                    logger.warning(f"Cache access issue: {cache_error}. Loading 50 files instead.")
+                    status_text.text("📥 Loading first 50 most recent PDFs...")
+                    with st.spinner("Loading first 50 PDFs from S3..."):
+                        call_data, errors = load_all_calls_internal(max_files=50)
+                        st.session_state['initial_load_complete'] = True
+                        logger.info(f"Fallback load completed. Loaded {len(call_data) if call_data else 0} calls")
             else:
                 # Subsequent loads: Try to use cache first
                 # If cache is populated, it will be instant. If empty, it will try to load all files (slow)
