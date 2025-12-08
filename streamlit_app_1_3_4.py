@@ -981,19 +981,33 @@ try:
                         logger.info(f"Full dataset loaded and cached. Loaded {len(call_data) if call_data else 0} calls")
                 else:
                     # Try to use cache - if it's populated, this will be instant
-                    # If cache is empty, this will try to load all files which is slow
-                    # We'll attempt it and let it run (user can wait or cancel)
+                    # If cache is empty, this will try to load all files which is VERY slow (6,723 files)
+                    # We need to detect if cache is empty quickly and fall back to 50 files
                     logger.info("Subsequent load: Attempting to use cached dataset")
                     status_text.text("📥 Loading data from cache...")
-                    with st.spinner("Loading data... (Checking cache first)"):
-                        # Try cache - if it exists, instant. If not, will load all files (slow but only once)
-                        call_data, errors = load_all_calls_cached()
-                        # If we got here and have data, cache is working
-                        if call_data and len(call_data) > 50:
-                            st.session_state['full_dataset_cached'] = True  # Mark that cache is populated
-                            logger.info(f"Data loaded from cache. Loaded {len(call_data)} calls (cache was populated)")
-                        else:
-                            logger.info(f"Data loaded. Loaded {len(call_data) if call_data else 0} calls")
+                    
+                    # Check if we have a flag indicating cache was previously populated
+                    full_dataset_cached = st.session_state.get('full_dataset_cached', False)
+                    
+                    if full_dataset_cached:
+                        # We know cache should have data, use it
+                        logger.info("Cache flag indicates full dataset is cached, loading from cache...")
+                        with st.spinner("Loading data from cache... This should be instant."):
+                            call_data, errors = load_all_calls_cached()
+                            if call_data and len(call_data) > 50:
+                                logger.info(f"Data loaded from cache. Loaded {len(call_data)} calls")
+                            else:
+                                logger.warning(f"Cache returned limited data: {len(call_data) if call_data else 0} calls")
+                    else:
+                        # Cache flag not set - might be empty or first time
+                        # Try cache with a quick check, but if it's taking too long, it's loading from S3
+                        # For safety, just load 50 files instead of risking a long wait
+                        logger.info("Cache flag not set. Loading 50 files to avoid long wait.")
+                        logger.info("💡 Click 'Reload ALL Data' button to load and cache full dataset")
+                        status_text.text("📥 Loading 50 most recent PDFs... (Click 'Reload ALL Data' for complete dataset)")
+                        with st.spinner("Loading first 50 PDFs from S3..."):
+                            call_data, errors = load_all_calls_internal(max_files=50)
+                            logger.info(f"Limited load completed. Loaded {len(call_data) if call_data else 0} calls")
         except Exception as e:
             logger.exception("Error during data loading")
             status_text.empty()
