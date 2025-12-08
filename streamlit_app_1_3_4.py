@@ -332,7 +332,42 @@ def load_all_calls_internal(max_files=None):
         logger.exception("Unexpected error in load_all_calls_internal")
         return [], error_msg
 
-# Cached wrapper - data is cached indefinitely until manually refreshed
+# Persistent cache file that survives app restarts (prevents timeout issues)
+CACHE_FILE = log_dir / "cached_calls_data.json"
+
+def load_cached_data_from_disk():
+    """Load cached data from disk if it exists."""
+    if CACHE_FILE.exists():
+        try:
+            logger.info(f"📂 Checking persistent cache file: {CACHE_FILE}")
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                cached_data = json.load(f)
+                call_data = cached_data.get('call_data', [])
+                errors = cached_data.get('errors', [])
+                cache_timestamp = cached_data.get('timestamp', None)
+                cache_count = cached_data.get('count', len(call_data))
+                logger.info(f"✅ Found persistent cache with {cache_count} calls (saved at {cache_timestamp})")
+                return call_data, errors
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load persistent cache: {e}")
+    return None, None
+
+def save_cached_data_to_disk(call_data, errors):
+    """Save cached data to disk for persistence across app restarts."""
+    try:
+        cache_data = {
+            'call_data': call_data,
+            'errors': errors,
+            'timestamp': datetime.now().isoformat(),
+            'count': len(call_data)
+        }
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, default=str, indent=2)
+        logger.info(f"💾 Saved {len(call_data)} calls to persistent cache: {CACHE_FILE}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save persistent cache: {e}")
+
+# Cached wrapper - uses both Streamlit cache (fast) and disk cache (persistent, survives restarts)
 # First load will take time, subsequent loads will be instant
 # Use "Refresh New Data" button when new PDFs are added to S3 - it only loads new files
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
@@ -340,21 +375,58 @@ def load_all_calls_internal(max_files=None):
 def load_all_calls_cached():
     """Cached wrapper - loads ALL data once, then serves from cache indefinitely until manually refreshed.
     
-    Note: This function always loads all files (no max_files limit) to maintain consistent caching.
+    Strategy to prevent timeouts:
+    1. Check disk cache first (survives restarts)
+    2. If disk cache exists and has data, use it instantly
+    3. If "Reload ALL Data" was triggered, load ALL files (10-20 min, but user requested it)
+    4. If no disk cache and no reload trigger, load initial batch (2000 files) for fast startup
+    5. Save to disk cache so it survives restarts
+    
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
     import time
     start_time = time.time()
-    logger.info("🔍 load_all_calls_cached() called - starting load from S3 (this may take 10-20 minutes)")
+    
+    # Check if user explicitly requested full reload
+    reload_all_triggered = st.session_state.get('reload_all_triggered', False)
+    
+    # First, try to load from persistent disk cache (survives restarts)
+    # Skip disk cache if user explicitly requested reload
+    if not reload_all_triggered:
+        disk_call_data, disk_errors = load_cached_data_from_disk()
+        if disk_call_data is not None and len(disk_call_data) > 0:
+            elapsed = time.time() - start_time
+            logger.info(f"✅ Using persistent disk cache with {len(disk_call_data)} calls (loaded in {elapsed:.2f}s)")
+            return disk_call_data, disk_errors
+    
+    # Determine what to load
+    if reload_all_triggered:
+        # User explicitly requested full dataset - load ALL files (may take 10-20 min)
+        logger.info(f"🔍 Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)")
+        max_files = None
+        st.session_state['reload_all_triggered'] = False  # Clear flag after use
+    else:
+        # No disk cache - load initial batch for fast startup (prevents timeout)
+        # Load 2000 most recent files first - this should complete in 2-3 minutes
+        INITIAL_BATCH_SIZE = 2000
+        logger.info(f"🔍 No persistent cache found - loading initial batch of {INITIAL_BATCH_SIZE} most recent files (fast startup)")
+        max_files = INITIAL_BATCH_SIZE
+    
     try:
-        result = load_all_calls_internal(max_files=None)
+        result = load_all_calls_internal(max_files=max_files)
         elapsed = time.time() - start_time
-        logger.info(f"⏱️ load_all_calls_internal completed in {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
+        logger.info(f"⏱️ Load completed in {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
         
         # Ensure we always return a tuple
         if isinstance(result, tuple) and len(result) == 2:
             call_data, errors = result
-            logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from load_all_calls_cached")
+            # Save to disk cache so it survives restarts
+            if call_data:
+                save_cached_data_to_disk(call_data, errors)
+            if reload_all_triggered:
+                logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from FULL dataset")
+            else:
+                logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from initial batch (use 'Reload ALL Data' for complete dataset)")
             return result
         else:
             # If result is not a tuple, wrap it
@@ -735,6 +807,8 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
             
             # Clear and update cache with merged data
             load_all_calls_cached.clear()
+            # Save merged data to disk cache
+            save_cached_data_to_disk(all_calls_merged, new_errors if new_errors else [])
             # We need to manually update the cache - store in session state temporarily
             st.session_state['merged_calls'] = all_calls_merged
             st.session_state['merged_errors'] = new_errors if new_errors else []
@@ -759,10 +833,17 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
 if is_admin:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👑 Admin: Full Reload")
-    if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take a while.", use_container_width=True, type="secondary"):
+    if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take 10-20 minutes.", use_container_width=True, type="secondary"):
         if current_username and current_username.lower() in ["chloe", "shannon"]:
             log_audit_event(current_username, "reload_all_data", "Cleared cache and reloaded all data from S3")
         st.cache_data.clear()
+        # Clear persistent disk cache
+        if CACHE_FILE.exists():
+            try:
+                CACHE_FILE.unlink()
+                logger.info(f"🗑️ Cleared persistent disk cache: {CACHE_FILE}")
+            except Exception as e:
+                logger.warning(f"Failed to clear disk cache: {e}")
         if 'processed_s3_keys' in st.session_state:
             del st.session_state['processed_s3_keys']
         # Mark that full dataset should be cached after this reload
