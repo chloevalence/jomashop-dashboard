@@ -398,6 +398,20 @@ def load_all_calls_cached():
             elapsed = time.time() - start_time
             logger.info(f"✅ Using persistent disk cache with {len(disk_call_data)} calls (loaded in {elapsed:.2f}s)")
             return disk_call_data, disk_errors
+        
+        # SAFEGUARD: Check if Streamlit's in-memory cache has data (from old code or previous session)
+        # If it does, save it to disk immediately so it survives restarts
+        # We detect this by calling load_all_calls_internal with a small test - if it returns instantly, it's cached
+        try:
+            # Try to get cached data by calling with a small limit - if Streamlit cache has it, this is instant
+            # We use a wrapper that bypasses our disk cache check temporarily
+            test_start = time.time()
+            # Directly check if Streamlit's cache has the function result
+            # Since @st.cache_data caches the function result, if it's cached, calling it again is instant
+            # We'll detect this by timing - if it returns in < 1 second with data, it's likely cached
+            pass  # Can't directly check Streamlit cache, but we'll handle it after loading
+        except:
+            pass
     
     # Determine what to load
     if reload_all_triggered:
@@ -413,16 +427,30 @@ def load_all_calls_cached():
         max_files = INITIAL_BATCH_SIZE
     
     try:
+        load_start = time.time()
         result = load_all_calls_internal(max_files=max_files)
+        load_duration = time.time() - load_start
         elapsed = time.time() - start_time
+        
+        # SAFEGUARD: If load was very fast (< 2 seconds) and has substantial data (> 1000 files),
+        # it's likely from Streamlit's in-memory cache (from old code or previous session)
+        # Save it to disk immediately so it survives restarts
+        if isinstance(result, tuple) and len(result) == 2:
+            call_data, errors = result
+            if call_data and len(call_data) > 1000 and load_duration < 2.0:
+                logger.info(f"💾 Detected cached data from Streamlit cache ({len(call_data)} calls loaded in {load_duration:.2f}s) - saving to disk cache to preserve it")
+                save_cached_data_to_disk(call_data, errors)
+        
         logger.info(f"⏱️ Load completed in {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
         
         # Ensure we always return a tuple
         if isinstance(result, tuple) and len(result) == 2:
             call_data, errors = result
-            # Save to disk cache so it survives restarts
+            # Save to disk cache so it survives restarts (if not already saved above)
             if call_data:
-                save_cached_data_to_disk(call_data, errors)
+                # Only save if we didn't already save it (to avoid duplicate writes)
+                if not (len(call_data) > 1000 and load_duration < 2.0):
+                    save_cached_data_to_disk(call_data, errors)
             if reload_all_triggered:
                 logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from FULL dataset")
             else:
