@@ -283,6 +283,29 @@ def load_all_calls_internal(max_files=None):
                     remaining = (total - processed) / rate if rate > 0 else 0
                     logger.info(f"📊 Progress: {processed}/{total} files processed ({processed*100//total}%), {len(all_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
                     last_log_time = time.time()
+                    
+                    # INCREMENTAL SAVE: Save to disk cache every 500 files or every 2 minutes
+                    # This prevents losing all progress if app restarts during long loads
+                    last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
+                    time_since_last_save = time.time() - last_save_time
+                    if processed % 500 == 0 or time_since_last_save > 120:  # Every 500 files or every 2 minutes
+                        try:
+                            # Save current progress to disk cache incrementally
+                            cache_data = {
+                                'call_data': all_calls.copy(),  # Copy to avoid modification during save
+                                'errors': errors.copy(),
+                                'timestamp': datetime.now().isoformat(),
+                                'count': len(all_calls),
+                                'partial': True,  # Mark as partial/in-progress
+                                'processed': processed,
+                                'total': total
+                            }
+                            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                                json.dump(cache_data, f, default=str, indent=2)
+                            st.session_state._last_incremental_save_time = time.time()
+                            logger.info(f"💾 Incremental save: Saved {len(all_calls)} calls to disk cache ({processed}/{total} = {processed*100//total}% complete - progress protected)")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed incremental save: {e}")
         
         elapsed_total = time.time() - processing_start_time
         logger.info(f"✅ Completed processing {total} files in {elapsed_total/60:.1f} minutes. Success: {len(all_calls)}, Errors: {len(errors)}")
@@ -336,7 +359,7 @@ def load_all_calls_internal(max_files=None):
 CACHE_FILE = log_dir / "cached_calls_data.json"
 
 def load_cached_data_from_disk():
-    """Load cached data from disk if it exists."""
+    """Load cached data from disk if it exists. Handles both complete and partial saves."""
     if CACHE_FILE.exists():
         try:
             logger.info(f"📂 Checking persistent cache file: {CACHE_FILE}")
@@ -346,7 +369,15 @@ def load_cached_data_from_disk():
                 errors = cached_data.get('errors', [])
                 cache_timestamp = cached_data.get('timestamp', None)
                 cache_count = cached_data.get('count', len(call_data))
-                logger.info(f"✅ Found persistent cache with {cache_count} calls (saved at {cache_timestamp})")
+                is_partial = cached_data.get('partial', False)
+                
+                if is_partial:
+                    processed = cached_data.get('processed', 0)
+                    total = cached_data.get('total', 0)
+                    logger.info(f"📦 Found PARTIAL cache with {cache_count} calls ({processed}/{total} = {processed*100//total if total > 0 else 0}% complete, saved at {cache_timestamp})")
+                    logger.info(f"💡 This partial cache will be used if it's more complete than a fresh load")
+                else:
+                    logger.info(f"✅ Found COMPLETE persistent cache with {cache_count} calls (saved at {cache_timestamp})")
                 return call_data, errors
         except Exception as e:
             logger.warning(f"⚠️ Failed to load persistent cache: {e}")
