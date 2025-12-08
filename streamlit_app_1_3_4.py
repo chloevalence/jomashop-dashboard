@@ -1728,13 +1728,13 @@ else:
     comparison_table = pd.DataFrame({
         'Metric': ['Total Calls', 'Avg QA Score', 'Pass Rate', 'Avg Call Duration (min)'],
         'My Performance': [
-            int(my_performance["Total_Calls"].iloc[0]),
+            str(int(my_performance["Total_Calls"].iloc[0])),
             f"{my_performance['Avg_QA_Score'].iloc[0]:.1f}%",
             f"{my_performance['Pass_Rate'].iloc[0]:.1f}%",
             f"{my_performance['Avg_Call_Duration'].iloc[0]:.1f}" if not pd.isna(my_performance['Avg_Call_Duration'].iloc[0]) else "N/A"
         ],
         'Team Average': [
-            overall_total_calls if overall_total_calls else 0,
+            str(overall_total_calls) if overall_total_calls else "0",
             f"{overall_avg_score:.1f}%" if overall_avg_score else "0.0%",
             f"{overall_pass_rate:.1f}%" if overall_pass_rate else "0.0%",
             "N/A"  # Could calculate if needed
