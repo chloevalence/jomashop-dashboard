@@ -457,7 +457,22 @@ auth_status = st.session_state.get("authentication_status")
 
 # If they've never submitted the form, show it
 if auth_status is None:
-    authenticator.login("main", "Login")
+    try:
+        authenticator.login("main", "Login")
+    except Exception as e:
+        # Handle CookieManager component loading issues gracefully
+        error_msg = str(e).lower()
+        if "cookiemanager" in error_msg or "component" in error_msg or "frontend" in error_msg:
+            st.error("⚠️ Authentication component is loading. Please wait a moment and refresh the page.")
+            st.info("💡 If this persists, try:")
+            st.info("1. Hard refresh the page (Ctrl+Shift+R or Cmd+Shift+R)")
+            st.info("2. Clear your browser cache")
+            st.info("3. Check your network connection")
+            logger.warning(f"CookieManager component loading issue: {e}")
+        else:
+            st.error(f"❌ Authentication error: {e}")
+            logger.exception("Authentication error")
+        st.stop()
     st.stop()
 
 # If they submitted bad creds, show error and stay on login
