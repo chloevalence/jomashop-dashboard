@@ -318,75 +318,21 @@ def load_all_calls_internal(max_files=None):
         logger.exception("Unexpected error in load_all_calls_internal")
         return [], error_msg
 
-# Persistent cache file for data that survives app restarts
-CACHE_FILE = log_dir / "cached_calls_data.json"
-
-def load_cached_data_from_disk():
-    """Load cached data from disk if it exists."""
-    if CACHE_FILE.exists():
-        try:
-            logger.info(f"📂 Found persistent cache file: {CACHE_FILE}")
-            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                cached_data = json.load(f)
-                call_data = cached_data.get('call_data', [])
-                errors = cached_data.get('errors', [])
-                cache_timestamp = cached_data.get('timestamp', None)
-                logger.info(f"✅ Loaded {len(call_data)} calls from persistent cache (saved at {cache_timestamp})")
-                return call_data, errors
-        except Exception as e:
-            logger.warning(f"Failed to load persistent cache: {e}")
-    return None, None
-
-def save_cached_data_to_disk(call_data, errors):
-    """Save cached data to disk for persistence across app restarts."""
-    try:
-        cache_data = {
-            'call_data': call_data,
-            'errors': errors,
-            'timestamp': datetime.now().isoformat(),
-            'count': len(call_data)
-        }
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache_data, f, default=str, indent=2)
-        logger.info(f"💾 Saved {len(call_data)} calls to persistent cache: {CACHE_FILE}")
-    except Exception as e:
-        logger.error(f"Failed to save persistent cache: {e}")
-
-# Cached wrapper - uses both Streamlit cache (fast) and disk cache (persistent)
+# Cached wrapper - data is cached indefinitely until manually refreshed
 # First load will take time, subsequent loads will be instant
-# Use "Refresh Data" button when new PDFs are added to S3
+# Use "Refresh New Data" button when new PDFs are added to S3 - it only loads new files
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
 @st.cache_data(ttl=None, max_entries=1, show_spinner=True)
 def load_all_calls_cached():
     """Cached wrapper - loads ALL data once, then serves from cache indefinitely until manually refreshed.
     
-    Uses both Streamlit in-memory cache (fast) and disk-based cache (persists across restarts).
-    For initial limited loads, use load_all_calls_internal directly and store in session state.
+    Note: This function always loads all files (no max_files limit) to maintain consistent caching.
+    For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
-    import time
-    func_start = time.time()
-    logger.info("🔍 load_all_calls_cached() called - checking persistent disk cache first...")
-    
-    # First, try to load from persistent disk cache
-    disk_call_data, disk_errors = load_cached_data_from_disk()
-    if disk_call_data is not None and len(disk_call_data) > 0:
-        logger.info(f"✅ Using persistent disk cache with {len(disk_call_data)} calls")
-        return disk_call_data, disk_errors
-    
-    # If no disk cache, load from S3
-    logger.info("⚠️ No persistent cache found - Loading from S3 (this will take a while)")
     try:
         result = load_all_calls_internal(max_files=None)
-        func_duration = time.time() - func_start
-        logger.info(f"⏱️ load_all_calls_internal completed in {func_duration:.2f} seconds")
-        
         # Ensure we always return a tuple
         if isinstance(result, tuple) and len(result) == 2:
-            call_data, errors = result
-            # Save to disk for persistence across app restarts
-            if call_data:
-                save_cached_data_to_disk(call_data, errors)
-            logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from load_all_calls_cached")
             return result
         else:
             # If result is not a tuple, wrap it
@@ -766,13 +712,6 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
             
             # Clear and update cache with merged data
             load_all_calls_cached.clear()
-            # Also clear persistent disk cache
-            if CACHE_FILE.exists():
-                try:
-                    CACHE_FILE.unlink()
-                    logger.info("🗑️ Cleared persistent disk cache")
-                except:
-                    pass
             # We need to manually update the cache - store in session state temporarily
             st.session_state['merged_calls'] = all_calls_merged
             st.session_state['merged_errors'] = new_errors if new_errors else []
@@ -801,13 +740,6 @@ if is_admin:
         if current_username and current_username.lower() in ["chloe", "shannon"]:
             log_audit_event(current_username, "reload_all_data", "Cleared cache and reloaded all data from S3")
         st.cache_data.clear()
-        # Also clear persistent disk cache
-        if CACHE_FILE.exists():
-            try:
-                CACHE_FILE.unlink()
-                logger.info("🗑️ Cleared persistent disk cache")
-            except:
-                pass
         if 'processed_s3_keys' in st.session_state:
             del st.session_state['processed_s3_keys']
         # Mark that full dataset should be cached after this reload
@@ -945,13 +877,6 @@ try:
             del st.session_state['merged_errors']
         # Update cache with merged data (by calling the cached function)
         load_all_calls_cached.clear()
-        # Also clear persistent disk cache
-        if CACHE_FILE.exists():
-            try:
-                CACHE_FILE.unlink()
-                logger.info("🗑️ Cleared persistent disk cache")
-            except:
-                pass
         # Note: We can't directly update cache, so we'll let it reload on next access
         elapsed = time.time() - t0
         status_text.empty()
@@ -985,105 +910,14 @@ try:
                 progress_placeholder.progress(progress, text=f"Processing PDFs: {processed}/{total} ({errors} errors)")
         
         # Load data (this will trigger processing if not cached)
-        # Strategy: Always try cache first - if it has data, use it instantly
-        # Only load 50 files if cache is truly empty (first time ever)
-        # This preserves existing cache and ensures fast loads when cache exists
-        initial_load_complete = st.session_state.get('initial_load_complete', False)
-        reload_all_triggered = st.session_state.get('reload_all_triggered', False)
-        logger.info(f"Initial load status: initial_load_complete={initial_load_complete}, reload_all_triggered={reload_all_triggered}")
+        # SIMPLE approach: Just call the cached function. Streamlit's cache handles everything.
+        # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
+        logger.info("Loading data - Streamlit cache will handle it automatically")
         
         try:
-            if reload_all_triggered:
-                # User clicked "Reload ALL Data" - load all files and cache them
-                logger.info("Reload ALL Data triggered: Loading all files and caching them")
-                status_text.text("📥 Loading ALL PDFs from S3... This may take a while.")
-                with st.spinner("Loading ALL PDFs from S3... This may take several minutes."):
-                    call_data, errors = load_all_calls_cached()  # This will load all files and cache them
-                    st.session_state['full_dataset_cached'] = True  # Mark that cache is now populated
-                    st.session_state['reload_all_triggered'] = False  # Reset flag
-                    st.session_state['initial_load_complete'] = True  # Mark initial load complete
-                    logger.info(f"Full dataset loaded and cached. Loaded {len(call_data) if call_data else 0} calls")
-            elif not initial_load_complete:
-                # First load: Try cache first, if empty then load 50 files
-                logger.info("First load: Checking cache first, then loading 50 files if cache is empty")
-                status_text.text("📥 Loading data...")
-                
-                # Try to use cache - if it's populated, this will be instant
-                # If cache is empty, this will try to load all files (slow), so we need a timeout or different approach
-                # Instead, let's try a quick check: attempt cache with a small timeout
-                try:
-                    with st.spinner("Checking cache..."):
-                        # Try cache - if it returns quickly with data, use it
-                        # We'll check the length to see if it's substantial (more than 50 = full dataset cached)
-                        call_data, errors = load_all_calls_cached()
-                        if call_data and len(call_data) > 50:
-                            # Cache has full dataset, use it!
-                            logger.info(f"Cache has full dataset! Using {len(call_data)} calls from cache")
-                            st.session_state['initial_load_complete'] = True
-                            st.session_state['full_dataset_cached'] = True
-                            status_text.text("✅ Loaded from cache!")
-                        else:
-                            # Cache is empty or has limited data, load 50 files
-                            logger.info("Cache is empty or limited. Loading 50 most recent files...")
-                            status_text.text("📥 Loading first 50 most recent PDFs... (Click 'Reload ALL Data' for complete dataset)")
-                            call_data, errors = load_all_calls_internal(max_files=50)
-                            st.session_state['initial_load_complete'] = True
-                            logger.info(f"Initial limited load completed. Loaded {len(call_data) if call_data else 0} calls")
-                except Exception as cache_error:
-                    # If cache access fails, fall back to 50 files
-                    logger.warning(f"Cache access issue: {cache_error}. Loading 50 files instead.")
-                    status_text.text("📥 Loading first 50 most recent PDFs...")
-                    with st.spinner("Loading first 50 PDFs from S3..."):
-                        call_data, errors = load_all_calls_internal(max_files=50)
-                        st.session_state['initial_load_complete'] = True
-                        logger.info(f"Fallback load completed. Loaded {len(call_data) if call_data else 0} calls")
-            else:
-                # Subsequent loads: Try to use cache first
-                # If cache is populated, it will be instant. If empty, it will try to load all files (slow)
-                # We'll try the cache first, and if it's taking too long, we know it's loading from S3
-                reload_all_triggered = st.session_state.get('reload_all_triggered', False)
-                
-                if reload_all_triggered:
-                    # User clicked "Reload ALL Data" - load all files and cache them
-                    logger.info("Reload ALL Data triggered: Loading all files and caching them")
-                    status_text.text("📥 Loading ALL PDFs from S3... This may take a while.")
-                    with st.spinner("Loading ALL PDFs from S3... This may take several minutes."):
-                        call_data, errors = load_all_calls_cached()  # This will load all files and cache them
-                        st.session_state['full_dataset_cached'] = True  # Mark that cache is now populated
-                        st.session_state['reload_all_triggered'] = False  # Reset flag
-                        logger.info(f"Full dataset loaded and cached. Loaded {len(call_data) if call_data else 0} calls")
-                else:
-                    # ALWAYS try cache first - if it has data, it will be instant
-                    # If cache is empty, it will try to load all files (slow), but we'll let it run
-                    # The cache should exist from previous loads
-                    logger.info("Subsequent load: Attempting to use cached dataset")
-                    logger.info("NOTE: If this takes a long time, cache was cleared and it's loading from S3")
-                    status_text.text("📥 Loading data from cache...")
-                    
-                    import time
-                    cache_start_time = time.time()
-                    
-                    with st.spinner("Loading data from cache... (If this takes >5 seconds, cache was cleared)"):
-                        call_data, errors = load_all_calls_cached()
-                        cache_load_time = time.time() - cache_start_time
-                        
-                        if cache_load_time < 2:
-                            # Loaded in <2 seconds = definitely from cache
-                            logger.info(f"✅ FAST load ({cache_load_time:.2f}s) - Data loaded from CACHE. Loaded {len(call_data) if call_data else 0} calls")
-                            if call_data and len(call_data) > 50:
-                                st.session_state['full_dataset_cached'] = True
-                                status_text.text("✅ Loaded from cache!")
-                        elif cache_load_time < 10:
-                            # 2-10 seconds = might be cache, might be starting to load
-                            logger.info(f"⚠️ MODERATE load ({cache_load_time:.2f}s) - May be from cache or starting S3 load. Loaded {len(call_data) if call_data else 0} calls")
-                            if call_data and len(call_data) > 50:
-                                st.session_state['full_dataset_cached'] = True
-                        else:
-                            # >10 seconds = definitely loading from S3 (cache was empty)
-                            logger.warning(f"❌ SLOW load ({cache_load_time:.2f}s) - Cache was EMPTY, loaded from S3. Loaded {len(call_data) if call_data else 0} calls")
-                            if call_data and len(call_data) > 50:
-                                st.session_state['full_dataset_cached'] = True
-                                logger.info("Cache is now populated for future loads")
+            with st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets."):
+                call_data, errors = load_all_calls_cached()
+                logger.info(f"Data loaded. Got {len(call_data) if call_data else 0} calls")
         except Exception as e:
             logger.exception("Error during data loading")
             status_text.empty()
