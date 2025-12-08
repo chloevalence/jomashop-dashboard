@@ -257,11 +257,13 @@ def load_all_calls_internal(max_files=None):
         st.session_state.pdf_processing_progress['processing_start_time'] = processing_start_time
         
         # Process PDFs in parallel (max 10 workers to avoid overwhelming S3/CPU)
+        logger.info(f"📥 Starting to process {total} PDF files in parallel (this will take 10-20 minutes)")
         with ThreadPoolExecutor(max_workers=10) as executor:
             # Submit all tasks
             future_to_key = {executor.submit(process_pdf_with_retry, key): key for key in pdf_keys}
             
             # Collect results as they complete
+            last_log_time = time.time()
             for future in as_completed(future_to_key):
                 parsed_data, error = future.result()
                 if parsed_data:
@@ -272,6 +274,18 @@ def load_all_calls_internal(max_files=None):
                 
                 # Update progress
                 st.session_state.pdf_processing_progress['processed'] += 1
+                
+                # Log progress every 100 files or every 30 seconds
+                processed = st.session_state.pdf_processing_progress['processed']
+                if processed % 100 == 0 or (time.time() - last_log_time) > 30:
+                    elapsed = time.time() - processing_start_time
+                    rate = processed / elapsed if elapsed > 0 else 0
+                    remaining = (total - processed) / rate if rate > 0 else 0
+                    logger.info(f"📊 Progress: {processed}/{total} files processed ({processed*100//total}%), {len(all_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
+                    last_log_time = time.time()
+        
+        elapsed_total = time.time() - processing_start_time
+        logger.info(f"✅ Completed processing {total} files in {elapsed_total/60:.1f} minutes. Success: {len(all_calls)}, Errors: {len(errors)}")
         
         # Sort by call_date if available (already sorted by S3 date, but this ensures call_date order)
         try:
@@ -329,16 +343,25 @@ def load_all_calls_cached():
     Note: This function always loads all files (no max_files limit) to maintain consistent caching.
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
+    import time
+    start_time = time.time()
+    logger.info("🔍 load_all_calls_cached() called - starting load from S3 (this may take 10-20 minutes)")
     try:
         result = load_all_calls_internal(max_files=None)
+        elapsed = time.time() - start_time
+        logger.info(f"⏱️ load_all_calls_internal completed in {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
+        
         # Ensure we always return a tuple
         if isinstance(result, tuple) and len(result) == 2:
+            call_data, errors = result
+            logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from load_all_calls_cached")
             return result
         else:
             # If result is not a tuple, wrap it
             return result if isinstance(result, list) else [], []
     except Exception as e:
-        logger.exception("Error in load_all_calls_cached")
+        elapsed = time.time() - start_time
+        logger.exception(f"❌ Error in load_all_calls_cached after {elapsed:.1f} seconds: {e}")
         # Return empty data with error message
         return [], [f"Failed to load data: {str(e)}"]
 
