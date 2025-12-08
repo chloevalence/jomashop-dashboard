@@ -396,7 +396,10 @@ def load_all_calls_cached():
         disk_call_data, disk_errors = load_cached_data_from_disk()
         if disk_call_data is not None and len(disk_call_data) > 0:
             elapsed = time.time() - start_time
-            logger.info(f"✅ Using persistent disk cache with {len(disk_call_data)} calls (loaded in {elapsed:.2f}s)")
+            logger.info(f"✅ Loaded {len(disk_call_data)} calls from persistent disk cache (loaded in {elapsed:.2f}s)")
+            logger.info(f"💾 Populating Streamlit's in-memory cache from disk cache for faster access")
+            # Return the data - Streamlit's @st.cache_data will automatically cache this return value
+            # This gives us the best of both worlds: disk cache (persistent) + Streamlit cache (fast)
             return disk_call_data, disk_errors
         
         # SAFEGUARD: Check if Streamlit's in-memory cache has data (from old code or previous session)
@@ -451,10 +454,14 @@ def load_all_calls_cached():
                 # Only save if we didn't already save it (to avoid duplicate writes)
                 if not (len(call_data) > 1000 and load_duration < 2.0):
                     save_cached_data_to_disk(call_data, errors)
+                # Log that Streamlit will cache this in memory automatically
+                logger.info(f"💾 Data will be cached in Streamlit's in-memory cache for fast access")
             if reload_all_triggered:
                 logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from FULL dataset")
             else:
                 logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from initial batch (use 'Reload ALL Data' for complete dataset)")
+            # Return the data - Streamlit's @st.cache_data automatically caches this return value
+            # This populates both: disk cache (persistent) + Streamlit cache (fast)
             return result
         else:
             # If result is not a tuple, wrap it
