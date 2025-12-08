@@ -472,9 +472,13 @@ def load_all_calls_cached():
                     use_streamlit_cache = True
             else:
                 # Slow load = loaded from S3, not from cache
-                # This is new data, use it
+                # This is new data, use it and ALWAYS save to disk (critical for persistence)
                 logger.info(f"📥 Loaded {len(streamlit_call_data)} calls from S3 (took {load_duration:.1f}s)")
+                logger.info(f"💾 CRITICAL: Saving to disk cache to prevent loss on restart")
                 use_streamlit_cache = True
+                # Force save to disk immediately for slow loads (they're fresh data from S3)
+                if streamlit_call_data:
+                    save_cached_data_to_disk(streamlit_call_data, streamlit_errors)
         elif disk_call_data and len(disk_call_data) > 0:
             # Only disk cache has data
             logger.info(f"✅ Using disk cache ({len(disk_call_data)} calls)")
@@ -484,7 +488,8 @@ def load_all_calls_cached():
         if use_streamlit_cache:
             final_call_data, final_errors = streamlit_call_data, streamlit_errors
             # Update disk cache with Streamlit cache data (it's more recent)
-            if final_call_data:
+            # Only save if we didn't already save it above (for slow loads)
+            if final_call_data and not (load_duration >= 2.0):
                 save_cached_data_to_disk(final_call_data, final_errors)
                 logger.info(f"💾 Updated disk cache with Streamlit cache data ({len(final_call_data)} calls)")
         elif use_disk_cache:
