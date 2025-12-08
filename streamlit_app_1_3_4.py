@@ -293,10 +293,21 @@ def load_all_calls_internal(max_files=None):
 # First load will take time, subsequent loads will be instant
 # Use "Refresh Data" button when new PDFs are added to S3
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
-@st.cache_data(ttl=None, max_entries=1, show_spinner=False)
+@st.cache_data(ttl=None, max_entries=1, show_spinner=True)
 def load_all_calls_cached(max_files=None):
     """Cached wrapper - loads data once, then serves from cache indefinitely until manually refreshed."""
-    return load_all_calls_internal(max_files=max_files)
+    try:
+        result = load_all_calls_internal(max_files=max_files)
+        # Ensure we always return a tuple
+        if isinstance(result, tuple) and len(result) == 2:
+            return result
+        else:
+            # If result is not a tuple, wrap it
+            return result if isinstance(result, list) else [], []
+    except Exception as e:
+        logger.exception("Error in load_all_calls_cached")
+        # Return empty data with error message
+        return [], [f"Failed to load data: {str(e)}"]
 
 # Chart caching helper - cache chart figures based on data hash
 @st.cache_data(ttl=3600, show_spinner=False)  # Cache charts for 1 hour
@@ -618,7 +629,7 @@ if is_admin:
                 st.session_state.bg_check_interval_minutes = interval
                 st.rerun()
             
-            if st.button("🔄 Check Now", use_container_width=True):
+            if st.button("🔄 Check Now", width='stretch'):
                 new_count, check_error = check_for_new_pdfs_lightweight()
                 st.session_state.last_bg_check_time = time.time()
                 if check_error:
@@ -632,7 +643,7 @@ if is_admin:
 
 # Smart refresh button (available to all users) - only loads new PDFs
 # Note: files_to_load will be defined later, but we'll use None here to get all cached data
-if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs added since last refresh. Fast and efficient!", use_container_width=True, type="primary"):
+if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs added since last refresh. Fast and efficient!", width='stretch', type="primary"):
     if current_username and current_username.lower() in ["chloe", "shannon"]:
         log_audit_event(current_username, "refresh_data", "Refreshed new data from S3")
     with st.spinner("🔄 Checking for new PDFs..."):
@@ -677,7 +688,7 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
 if is_admin:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👑 Admin: Full Reload")
-    if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take a while.", use_container_width=True, type="secondary"):
+    if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take a while.", width='stretch', type="secondary"):
         if current_username and current_username.lower() in ["chloe", "shannon"]:
             log_audit_event(current_username, "reload_all_data", "Cleared cache and reloaded all data from S3")
         st.cache_data.clear()
@@ -815,7 +826,20 @@ try:
                 progress_placeholder.progress(progress, text=f"Processing PDFs: {processed}/{total} ({errors} errors)")
         
         # Load data (this will trigger processing if not cached)
-        call_data, errors = load_all_calls_cached(max_files=None)
+        # Add timeout protection - if loading takes more than 5 minutes, show error
+        try:
+            with st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets."):
+                call_data, errors = load_all_calls_cached(max_files=None)
+        except Exception as e:
+            logger.exception("Error during data loading")
+            status_text.empty()
+            st.error(f"❌ Error loading data: {str(e)}")
+            st.error("The app may be trying to load too many files at once.")
+            st.info("💡 **Try this:**")
+            st.info("1. Clear the cache by clicking '🔄 Reload ALL Data (Admin Only)' button")
+            st.info("2. Or wait a few minutes and refresh the page")
+            st.info("3. If the problem persists, check the terminal/logs for detailed errors")
+            st.stop()
         
         # Clear progress after loading
         if st.session_state.pdf_processing_progress['total'] > 0:
@@ -824,6 +848,13 @@ try:
         
         elapsed = time.time() - t0
         status_text.empty()
+    
+    # Check if we got valid data
+    if not call_data and not errors:
+        status_text.empty()
+        st.warning("⚠️ No data loaded. This might be the first time loading, or there may be an issue.")
+        st.info("💡 Try refreshing the page or clicking '🔄 Reload ALL Data (Admin Only)' if you're an admin.")
+        st.stop()
     
     # Handle errors - could be a tuple (errors_list, info_message) or just errors
     if errors:
@@ -1149,7 +1180,7 @@ with st.sidebar.expander("💾 Saved Filter Presets"):
         for preset_name in st.session_state.saved_filter_presets.keys():
             col1, col2 = st.columns([3, 1])
             with col1:
-                if st.button(f"📌 {preset_name}", key=f"load_{preset_name}", use_container_width=True):
+                if st.button(f"📌 {preset_name}", key=f"load_{preset_name}", width='stretch'):
                     # Load preset
                     preset = st.session_state.saved_filter_presets[preset_name]
                     st.session_state.last_date_preset = preset.get('date_preset', 'All Time')
@@ -1170,7 +1201,7 @@ with st.sidebar.expander("💾 Saved Filter Presets"):
     # Save current filter as preset
     st.markdown("---")
     preset_name = st.text_input("Save current filters as:", placeholder="e.g., 'Weekly Review'", key="new_preset_name")
-    if st.button("💾 Save Preset", use_container_width=True) and preset_name:
+    if st.button("💾 Save Preset", width='stretch') and preset_name:
         if preset_name in st.session_state.saved_filter_presets:
             st.warning(f"Preset '{preset_name}' already exists. Overwrite?")
         else:
@@ -1434,7 +1465,7 @@ if is_admin:
                 {"Feature": k, "Usage Count": v}
                 for k, v in sorted(metrics.get("features_used", {}).items(), key=lambda x: x[1], reverse=True)
             ])
-            st.dataframe(feature_df, use_container_width=True, hide_index=True)
+            st.dataframe(feature_df, width='stretch', hide_index=True)
         
         # Show recent errors
         if metrics.get("errors"):
@@ -1448,9 +1479,9 @@ if is_admin:
                 }
                 for k, v in sorted(metrics.get("errors", {}).items(), key=lambda x: x[1].get("last_seen", ""), reverse=True)[:10]
             ])
-            st.dataframe(error_df, use_container_width=True, hide_index=True)
+            st.dataframe(error_df, width='stretch', hide_index=True)
         
-        if st.button("🔄 Refresh Metrics", use_container_width=True):
+        if st.button("🔄 Refresh Metrics", width='stretch'):
             st.rerun()
         
         # Audit Log Viewer (Shannon and Chloe only)
@@ -1470,14 +1501,14 @@ if is_admin:
                         audit_df = pd.DataFrame(recent_entries)
                         audit_df["timestamp"] = pd.to_datetime(audit_df["timestamp"])
                         audit_df = audit_df.sort_values("timestamp", ascending=False)
-                        st.dataframe(audit_df, use_container_width=True, hide_index=True)
+                        st.dataframe(audit_df, width='stretch', hide_index=True)
                         
                         # Filter by action type
                         action_types = audit_df["action"].unique().tolist()
                         selected_action = st.selectbox("Filter by action:", ["All"] + action_types)
                         if selected_action != "All":
                             filtered_audit = audit_df[audit_df["action"] == selected_action]
-                            st.dataframe(filtered_audit, use_container_width=True, hide_index=True)
+                            st.dataframe(filtered_audit, width='stretch', hide_index=True)
                     else:
                         st.info("No audit entries yet.")
                 except Exception as e:
@@ -1544,11 +1575,11 @@ if is_admin:
             st.markdown("### Detailed Statistics")
             stats_df = pd.DataFrame([
                 {'Field': k, 'Missing/Invalid Count': v.get('missing', v) if isinstance(v, dict) else v, 
-                 'Total': v.get('total', 'N/A') if isinstance(v, dict) else 'N/A',
-                 'Percentage': f"{v.get('pct', 0):.1f}%" if isinstance(v, dict) else 'N/A'}
+                 'Total': v.get('total', 0) if isinstance(v, dict) else 0,
+                 'Percentage': f"{v.get('pct', 0):.1f}%" if isinstance(v, dict) else '0.0%'}
                 for k, v in validation_stats.items()
             ])
-            st.dataframe(stats_df, use_container_width=True, hide_index=True)
+            st.dataframe(stats_df, width='stretch', hide_index=True)
 
 # Summary Metrics
 if show_comparison and user_agent_id:
@@ -1647,7 +1678,7 @@ if not user_agent_id:
     agent_performance["Pass_Rate"] = (agent_performance["Total_Pass"] / (agent_performance["Total_Pass"] + agent_performance["Total_Fail"]) * 100).fillna(0)
     agent_performance = agent_performance.sort_values("Avg_QA_Score", ascending=False)
 
-    st.dataframe(agent_performance.round(1), use_container_width=True)
+    st.dataframe(agent_performance.round(1), width='stretch')
 else:
     # Agent view - show only their performance summary
     st.subheader("📊 My Performance Summary")
@@ -1671,14 +1702,14 @@ else:
             f"{my_performance['Avg_Call_Duration'].iloc[0]:.1f}" if not pd.isna(my_performance['Avg_Call_Duration'].iloc[0]) else "N/A"
         ],
         'Team Average': [
-            overall_total_calls if overall_total_calls else "N/A",
-            f"{overall_avg_score:.1f}%" if overall_avg_score else "N/A",
-            f"{overall_pass_rate:.1f}%" if overall_pass_rate else "N/A",
+            overall_total_calls if overall_total_calls else 0,
+            f"{overall_avg_score:.1f}%" if overall_avg_score else "0.0%",
+            f"{overall_pass_rate:.1f}%" if overall_pass_rate else "0.0%",
             "N/A"  # Could calculate if needed
         ]
     })
     
-    st.dataframe(comparison_table, use_container_width=True, hide_index=True)
+    st.dataframe(comparison_table, width='stretch', hide_index=True)
 
 # --- Performance Alerts ---
 st.subheader("⚠️ Performance Alerts")
@@ -1689,7 +1720,7 @@ if len(alerts_df) > 0:
         Low_Score_Calls=("Call ID", "count"),
         Avg_Score=("QA Score", "mean")
     ).reset_index().sort_values("Low_Score_Calls", ascending=False)
-    st.dataframe(alert_summary, use_container_width=True)
+    st.dataframe(alert_summary, width='stretch')
 else:
     st.success(f"✅ All calls meet the threshold ({alert_threshold}%)")
 
@@ -1781,7 +1812,7 @@ if "Rubric Details" in filtered_df.columns:
             for code, stats in code_stats.items()
         ]).sort_values('Fail_Rate', ascending=False)
         
-        st.dataframe(rubric_analysis.round(1), use_container_width=True)
+        st.dataframe(rubric_analysis.round(1), width='stretch')
         
         # Top failing codes chart
         col_rub1, col_rub2 = st.columns(2)
@@ -2002,7 +2033,7 @@ if "Coaching Suggestions" in filtered_df.columns:
         col_coach1, col_coach2 = st.columns(2)
         with col_coach1:
             st.write("**Most Common Coaching Suggestions**")
-            st.dataframe(top_coaching, use_container_width=True)
+            st.dataframe(top_coaching, width='stretch')
         
         with col_coach2:
             fig_coach, ax_coach = plt.subplots(figsize=(8, 6))
@@ -2161,11 +2192,11 @@ if len(filtered_df) > 0:
         st.markdown("### Select Calls for Export")
         select_all_col1, select_all_col2 = st.columns([1, 4])
         with select_all_col1:
-            if st.button("✅ Select All", use_container_width=True):
+            if st.button("✅ Select All", width='stretch'):
                 st.session_state.selected_call_ids = call_options.copy()
                 st.rerun()
         with select_all_col2:
-            if st.button("❌ Clear Selection", use_container_width=True):
+            if st.button("❌ Clear Selection", width='stretch'):
                 st.session_state.selected_call_ids = []
                 st.rerun()
         
@@ -2248,7 +2279,7 @@ if len(filtered_df) > 0:
                     }
                     for code, details in rubric_details.items()
                 ])
-                st.dataframe(rubric_df, use_container_width=True)
+                st.dataframe(rubric_df, width='stretch')
                 
                 # Export individual call report
                 st.markdown("---")
@@ -2435,7 +2466,7 @@ if "QA Score" in filtered_df.columns and "Call Date" in filtered_df.columns and 
             if len(drops) > 0:
                 drop_display = drops[["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]].head(10)
                 drop_display["Score_Change"] = drop_display["Score_Change"].apply(lambda x: f"{x:.1f}%")
-                st.dataframe(drop_display, use_container_width=True, hide_index=True)
+                st.dataframe(drop_display, width='stretch', hide_index=True)
             else:
                 st.info("No significant score drops detected")
         
@@ -2445,7 +2476,7 @@ if "QA Score" in filtered_df.columns and "Call Date" in filtered_df.columns and 
             if len(spikes) > 0:
                 spike_display = spikes[["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]].head(10)
                 spike_display["Score_Change"] = spike_display["Score_Change"].apply(lambda x: f"+{x:.1f}%")
-                st.dataframe(spike_display, use_container_width=True, hide_index=True)
+                st.dataframe(spike_display, width='stretch', hide_index=True)
             else:
                 st.info("No significant score spikes detected")
         
@@ -2517,7 +2548,7 @@ with analytics_tab1:
                 wow_display["WoW_Score_Change"] = wow_display["WoW_Score_Change"].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
                 wow_display["WoW_CallCount_Change"] = wow_display["WoW_CallCount_Change"].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
                 wow_display.columns = ["Week", "Avg QA Score", "WoW Change", "Call Count", "WoW Count Change"]
-                st.dataframe(wow_display, use_container_width=True, hide_index=True)
+                st.dataframe(wow_display, width='stretch', hide_index=True)
             
             with wow_col2:
                 st.write("**Pass Rate Week-over-Week**")
@@ -2565,7 +2596,7 @@ with analytics_tab2:
         if agent_improvement:
             improvement_df = pd.DataFrame(agent_improvement)
             improvement_df = improvement_df.sort_values("Improvement", key=lambda x: x.str.replace('%', '').str.replace('+', '').astype(float), ascending=False)
-            st.dataframe(improvement_df, use_container_width=True, hide_index=True)
+            st.dataframe(improvement_df, width='stretch', hide_index=True)
             
             # Show trend chart for selected agents
             selected_agents_trend = st.multiselect(
@@ -2634,7 +2665,7 @@ with analytics_tab3:
                     })
                 
                 failure_df = pd.DataFrame(failure_data)
-                st.dataframe(failure_df, use_container_width=True, hide_index=True)
+                st.dataframe(failure_df, width='stretch', hide_index=True)
             
             with failure_col2:
                 st.write("**Failure Distribution**")
@@ -2667,7 +2698,7 @@ with analytics_tab3:
                 if failure_info['notes']:
                     st.write("**Sample Failure Notes:**")
                     for note in failure_info['notes'][:5]:  # Show first 5 notes
-                        st.text_area("", value=note, height=50, disabled=True, key=f"note_{hash(note)}")
+                        st.text_area("Note", value=note, height=50, disabled=True, key=f"note_{hash(note)}", label_visibility="collapsed")
         else:
             st.info("ℹ️ No failed rubric items found in the filtered data")
     else:
@@ -2697,7 +2728,7 @@ with st.expander("📋 Export Templates", expanded=False):
         )
     
     with template_col2:
-        if st.button("➕ Save Current as Template", use_container_width=True):
+        if st.button("➕ Save Current as Template", width='stretch'):
             template_name = st.text_input("Template name:", key="new_template_name")
             if template_name:
                 # Get selected columns (will be set below)
@@ -2788,7 +2819,7 @@ with export_col1:
         data=excel_buffer.getvalue(),
         file_name=f"qa_report_{start_date}_to_{end_date}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+        width='stretch'
     )
 
 with export_col2:
@@ -2823,7 +2854,7 @@ with export_col2:
         data=csv_buffer.getvalue(),
         file_name=f"qa_report_{start_date}_to_{end_date}.csv",
         mime="text/csv",
-        use_container_width=True
+        width='stretch'
     )
 
 # Export selected individual calls (if any are selected)
@@ -2855,7 +2886,7 @@ if len(filtered_df) > 0:
                 data=selected_excel_buffer.getvalue(),
                 file_name=f"selected_calls_{start_date}_to_{end_date}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width='stretch'
             )
         
         with export_selected_col2:
@@ -2871,10 +2902,10 @@ if len(filtered_df) > 0:
                 data=selected_csv_buffer.getvalue(),
                 file_name=f"selected_calls_{start_date}_to_{end_date}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
         
-        if st.button("🗑️ Clear Selection", use_container_width=True):
+        if st.button("🗑️ Clear Selection", width='stretch'):
             st.session_state.selected_call_ids = []
             st.rerun()
     else:
