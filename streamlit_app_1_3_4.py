@@ -318,25 +318,64 @@ def load_all_calls_internal(max_files=None):
         logger.exception("Unexpected error in load_all_calls_internal")
         return [], error_msg
 
-# Cached wrapper - data is cached indefinitely until manually refreshed
+# Persistent cache file for data that survives app restarts
+CACHE_FILE = log_dir / "cached_calls_data.json"
+
+def load_cached_data_from_disk():
+    """Load cached data from disk if it exists."""
+    if CACHE_FILE.exists():
+        try:
+            logger.info(f"📂 Found persistent cache file: {CACHE_FILE}")
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                cached_data = json.load(f)
+                call_data = cached_data.get('call_data', [])
+                errors = cached_data.get('errors', [])
+                cache_timestamp = cached_data.get('timestamp', None)
+                logger.info(f"✅ Loaded {len(call_data)} calls from persistent cache (saved at {cache_timestamp})")
+                return call_data, errors
+        except Exception as e:
+            logger.warning(f"Failed to load persistent cache: {e}")
+    return None, None
+
+def save_cached_data_to_disk(call_data, errors):
+    """Save cached data to disk for persistence across app restarts."""
+    try:
+        cache_data = {
+            'call_data': call_data,
+            'errors': errors,
+            'timestamp': datetime.now().isoformat(),
+            'count': len(call_data)
+        }
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, default=str, indent=2)
+        logger.info(f"💾 Saved {len(call_data)} calls to persistent cache: {CACHE_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to save persistent cache: {e}")
+
+# Cached wrapper - uses both Streamlit cache (fast) and disk cache (persistent)
 # First load will take time, subsequent loads will be instant
 # Use "Refresh Data" button when new PDFs are added to S3
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
-# IMPORTANT: Always use max_files=None to maintain consistent cache key
-# The cache key includes function arguments, so changing max_files would create different cache entries
 @st.cache_data(ttl=None, max_entries=1, show_spinner=True)
 def load_all_calls_cached():
     """Cached wrapper - loads ALL data once, then serves from cache indefinitely until manually refreshed.
     
-    Note: This function always loads all files (no max_files limit) to maintain consistent caching.
+    Uses both Streamlit in-memory cache (fast) and disk-based cache (persists across restarts).
     For initial limited loads, use load_all_calls_internal directly and store in session state.
     """
     import time
     func_start = time.time()
-    logger.info("🔍 load_all_calls_cached() called - checking if this is cache hit or cache miss...")
+    logger.info("🔍 load_all_calls_cached() called - checking persistent disk cache first...")
     
+    # First, try to load from persistent disk cache
+    disk_call_data, disk_errors = load_cached_data_from_disk()
+    if disk_call_data is not None and len(disk_call_data) > 0:
+        logger.info(f"✅ Using persistent disk cache with {len(disk_call_data)} calls")
+        return disk_call_data, disk_errors
+    
+    # If no disk cache, load from S3
+    logger.info("⚠️ No persistent cache found - Loading from S3 (this will take a while)")
     try:
-        logger.info("⚠️ CACHE MISS - Loading from S3 (this means cache was empty or cleared)")
         result = load_all_calls_internal(max_files=None)
         func_duration = time.time() - func_start
         logger.info(f"⏱️ load_all_calls_internal completed in {func_duration:.2f} seconds")
@@ -344,6 +383,9 @@ def load_all_calls_cached():
         # Ensure we always return a tuple
         if isinstance(result, tuple) and len(result) == 2:
             call_data, errors = result
+            # Save to disk for persistence across app restarts
+            if call_data:
+                save_cached_data_to_disk(call_data, errors)
             logger.info(f"✅ Returning {len(call_data) if call_data else 0} calls from load_all_calls_cached")
             return result
         else:
@@ -724,6 +766,13 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
             
             # Clear and update cache with merged data
             load_all_calls_cached.clear()
+            # Also clear persistent disk cache
+            if CACHE_FILE.exists():
+                try:
+                    CACHE_FILE.unlink()
+                    logger.info("🗑️ Cleared persistent disk cache")
+                except:
+                    pass
             # We need to manually update the cache - store in session state temporarily
             st.session_state['merged_calls'] = all_calls_merged
             st.session_state['merged_errors'] = new_errors if new_errors else []
@@ -752,6 +801,13 @@ if is_admin:
         if current_username and current_username.lower() in ["chloe", "shannon"]:
             log_audit_event(current_username, "reload_all_data", "Cleared cache and reloaded all data from S3")
         st.cache_data.clear()
+        # Also clear persistent disk cache
+        if CACHE_FILE.exists():
+            try:
+                CACHE_FILE.unlink()
+                logger.info("🗑️ Cleared persistent disk cache")
+            except:
+                pass
         if 'processed_s3_keys' in st.session_state:
             del st.session_state['processed_s3_keys']
         # Mark that full dataset should be cached after this reload
@@ -889,6 +945,13 @@ try:
             del st.session_state['merged_errors']
         # Update cache with merged data (by calling the cached function)
         load_all_calls_cached.clear()
+        # Also clear persistent disk cache
+        if CACHE_FILE.exists():
+            try:
+                CACHE_FILE.unlink()
+                logger.info("🗑️ Cleared persistent disk cache")
+            except:
+                pass
         # Note: We can't directly update cache, so we'll let it reload on next access
         elapsed = time.time() - t0
         status_text.empty()
