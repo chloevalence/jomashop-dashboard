@@ -1607,8 +1607,8 @@ if is_admin:
             st.markdown("### Detailed Statistics")
             stats_df = pd.DataFrame([
                 {'Field': k, 'Missing/Invalid Count': v.get('missing', v) if isinstance(v, dict) else v, 
-                 'Total': v.get('total', 0) if isinstance(v, dict) else 0,
-                 'Percentage': f"{v.get('pct', 0):.1f}%" if isinstance(v, dict) else '0.0%'}
+                 'Total': v.get('total', 'N/A') if isinstance(v, dict) else 'N/A',
+                 'Percentage': f"{v.get('pct', 0):.1f}%" if isinstance(v, dict) else 'N/A'}
                 for k, v in validation_stats.items()
             ])
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
