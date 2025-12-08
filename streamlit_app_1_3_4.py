@@ -13,7 +13,86 @@ import json
 from xlsxwriter.utility import xl_rowcol_to_cell
 import time
 import re
+import os
+import logging
+from pathlib import Path
+from collections import defaultdict
 from pdf_parser import parse_pdf_from_bytes
+from utils import log_audit_event, check_session_timeout, load_metrics, track_feature_usage
+
+# --- Logging Setup ---
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
+log_file = log_dir / f"app_{datetime.now().strftime('%Y%m%d')}.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# --- Usage Metrics Tracking ---
+metrics_file = log_dir / "usage_metrics.json"
+
+def load_metrics():
+    """Load usage metrics from file."""
+    if metrics_file.exists():
+        try:
+            with open(metrics_file, 'r') as f:
+                return json.load(f)
+        except:
+            return {"sessions": 0, "errors": {}, "features_used": {}, "last_updated": None}
+    return {"sessions": 0, "errors": {}, "features_used": {}, "last_updated": None}
+
+def save_metrics(metrics):
+    """Save usage metrics to file."""
+    metrics["last_updated"] = datetime.now().isoformat()
+    try:
+        with open(metrics_file, 'w') as f:
+            json.dump(metrics, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save metrics: {e}")
+
+def track_feature_usage(feature_name):
+    """Track feature usage."""
+    metrics = load_metrics()
+    if "features_used" not in metrics:
+        metrics["features_used"] = {}
+    metrics["features_used"][feature_name] = metrics["features_used"].get(feature_name, 0) + 1
+    save_metrics(metrics)
+
+def track_error(error_type, error_message):
+    """Track errors for alerting on repeated failures."""
+    metrics = load_metrics()
+    if "errors" not in metrics:
+        metrics["errors"] = {}
+    
+    error_key = f"{error_type}:{error_message[:50]}"
+    if error_key not in metrics["errors"]:
+        metrics["errors"][error_key] = {"count": 0, "first_seen": datetime.now().isoformat(), "last_seen": None}
+    
+    metrics["errors"][error_key]["count"] += 1
+    metrics["errors"][error_key]["last_seen"] = datetime.now().isoformat()
+    save_metrics(metrics)
+    
+    # Log error
+    logger.error(f"{error_type}: {error_message}")
+    
+    # Alert on repeated failures (5+ occurrences)
+    if metrics["errors"][error_key]["count"] >= 5:
+        logger.warning(f"ALERT: Repeated failure detected - {error_key} (count: {metrics['errors'][error_key]['count']})")
+
+# Initialize session metrics
+if 'session_started' not in st.session_state:
+    metrics = load_metrics()
+    metrics["sessions"] = metrics.get("sessions", 0) + 1
+    save_metrics(metrics)
+    st.session_state.session_started = True
+    logger.info(f"New session started. Total sessions: {metrics['sessions']}")
 
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
 
@@ -106,37 +185,58 @@ def load_all_calls_internal(max_files=None):
         errors = []
         total = len(pdf_keys)
         
-        def process_pdf(key):
-            """Process a single PDF: download, parse, and return result."""
-            try:
-                # Download PDF from S3 (with timeout per file)
-                response = s3_client_with_timeout.get_object(Bucket=s3_bucket_name, Key=key)
-                pdf_bytes = response['Body'].read()
-                
-                # Extract filename from key
-                filename = key.split('/')[-1]
-                
-                # Parse PDF
-                parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
-                
-                if parsed_data:
-                    # Add S3 metadata
-                    parsed_data['_id'] = key
-                    parsed_data['_s3_key'] = key
-                    return parsed_data, None
-                else:
-                    return None, f"Failed to parse {filename}"
+        def process_pdf_with_retry(key, max_retries=3):
+            """Process a single PDF with retry logic for transient errors."""
+            import time
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    # Download PDF from S3 (with timeout per file)
+                    response = s3_client_with_timeout.get_object(Bucket=s3_bucket_name, Key=key)
+                    pdf_bytes = response['Body'].read()
                     
-            except Exception as e:
-                return None, f"{key}: {str(e)}"
+                    # Extract filename from key
+                    filename = key.split('/')[-1]
+                    
+                    # Parse PDF
+                    parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
+                    
+                    if parsed_data:
+                        # Add S3 metadata
+                        parsed_data['_id'] = key
+                        parsed_data['_s3_key'] = key
+                        return parsed_data, None
+                    else:
+                        return None, f"Failed to parse {filename}"
+                        
+                except Exception as e:
+                    last_error = e
+                    # Retry on transient errors (network issues, timeouts)
+                    if attempt < max_retries - 1:
+                        # Exponential backoff: wait 0.5s, 1s, 2s
+                        time.sleep(0.5 * (2 ** attempt))
+                        continue
+                    else:
+                        return None, f"{key}: {str(e)}"
+            
+            return None, f"{key}: {str(last_error)}"
         
         # Use parallel processing for faster parsing
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
+        # Initialize progress tracking in session state
+        if 'pdf_processing_progress' not in st.session_state:
+            st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0}
+        else:
+            st.session_state.pdf_processing_progress['total'] = total
+            st.session_state.pdf_processing_progress['processed'] = 0
+            st.session_state.pdf_processing_progress['errors'] = 0
+        
         # Process PDFs in parallel (max 10 workers to avoid overwhelming S3/CPU)
         with ThreadPoolExecutor(max_workers=10) as executor:
             # Submit all tasks
-            future_to_key = {executor.submit(process_pdf, key): key for key in pdf_keys}
+            future_to_key = {executor.submit(process_pdf_with_retry, key): key for key in pdf_keys}
             
             # Collect results as they complete
             for future in as_completed(future_to_key):
@@ -145,6 +245,10 @@ def load_all_calls_internal(max_files=None):
                     all_calls.append(parsed_data)
                 elif error:
                     errors.append(error)
+                    st.session_state.pdf_processing_progress['errors'] += 1
+                
+                # Update progress
+                st.session_state.pdf_processing_progress['processed'] += 1
         
         # Sort by call_date if available (already sorted by S3 date, but this ensures call_date order)
         try:
@@ -161,18 +265,29 @@ def load_all_calls_internal(max_files=None):
         # Return with info about total vs loaded
         return all_calls, errors
         
-    except NoCredentialsError:
-        return [], "AWS credentials not found. Please configure S3 credentials in secrets."
+    except NoCredentialsError as e:
+        error_msg = "AWS credentials not found. Please configure S3 credentials in secrets."
+        track_error("S3_NoCredentials", str(e))
+        return [], error_msg
     except ClientError as e:
         error_code = e.response.get('Error', {}).get('Code', 'Unknown')
         if error_code == 'NoSuchBucket':
-            return [], f"S3 bucket '{s3_bucket_name}' not found."
+            error_msg = f"S3 bucket '{s3_bucket_name}' not found."
+            track_error(f"S3_{error_code}", error_msg)
+            return [], error_msg
         elif error_code == 'AccessDenied':
-            return [], f"Access denied to S3 bucket '{s3_bucket_name}'. Check your credentials."
+            error_msg = f"Access denied to S3 bucket '{s3_bucket_name}'. Check your credentials."
+            track_error(f"S3_{error_code}", error_msg)
+            return [], error_msg
         else:
-            return [], f"S3 error: {e}"
+            error_msg = f"S3 error: {e}"
+            track_error(f"S3_{error_code}", error_msg)
+            return [], error_msg
     except Exception as e:
-        return [], f"Unexpected error loading from S3: {e}"
+        error_msg = f"Unexpected error loading from S3: {e}"
+        track_error("S3_Unexpected", error_msg)
+        logger.exception("Unexpected error in load_all_calls_internal")
+        return [], error_msg
 
 # Cached wrapper - data is cached indefinitely until manually refreshed
 # First load will take time, subsequent loads will be instant
@@ -182,6 +297,38 @@ def load_all_calls_internal(max_files=None):
 def load_all_calls_cached(max_files=None):
     """Cached wrapper - loads data once, then serves from cache indefinitely until manually refreshed."""
     return load_all_calls_internal(max_files=max_files)
+
+# Chart caching helper - cache chart figures based on data hash
+@st.cache_data(ttl=3600, show_spinner=False)  # Cache charts for 1 hour
+def get_cached_chart_figure(chart_id: str, data_hash: str, chart_func, *args, **kwargs):
+    """Cache matplotlib chart figures to avoid regeneration.
+    
+    Args:
+        chart_id: Unique identifier for the chart type
+        data_hash: Hash of the data to ensure cache invalidation on data change
+        chart_func: Function that generates the chart
+        *args, **kwargs: Arguments to pass to chart_func
+        
+    Returns:
+        matplotlib figure object
+    """
+    return chart_func(*args, **kwargs)
+
+def create_data_hash(df: pd.DataFrame, additional_params: dict = None) -> str:
+    """Create a hash of the dataframe and parameters for cache key.
+    
+    Args:
+        df: DataFrame to hash
+        additional_params: Additional parameters to include in hash
+        
+    Returns:
+        Hash string
+    """
+    import hashlib
+    data_str = str(df.shape) + str(df.columns.tolist()) + str(df.index.tolist()[:10])
+    if additional_params:
+        data_str += str(additional_params)
+    return hashlib.md5(data_str.encode()).hexdigest()
 
 def load_new_calls_only():
     """
@@ -301,6 +448,29 @@ if auth_status is False:
 current_username = st.session_state.get("username")
 current_name = st.session_state.get("name")
 
+# Session management - track activity and timeout
+if 'last_activity' not in st.session_state:
+    st.session_state.last_activity = time.time()
+else:
+    st.session_state.last_activity = time.time()  # Update on each interaction
+
+# Check for session timeout (30 minutes of inactivity)
+SESSION_TIMEOUT_MINUTES = 30
+if check_session_timeout(st.session_state.last_activity, SESSION_TIMEOUT_MINUTES):
+    st.warning("⏰ Your session has expired due to inactivity. Please log in again.")
+    st.session_state.authentication_status = None
+    st.session_state.last_activity = 0
+    st.rerun()
+
+# Show session timeout warning (5 minutes before timeout)
+time_remaining = SESSION_TIMEOUT_MINUTES - ((time.time() - st.session_state.last_activity) / 60)
+if 0 < time_remaining <= 5:
+    st.sidebar.warning(f"⏰ Session expires in {int(time_remaining)} minute(s)")
+
+# Audit logging (admin only - Shannon and Chloe)
+if current_username and current_username.lower() in ["chloe", "shannon"]:
+    log_audit_event(current_username, "page_access", f"Accessed dashboard at {datetime.now().isoformat()}")
+
 # Check if user is an agent (has agent_id mapping) or admin
 user_agent_id = None
 is_admin = False
@@ -335,15 +505,136 @@ elif is_admin:
 else:
     st.sidebar.info("👤 User View: All Data")
 
+# --- Background Refresh: Check for new PDFs periodically ---
+def check_for_new_pdfs_lightweight():
+    """
+    Lightweight check: Just counts new PDFs without downloading.
+    Returns: (new_count, error_message)
+    """
+    try:
+        # Get already processed keys from session state
+        processed_keys = st.session_state.get('processed_s3_keys', set())
+        
+        # Configure S3 client with short timeout for quick checks
+        import botocore.config
+        config = botocore.config.Config(
+            connect_timeout=5,
+            read_timeout=10,
+            retries={'max_attempts': 1}
+        )
+        s3_client_quick = boto3.client(
+            's3',
+            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+            region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            config=config
+        )
+        
+        # List all PDF files in S3 (quick check - just count)
+        paginator = s3_client_quick.get_paginator('list_objects_v2')
+        pages = paginator.paginate(
+            Bucket=s3_bucket_name,
+            Prefix=s3_prefix,
+            MaxKeys=1000
+        )
+        
+        # Count new PDFs (not in processed_keys)
+        new_count = 0
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    if key.lower().endswith('.pdf') and key not in processed_keys:
+                        new_count += 1
+        
+        return new_count, None
+        
+    except Exception as e:
+        return 0, f"Error checking for new PDFs: {e}"
+
+# Initialize background refresh state
+if 'bg_refresh_enabled' not in st.session_state:
+    st.session_state.bg_refresh_enabled = True  # Enable by default
+if 'last_bg_check_time' not in st.session_state:
+    st.session_state.last_bg_check_time = 0
+if 'bg_check_interval_minutes' not in st.session_state:
+    st.session_state.bg_check_interval_minutes = 60  # Check every hour (very low AWS cost)
+if 'new_pdfs_notification_count' not in st.session_state:
+    st.session_state.new_pdfs_notification_count = 0
+if 'bg_check_error' not in st.session_state:
+    st.session_state.bg_check_error = None
+
+# Background refresh: Check for new PDFs if enough time has passed
+current_time = time.time()
+time_since_last_check = (current_time - st.session_state.last_bg_check_time) / 60  # minutes
+
+if st.session_state.bg_refresh_enabled and time_since_last_check >= st.session_state.bg_check_interval_minutes:
+    # Perform lightweight check
+    new_count, check_error = check_for_new_pdfs_lightweight()
+    st.session_state.last_bg_check_time = current_time
+    
+    if check_error:
+        st.session_state.bg_check_error = check_error
+    else:
+        st.session_state.bg_check_error = None
+        if new_count > 0:
+            st.session_state.new_pdfs_notification_count = new_count
+
+# Show notification if new PDFs are available
+if st.session_state.new_pdfs_notification_count > 0:
+    st.sidebar.markdown("---")
+    st.sidebar.success(f"🆕 **{st.session_state.new_pdfs_notification_count} new PDF(s) available!**")
+    st.sidebar.caption("Click 'Refresh New Data' below to load them")
+
+# Show background check error if any
+if st.session_state.bg_check_error:
+    st.sidebar.markdown("---")
+    st.sidebar.warning(f"⚠️ Background check: {st.session_state.bg_check_error}")
+
 # Prominent refresh button for when new data is added
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🔄 Refresh Data")
 st.sidebar.info("💡 **When to refresh:** Click 'Refresh New Data' after new PDFs are added to S3")
 st.sidebar.caption("ℹ️ **Cache never expires** - Data stays cached until you manually refresh")
 
+# Background refresh settings (admin only)
+if is_admin:
+    with st.sidebar.expander("⚙️ Background Refresh Settings"):
+        bg_enabled = st.checkbox("Enable background refresh", value=st.session_state.bg_refresh_enabled)
+        if bg_enabled != st.session_state.bg_refresh_enabled:
+            st.session_state.bg_refresh_enabled = bg_enabled
+            st.rerun()
+        
+        if bg_enabled:
+            interval = st.number_input(
+                "Check interval (minutes)",
+                min_value=1,
+                max_value=60,
+                value=st.session_state.bg_check_interval_minutes,
+                step=1,
+                help="How often to check for new PDFs in the background"
+            )
+            if interval != st.session_state.bg_check_interval_minutes:
+                st.session_state.bg_check_interval_minutes = interval
+                st.rerun()
+            
+            if st.button("🔄 Check Now", use_container_width=True):
+                new_count, check_error = check_for_new_pdfs_lightweight()
+                st.session_state.last_bg_check_time = time.time()
+                if check_error:
+                    st.error(f"❌ {check_error}")
+                elif new_count > 0:
+                    st.success(f"✅ Found {new_count} new PDF(s)!")
+                    st.session_state.new_pdfs_notification_count = new_count
+                else:
+                    st.info("ℹ️ No new PDFs found")
+                st.rerun()
+
 # Smart refresh button (available to all users) - only loads new PDFs
 # Note: files_to_load will be defined later, but we'll use None here to get all cached data
 if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs added since last refresh. Fast and efficient!", use_container_width=True, type="primary"):
+    if current_username and current_username.lower() in ["chloe", "shannon"]:
+        log_audit_event(current_username, "refresh_data", "Refreshed new data from S3")
     with st.spinner("🔄 Checking for new PDFs..."):
         new_calls, new_errors, new_count = load_new_calls_only()
         
@@ -375,6 +666,8 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
             st.success(f"✅ Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls")
             if new_errors:
                 st.warning(f"⚠️ {len(new_errors)} file(s) had errors")
+            # Clear notification count after successful refresh
+            st.session_state.new_pdfs_notification_count = 0
             st.rerun()
         else:
             # No new files found and no errors
@@ -385,6 +678,8 @@ if is_admin:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👑 Admin: Full Reload")
     if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take a while.", use_container_width=True, type="secondary"):
+        if current_username and current_username.lower() in ["chloe", "shannon"]:
+            log_audit_event(current_username, "reload_all_data", "Cleared cache and reloaded all data from S3")
         st.cache_data.clear()
         if 'processed_s3_keys' in st.session_state:
             del st.session_state['processed_s3_keys']
@@ -501,8 +796,31 @@ try:
         # Normal load from cache or S3
         # Load all files - first load will process all PDFs, then cached indefinitely for instant access
         # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
-        with st.spinner("⏳ Processing PDFs..."):
-            call_data, errors = load_all_calls_cached(max_files=None)
+        
+        # Initialize progress tracking
+        if 'pdf_processing_progress' not in st.session_state:
+            st.session_state.pdf_processing_progress = {'processed': 0, 'total': 0, 'errors': 0}
+        
+        # Create progress bar placeholder
+        progress_placeholder = st.empty()
+        progress_bar = None
+        
+        # Show progress if we're processing files
+        def update_progress():
+            if st.session_state.pdf_processing_progress['total'] > 0:
+                processed = st.session_state.pdf_processing_progress['processed']
+                total = st.session_state.pdf_processing_progress['total']
+                errors = st.session_state.pdf_processing_progress['errors']
+                progress = processed / total if total > 0 else 0
+                progress_placeholder.progress(progress, text=f"Processing PDFs: {processed}/{total} ({errors} errors)")
+        
+        # Load data (this will trigger processing if not cached)
+        call_data, errors = load_all_calls_cached(max_files=None)
+        
+        # Clear progress after loading
+        if st.session_state.pdf_processing_progress['total'] > 0:
+            progress_placeholder.empty()
+            st.session_state.pdf_processing_progress = {'processed': 0, 'total': 0, 'errors': 0}
         
         elapsed = time.time() - t0
         status_text.empty()
@@ -685,10 +1003,57 @@ if not dates:
     st.warning("⚠️ No calls with valid dates to display.")
     st.stop()
 
+# Remember last filter settings
+if 'last_date_preset' not in st.session_state:
+    st.session_state.last_date_preset = "All Time"
+if 'last_date_range' not in st.session_state:
+    st.session_state.last_date_range = None
+if 'last_agents' not in st.session_state:
+    st.session_state.last_agents = []
+if 'last_score_range' not in st.session_state:
+    st.session_state.last_score_range = None
+if 'last_labels' not in st.session_state:
+    st.session_state.last_labels = []
+if 'last_search' not in st.session_state:
+    st.session_state.last_search = ""
+if 'last_preset_filter' not in st.session_state:
+    st.session_state.last_preset_filter = "None"
+if 'selected_rubric_codes' not in st.session_state:
+    st.session_state.selected_rubric_codes = []
+if 'rubric_filter_type' not in st.session_state:
+    st.session_state.rubric_filter_type = "Any Status"
+
+# Dark mode toggle (admin only)
+if is_admin:
+    st.sidebar.markdown("---")
+    dark_mode = st.sidebar.toggle("🌙 Dark Mode", value=False, help="Toggle dark mode (requires page refresh)")
+    if dark_mode:
+        st.markdown("""
+        <style>
+        .stApp {
+            background-color: #0e1117;
+            color: #fafafa;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+# Keyboard shortcuts info
+with st.sidebar.expander("⌨️ Keyboard Shortcuts"):
+    st.markdown("""
+    **Navigation:**
+    - `Ctrl/Cmd + R` - Refresh page
+    - `Ctrl/Cmd + F` - Focus search box
+    
+    **Tips:**
+    - Use filter presets for quick filtering
+    - Select multiple calls for batch export
+    - Use full-text search across all call details
+    """)
+
 preset_option = st.sidebar.selectbox(
     "📆 Date Range",
     options=["All Time", "This Week", "Last 7 Days", "Last 30 Days", "Custom"],
-    index=0
+    index=["All Time", "This Week", "Last 7 Days", "Last 30 Days", "Custom"].index(st.session_state.last_date_preset) if st.session_state.last_date_preset in ["All Time", "This Week", "Last 7 Days", "Last 30 Days", "Custom"] else 0
 )
 
 if preset_option != "Custom":
@@ -701,12 +1066,17 @@ if preset_option != "Custom":
         selected_dates = (today - timedelta(days=7), today)
     elif preset_option == "Last 30 Days":
         selected_dates = (today - timedelta(days=30), today)
+    st.session_state.last_date_preset = preset_option  # Save selection
 else:
-    custom_input = st.sidebar.date_input("Select Date Range", value=(min(dates), max(dates)))
+    # Restore last custom date range or use default
+    default_date_range = st.session_state.last_date_range if st.session_state.last_date_range and isinstance(st.session_state.last_date_range, tuple) else (min(dates), max(dates))
+    custom_input = st.sidebar.date_input("Select Date Range", value=default_date_range)
     if isinstance(custom_input, tuple) and len(custom_input) == 2:
         selected_dates = custom_input
+        st.session_state.last_date_range = custom_input  # Save selection
     elif isinstance(custom_input, date):
         selected_dates = (custom_input, custom_input)
+        st.session_state.last_date_range = selected_dates  # Save selection
     else:
         st.warning("⚠️ Please select a valid date range.")
         st.stop()
@@ -717,7 +1087,10 @@ start_date, end_date = selected_dates
 # Agent filter (only for admin view)
 if not user_agent_id:
     available_agents = filter_df["Agent"].dropna().unique().tolist()
-    selected_agents = st.sidebar.multiselect("👤 Select Agents", available_agents, default=available_agents)
+    # Restore last selection or use all agents
+    default_agents = st.session_state.last_agents if st.session_state.last_agents and all(a in available_agents for a in st.session_state.last_agents) else available_agents
+    selected_agents = st.sidebar.multiselect("👤 Select Agents", available_agents, default=default_agents)
+    st.session_state.last_agents = selected_agents  # Save selection
 else:
     # For agents, they only see their own data
     selected_agents = [user_agent_id]
@@ -726,46 +1099,151 @@ else:
 if "QA Score" in meta_df.columns and not meta_df["QA Score"].isna().all():
     min_score = float(meta_df["QA Score"].min())
     max_score = float(meta_df["QA Score"].max())
+    # Restore last score range or use full range
+    default_score_range = st.session_state.last_score_range if st.session_state.last_score_range and st.session_state.last_score_range[0] >= min_score and st.session_state.last_score_range[1] <= max_score else (min_score, max_score)
     score_range = st.sidebar.slider(
         "📊 QA Score Range",
         min_value=min_score,
         max_value=max_score,
-        value=(min_score, max_score),
+        value=default_score_range,
         step=1.0
     )
+    st.session_state.last_score_range = score_range  # Save selection
 else:
     score_range = None
 
 # Label filter
 if "Label" in meta_df.columns:
     available_labels = meta_df["Label"].dropna().unique().tolist()
-    selected_labels = st.sidebar.multiselect("🏷️ Select Labels", available_labels, default=available_labels)
+    # Restore last selection or use all labels
+    default_labels = st.session_state.last_labels if st.session_state.last_labels and all(l in available_labels for l in st.session_state.last_labels) else available_labels
+    selected_labels = st.sidebar.multiselect("🏷️ Select Labels", available_labels, default=default_labels)
+    st.session_state.last_labels = selected_labels  # Save selection
 else:
     selected_labels = []
 
-# Search functionality
-search_text = st.sidebar.text_input("🔍 Search (Reason/Summary/Outcome)", "")
+# Filter Presets
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎯 Filter Presets")
 
-# Rubric code filter - collect all failed codes
-failed_rubric_codes = []
+# Load saved filter presets
+if 'saved_filter_presets' not in st.session_state:
+    st.session_state.saved_filter_presets = {}
+
+# Quick preset filters
+preset_options = ["None", "High Performers (90%+)", "Needs Improvement (<70%)", "Failed Rubric Items", "Recent Issues (Last 7 Days)"]
+preset_index = preset_options.index(st.session_state.last_preset_filter) if st.session_state.last_preset_filter in preset_options else 0
+preset_filters = st.sidebar.radio(
+    "Quick Filters",
+    options=preset_options,
+    index=preset_index,
+    help="Apply common filter combinations quickly"
+)
+st.session_state.last_preset_filter = preset_filters  # Save selection
+
+# Saved filter presets management
+st.sidebar.markdown("---")
+with st.sidebar.expander("💾 Saved Filter Presets"):
+    if st.session_state.saved_filter_presets:
+        st.write("**Saved Presets:**")
+        for preset_name in st.session_state.saved_filter_presets.keys():
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                if st.button(f"📌 {preset_name}", key=f"load_{preset_name}", use_container_width=True):
+                    # Load preset
+                    preset = st.session_state.saved_filter_presets[preset_name]
+                    st.session_state.last_date_preset = preset.get('date_preset', 'All Time')
+                    st.session_state.last_date_range = preset.get('date_range', None)
+                    st.session_state.last_agents = preset.get('agents', [])
+                    st.session_state.last_score_range = preset.get('score_range', None)
+                    st.session_state.last_labels = preset.get('labels', [])
+                    st.session_state.last_search = preset.get('search', '')
+                    st.session_state.last_preset_filter = preset.get('preset_filter', 'None')
+                    st.session_state.selected_rubric_codes = preset.get('rubric_codes', [])
+                    st.session_state.rubric_filter_type = preset.get('rubric_filter_type', 'Any Status')
+                    st.rerun()
+            with col2:
+                if st.button("🗑️", key=f"delete_{preset_name}", help=f"Delete {preset_name}"):
+                    del st.session_state.saved_filter_presets[preset_name]
+                    st.rerun()
+    
+    # Save current filter as preset
+    st.markdown("---")
+    preset_name = st.text_input("Save current filters as:", placeholder="e.g., 'Weekly Review'", key="new_preset_name")
+    if st.button("💾 Save Preset", use_container_width=True) and preset_name:
+        if preset_name in st.session_state.saved_filter_presets:
+            st.warning(f"Preset '{preset_name}' already exists. Overwrite?")
+        else:
+            # Save current filter state
+            current_preset = {
+                'date_preset': st.session_state.last_date_preset,
+                'date_range': st.session_state.last_date_range,
+                'agents': st.session_state.last_agents,
+                'score_range': st.session_state.last_score_range,
+                'labels': st.session_state.last_labels,
+                'search': st.session_state.last_search,
+                'preset_filter': st.session_state.last_preset_filter,
+                'rubric_codes': st.session_state.get('selected_rubric_codes', []),
+                'rubric_filter_type': st.session_state.get('rubric_filter_type', 'Any Status'),
+                'created_at': datetime.now().isoformat()
+            }
+            st.session_state.saved_filter_presets[preset_name] = current_preset
+            st.success(f"✅ Preset '{preset_name}' saved!")
+            st.rerun()
+
+# Search functionality - Enhanced full-text search
+st.sidebar.markdown("---")
+search_text = st.sidebar.text_input(
+    "🔍 Full-Text Search", 
+    st.session_state.last_search,
+    help="Search across Reason, Summary, Outcome, Strengths, Challenges, and Coaching Suggestions"
+)
+st.session_state.last_search = search_text  # Save search
+
+# Rubric code filter - Enhanced to support multiple codes (pass/fail/any)
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📋 Rubric Code Filters")
+
+# Collect all rubric codes (both pass and fail)
+all_rubric_codes = []
 if "Rubric Details" in meta_df.columns:
     for idx, row in meta_df.iterrows():
         rubric_details = row.get("Rubric Details", {})
         if isinstance(rubric_details, dict):
             for code, details in rubric_details.items():
-                if isinstance(details, dict) and details.get('status') == 'Fail':
-                    if code not in failed_rubric_codes:
-                        failed_rubric_codes.append(code)
+                if code not in all_rubric_codes:
+                    all_rubric_codes.append(code)
     
-    failed_rubric_codes.sort()
-    if failed_rubric_codes:
-        selected_failed_codes = st.sidebar.multiselect(
-            "❌ Filter by Failed Rubric Codes",
-            options=failed_rubric_codes,
-            help="Show only calls that failed these specific rubric codes"
+    all_rubric_codes.sort()
+    
+    if all_rubric_codes:
+        rubric_filter_type = st.sidebar.radio(
+            "Filter Type",
+            options=["Any Status", "Failed Only", "Passed Only"],
+            index=0,
+            horizontal=True
         )
+        
+        selected_rubric_codes = st.sidebar.multiselect(
+            f"Select Rubric Codes ({rubric_filter_type})",
+            options=all_rubric_codes,
+            default=st.session_state.selected_rubric_codes if st.session_state.selected_rubric_codes else [],
+            help="Show calls that match these rubric codes"
+        )
+        st.session_state.selected_rubric_codes = selected_rubric_codes
+        st.session_state.rubric_filter_type = rubric_filter_type
+        
+        # Also collect failed codes for backward compatibility
+        failed_rubric_codes = [code for code in all_rubric_codes]
+        selected_failed_codes = selected_rubric_codes if rubric_filter_type == "Failed Only" else []
     else:
+        selected_rubric_codes = []
         selected_failed_codes = []
+        rubric_filter_type = "Any Status"
+else:
+    selected_rubric_codes = []
+    selected_failed_codes = []
+    rubric_filter_type = "Any Status"
 
 # Performance alerts threshold
 st.sidebar.markdown("---")
@@ -778,12 +1256,92 @@ alert_threshold = st.sidebar.slider(
     help="Agents/calls below this score will be highlighted"
 )
 
-# Apply filters
+# Apply preset filters
+if preset_filters == "High Performers (90%+)":
+    filter_df = filter_df[filter_df["QA Score"] >= 90].copy()
+elif preset_filters == "Needs Improvement (<70%)":
+    filter_df = filter_df[filter_df["QA Score"] < 70].copy()
+elif preset_filters == "Failed Rubric Items":
+    # Filter for calls with any failed rubric items
+    if "Rubric Fail Count" in filter_df.columns:
+        filter_df = filter_df[filter_df["Rubric Fail Count"] > 0].copy()
+elif preset_filters == "Recent Issues (Last 7 Days)":
+    seven_days_ago = datetime.today().date() - timedelta(days=7)
+    filter_df = filter_df[filter_df["Call Date"].dt.date >= seven_days_ago].copy()
+    if "QA Score" in filter_df.columns:
+        filter_df = filter_df[filter_df["QA Score"] < 70].copy()
+
+# Apply basic filters
 filtered_df = filter_df[
     (filter_df["Agent"].isin(selected_agents)) &
     (filter_df["Call Date"].dt.date >= start_date) &
     (filter_df["Call Date"].dt.date <= end_date)
 ].copy()
+
+# Apply QA Score filter
+if score_range:
+    filtered_df = filtered_df[
+        (filtered_df["QA Score"] >= score_range[0]) &
+        (filtered_df["QA Score"] <= score_range[1])
+    ].copy()
+
+# Apply Label filter
+if selected_labels:
+    filtered_df = filtered_df[filtered_df["Label"].isin(selected_labels)].copy()
+
+# Apply enhanced full-text search
+if search_text:
+    search_lower = search_text.lower()
+    search_mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
+    
+    # Search across multiple fields
+    search_fields = ["Reason", "Summary", "Outcome", "Strengths", "Challenges", "Coaching Suggestions"]
+    for field in search_fields:
+        if field in filtered_df.columns:
+            field_mask = filtered_df[field].astype(str).str.lower().str.contains(search_lower, na=False)
+            search_mask = search_mask | field_mask
+    
+    filtered_df = filtered_df[search_mask].copy()
+
+# Apply enhanced rubric code filter
+if selected_rubric_codes:
+    rubric_mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
+    
+    for idx, row in filtered_df.iterrows():
+        rubric_details = row.get("Rubric Details", {})
+        if isinstance(rubric_details, dict):
+            for code in selected_rubric_codes:
+                if code in rubric_details:
+                    details = rubric_details[code]
+                    if isinstance(details, dict):
+                        status = details.get('status', '').lower()
+                        if rubric_filter_type == "Any Status":
+                            rubric_mask[idx] = True
+                            break
+                        elif rubric_filter_type == "Failed Only" and status == 'fail':
+                            rubric_mask[idx] = True
+                            break
+                        elif rubric_filter_type == "Passed Only" and status == 'pass':
+                            rubric_mask[idx] = True
+                            break
+    
+    filtered_df = filtered_df[rubric_mask].copy()
+
+# Apply legacy failed rubric codes filter (for backward compatibility)
+if selected_failed_codes:
+    failed_mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
+    
+    for idx, row in filtered_df.iterrows():
+        rubric_details = row.get("Rubric Details", {})
+        if isinstance(rubric_details, dict):
+            for code in selected_failed_codes:
+                if code in rubric_details:
+                    details = rubric_details[code]
+                    if isinstance(details, dict) and details.get('status') == 'Fail':
+                        failed_mask[idx] = True
+                        break
+    
+    filtered_df = filtered_df[failed_mask].copy()
 
 # Calculate overall averages for comparison (from all data, not filtered)
 if show_comparison and user_agent_id:
@@ -845,6 +1403,152 @@ if user_agent_id:
     st.title(f"📋 My QA Performance Dashboard - {user_agent_id}")
 else:
     st.title("📋 QA Rubric Dashboard")
+
+# Monitoring Dashboard (Admin Only)
+if is_admin:
+    with st.expander("📊 System Monitoring & Metrics (Admin Only)", expanded=False):
+        st.markdown("### Usage Metrics")
+        metrics = load_metrics()
+        
+        metric_col1, metric_col2, metric_col3 = st.columns(3)
+        with metric_col1:
+            st.metric("Total Sessions", metrics.get("sessions", 0))
+        with metric_col2:
+            total_errors = sum(e.get("count", 0) for e in metrics.get("errors", {}).values())
+            st.metric("Total Errors", total_errors)
+        with metric_col3:
+            unique_features = len(metrics.get("features_used", {}))
+            st.metric("Features Used", unique_features)
+        
+        # Show repeated failures
+        repeated_failures = {k: v for k, v in metrics.get("errors", {}).items() if v.get("count", 0) >= 5}
+        if repeated_failures:
+            st.warning(f"⚠️ **{len(repeated_failures)} repeated failure(s) detected:**")
+            for error_key, error_data in sorted(repeated_failures.items(), key=lambda x: x[1]["count"], reverse=True):
+                st.markdown(f"- **{error_key}**: {error_data['count']} occurrences (First: {error_data.get('first_seen', 'N/A')}, Last: {error_data.get('last_seen', 'N/A')})")
+        
+        # Show feature usage
+        if metrics.get("features_used"):
+            st.markdown("### Feature Usage")
+            feature_df = pd.DataFrame([
+                {"Feature": k, "Usage Count": v}
+                for k, v in sorted(metrics.get("features_used", {}).items(), key=lambda x: x[1], reverse=True)
+            ])
+            st.dataframe(feature_df, use_container_width=True, hide_index=True)
+        
+        # Show recent errors
+        if metrics.get("errors"):
+            st.markdown("### Recent Errors")
+            error_df = pd.DataFrame([
+                {
+                    "Error": k.split(":")[0],
+                    "Message": k.split(":", 1)[1] if ":" in k else k,
+                    "Count": v.get("count", 0),
+                    "Last Seen": v.get("last_seen", "N/A")
+                }
+                for k, v in sorted(metrics.get("errors", {}).items(), key=lambda x: x[1].get("last_seen", ""), reverse=True)[:10]
+            ])
+            st.dataframe(error_df, use_container_width=True, hide_index=True)
+        
+        if st.button("🔄 Refresh Metrics", use_container_width=True):
+            st.rerun()
+        
+        # Audit Log Viewer (Shannon and Chloe only)
+        if current_username and current_username.lower() in ["chloe", "shannon"]:
+            st.markdown("---")
+            st.markdown("### 🔍 Audit Log")
+            audit_file = Path("logs/audit_log.json")
+            if audit_file.exists():
+                try:
+                    with open(audit_file, 'r') as f:
+                        audit_log = json.load(f)
+                    
+                    if audit_log:
+                        # Show recent audit entries
+                        st.write(f"**Total audit entries:** {len(audit_log)}")
+                        recent_entries = audit_log[-50:]  # Last 50 entries
+                        audit_df = pd.DataFrame(recent_entries)
+                        audit_df["timestamp"] = pd.to_datetime(audit_df["timestamp"])
+                        audit_df = audit_df.sort_values("timestamp", ascending=False)
+                        st.dataframe(audit_df, use_container_width=True, hide_index=True)
+                        
+                        # Filter by action type
+                        action_types = audit_df["action"].unique().tolist()
+                        selected_action = st.selectbox("Filter by action:", ["All"] + action_types)
+                        if selected_action != "All":
+                            filtered_audit = audit_df[audit_df["action"] == selected_action]
+                            st.dataframe(filtered_audit, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No audit entries yet.")
+                except Exception as e:
+                    st.error(f"Error loading audit log: {e}")
+            else:
+                st.info("Audit log file not found. Audit entries will be created as you use the system.")
+
+# Data Validation Dashboard (Admin Only)
+if is_admin:
+    with st.expander("🔍 Data Quality Validation (Admin Only)", expanded=False):
+        st.markdown("### Data Quality Metrics")
+        
+        validation_issues = []
+        validation_stats = {}
+        
+        # Check for missing required fields
+        required_fields = ['Agent', 'Call Date', 'QA Score', 'Label']
+        for field in required_fields:
+            if field in meta_df.columns:
+                missing_count = meta_df[field].isna().sum()
+                total_count = len(meta_df)
+                missing_pct = (missing_count / total_count * 100) if total_count > 0 else 0
+                validation_stats[field] = {
+                    'missing': missing_count,
+                    'total': total_count,
+                    'pct': missing_pct
+                }
+                if missing_count > 0:
+                    validation_issues.append(f"**{field}**: {missing_count} missing ({missing_pct:.1f}%)")
+        
+        # Check for invalid QA scores
+        if "QA Score" in meta_df.columns:
+            invalid_scores = meta_df[(meta_df["QA Score"] < 0) | (meta_df["QA Score"] > 100)]
+            invalid_count = len(invalid_scores)
+            if invalid_count > 0:
+                validation_issues.append(f"**QA Score**: {invalid_count} invalid scores (outside 0-100%)")
+            validation_stats['Invalid QA Scores'] = invalid_count
+        
+        # Check for missing rubric details
+        if "Rubric Details" in meta_df.columns:
+            missing_rubric = meta_df["Rubric Details"].isna().sum()
+            if missing_rubric > 0:
+                validation_issues.append(f"**Rubric Details**: {missing_rubric} calls missing rubric data")
+            validation_stats['Missing Rubric'] = missing_rubric
+        
+        # Check for duplicate call IDs
+        if "Call ID" in meta_df.columns:
+            duplicates = meta_df[meta_df["Call ID"].duplicated(keep=False)]
+            duplicate_count = len(duplicates)
+            if duplicate_count > 0:
+                validation_issues.append(f"**Call ID**: {duplicate_count} duplicate call IDs found")
+            validation_stats['Duplicate Call IDs'] = duplicate_count
+        
+        # Display validation results
+        if validation_issues:
+            st.warning(f"⚠️ Found {len(validation_issues)} data quality issue(s):")
+            for issue in validation_issues:
+                st.markdown(f"- {issue}")
+        else:
+            st.success("✅ No data quality issues detected!")
+        
+        # Show detailed stats table
+        if validation_stats:
+            st.markdown("### Detailed Statistics")
+            stats_df = pd.DataFrame([
+                {'Field': k, 'Missing/Invalid Count': v.get('missing', v) if isinstance(v, dict) else v, 
+                 'Total': v.get('total', 'N/A') if isinstance(v, dict) else 'N/A',
+                 'Percentage': f"{v.get('pct', 0):.1f}%" if isinstance(v, dict) else 'N/A'}
+                for k, v in validation_stats.items()
+            ])
+            st.dataframe(stats_df, use_container_width=True, hide_index=True)
 
 # Summary Metrics
 if show_comparison and user_agent_id:
@@ -1453,6 +2157,35 @@ st.subheader("📋 Individual Call Details")
 if len(filtered_df) > 0:
     call_options = filtered_df["Call ID"].tolist()
     if call_options:
+        # Call selection for export
+        st.markdown("### Select Calls for Export")
+        select_all_col1, select_all_col2 = st.columns([1, 4])
+        with select_all_col1:
+            if st.button("✅ Select All", use_container_width=True):
+                st.session_state.selected_call_ids = call_options.copy()
+                st.rerun()
+        with select_all_col2:
+            if st.button("❌ Clear Selection", use_container_width=True):
+                st.session_state.selected_call_ids = []
+                st.rerun()
+        
+        # Multi-select for calls
+        if 'selected_call_ids' not in st.session_state:
+            st.session_state.selected_call_ids = []
+        
+        selected_for_export = st.multiselect(
+            "Choose calls to export (you can select multiple):",
+            options=call_options,
+            default=st.session_state.selected_call_ids,
+            format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID']==x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID']==x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID']==x]['QA Score'].iloc[0]) else 'N/A'}%"
+        )
+        st.session_state.selected_call_ids = selected_for_export
+        
+        if selected_for_export:
+            st.info(f"📋 {len(selected_for_export)} call(s) selected for export")
+        
+        st.markdown("---")
+        st.markdown("### View Call Details")
         selected_call_id = st.selectbox(
             "Select a call to view details:",
             options=call_options,
@@ -1474,7 +2207,10 @@ if len(filtered_df) > 0:
                 st.write(f"**QA Score:** {qa_score}%" if isinstance(qa_score, (int, float)) else f"**QA Score:** {qa_score}")
                 st.write(f"**Label:** {call_details.get('Label', 'N/A')}")
                 call_dur = call_details.get('Call Duration (min)', 'N/A')
-                st.write(f"**Call Length:** {call_dur} min" if isinstance(call_dur, (int, float)) else f"**Call Length:** {call_dur}")
+                if isinstance(call_dur, (int, float)):
+                    st.write(f"**Call Length:** {call_dur:.2f} min")
+                else:
+                    st.write(f"**Call Length:** {call_dur}")
                 
                 st.write("**Reason:**")
                 st.write(call_details.get('Reason', 'N/A'))
@@ -1516,6 +2252,12 @@ if len(filtered_df) > 0:
                 
                 # Export individual call report
                 st.markdown("---")
+                call_dur_export = call_details.get('Call Duration (min)', 'N/A')
+                if isinstance(call_dur_export, (int, float)):
+                    call_dur_formatted = f"{call_dur_export:.2f}"
+                else:
+                    call_dur_formatted = call_dur_export
+                
                 report_text = f"""
 # QA Call Report
 
@@ -1526,7 +2268,7 @@ if len(filtered_df) > 0:
 - **Time:** {call_details.get('Call Time', 'N/A')}
 - **QA Score:** {call_details.get('QA Score', 'N/A')}%
 - **Label:** {call_details.get('Label', 'N/A')}
-- **Call Length:** {call_details.get('Call Duration (min)', 'N/A')} min
+- **Call Length:** {call_dur_formatted} min
 
 ## Call Details
 **Reason:** {call_details.get('Reason', 'N/A')}
@@ -1664,14 +2406,342 @@ if "Reason" in filtered_df.columns or "Outcome" in filtered_df.columns:
                 plt.tight_layout()
                 st.pyplot(fig_outcome)
 
+# --- Anomaly Detection ---
+st.markdown("---")
+st.subheader("🚨 Anomaly Detection")
+
+if "QA Score" in filtered_df.columns and "Call Date" in filtered_df.columns and len(filtered_df) > 1:
+    # Detect anomalies: sudden score drops/spikes
+    filtered_df_sorted = filtered_df.sort_values("Call Date")
+    
+    # Calculate rolling average (last 5 calls)
+    filtered_df_sorted["Rolling_Avg"] = filtered_df_sorted["QA Score"].rolling(window=5, min_periods=1).mean()
+    filtered_df_sorted["Score_Change"] = filtered_df_sorted["QA Score"] - filtered_df_sorted["Rolling_Avg"]
+    
+    # Define anomaly thresholds
+    anomaly_threshold = 20  # 20 point deviation from rolling average
+    anomalies = filtered_df_sorted[
+        (filtered_df_sorted["Score_Change"].abs() > anomaly_threshold)
+    ].copy()
+    
+    if len(anomalies) > 0:
+        st.warning(f"⚠️ **{len(anomalies)} anomaly/anomalies detected:**")
+        
+        anomaly_col1, anomaly_col2 = st.columns(2)
+        
+        with anomaly_col1:
+            st.write("**Score Drops (Sudden Decreases)**")
+            drops = anomalies[anomalies["Score_Change"] < -anomaly_threshold].sort_values("Score_Change")
+            if len(drops) > 0:
+                drop_display = drops[["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]].head(10)
+                drop_display["Score_Change"] = drop_display["Score_Change"].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(drop_display, use_container_width=True, hide_index=True)
+            else:
+                st.info("No significant score drops detected")
+        
+        with anomaly_col2:
+            st.write("**Score Spikes (Sudden Increases)**")
+            spikes = anomalies[anomalies["Score_Change"] > anomaly_threshold].sort_values("Score_Change", ascending=False)
+            if len(spikes) > 0:
+                spike_display = spikes[["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]].head(10)
+                spike_display["Score_Change"] = spike_display["Score_Change"].apply(lambda x: f"+{x:.1f}%")
+                st.dataframe(spike_display, use_container_width=True, hide_index=True)
+            else:
+                st.info("No significant score spikes detected")
+        
+        # Anomaly trend chart
+        st.write("**Anomaly Timeline**")
+        fig_anomaly, ax_anomaly = plt.subplots(figsize=(14, 6))
+        ax_anomaly.plot(filtered_df_sorted["Call Date"], filtered_df_sorted["QA Score"], alpha=0.3, label="QA Score", color="gray")
+        ax_anomaly.plot(filtered_df_sorted["Call Date"], filtered_df_sorted["Rolling_Avg"], label="Rolling Average", color="blue", linewidth=2)
+        ax_anomaly.scatter(anomalies["Call Date"], anomalies["QA Score"], color="red", s=100, label="Anomalies", zorder=5)
+        ax_anomaly.set_xlabel("Call Date")
+        ax_anomaly.set_ylabel("QA Score (%)")
+        ax_anomaly.set_title("QA Score with Anomaly Detection")
+        ax_anomaly.legend()
+        ax_anomaly.grid(True, alpha=0.3)
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        st.pyplot(fig_anomaly)
+    else:
+        st.success("✅ No anomalies detected in the filtered data")
+else:
+    st.info("ℹ️ Need at least 2 calls with QA scores to detect anomalies")
+
+# --- Advanced Analytics ---
+st.markdown("---")
+st.subheader("📊 Advanced Analytics")
+
+analytics_tab1, analytics_tab2, analytics_tab3 = st.tabs(["📅 Week-over-Week Comparison", "📈 Agent Improvement Trends", "❌ Failure Analysis"])
+
+with analytics_tab1:
+    st.markdown("### Week-over-Week Performance Comparison")
+    
+    if "Call Date" in filtered_df.columns and "QA Score" in filtered_df.columns:
+        # Group by week
+        filtered_df["Week"] = pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
+        weekly_stats = filtered_df.groupby("Week").agg({
+            "QA Score": ["mean", "count"],
+            "Rubric Pass Count": "sum",
+            "Rubric Fail Count": "sum"
+        }).reset_index()
+        
+        weekly_stats.columns = ["Week", "Avg_QA_Score", "Call_Count", "Total_Pass", "Total_Fail"]
+        weekly_stats["Pass_Rate"] = (weekly_stats["Total_Pass"] / (weekly_stats["Total_Pass"] + weekly_stats["Total_Fail"]) * 100).fillna(0)
+        weekly_stats = weekly_stats.sort_values("Week")
+        
+        if len(weekly_stats) > 1:
+            # Calculate week-over-week change
+            weekly_stats["WoW_Score_Change"] = weekly_stats["Avg_QA_Score"].diff()
+            weekly_stats["WoW_PassRate_Change"] = weekly_stats["Pass_Rate"].diff()
+            weekly_stats["WoW_CallCount_Change"] = weekly_stats["Call_Count"].diff()
+            
+            wow_col1, wow_col2 = st.columns(2)
+            
+            with wow_col1:
+                st.write("**QA Score Week-over-Week**")
+                fig_wow_score, ax_wow_score = plt.subplots(figsize=(12, 6))
+                ax_wow_score.plot(weekly_stats["Week"], weekly_stats["Avg_QA_Score"], marker="o", linewidth=2, label="Avg QA Score")
+                ax_wow_score.set_xlabel("Week")
+                ax_wow_score.set_ylabel("Average QA Score (%)")
+                ax_wow_score.set_title("Week-over-Week QA Score Trend")
+                ax_wow_score.grid(True, alpha=0.3)
+                ax_wow_score.legend()
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                st.pyplot(fig_wow_score)
+                
+                # Show WoW changes
+                st.write("**Week-over-Week Changes**")
+                wow_display = weekly_stats[["Week", "Avg_QA_Score", "WoW_Score_Change", "Call_Count", "WoW_CallCount_Change"]].copy()
+                wow_display["WoW_Score_Change"] = wow_display["WoW_Score_Change"].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+                wow_display["WoW_CallCount_Change"] = wow_display["WoW_CallCount_Change"].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
+                wow_display.columns = ["Week", "Avg QA Score", "WoW Change", "Call Count", "WoW Count Change"]
+                st.dataframe(wow_display, use_container_width=True, hide_index=True)
+            
+            with wow_col2:
+                st.write("**Pass Rate Week-over-Week**")
+                fig_wow_pass, ax_wow_pass = plt.subplots(figsize=(12, 6))
+                ax_wow_pass.plot(weekly_stats["Week"], weekly_stats["Pass_Rate"], marker="s", linewidth=2, color="green", label="Pass Rate")
+                ax_wow_pass.set_xlabel("Week")
+                ax_wow_pass.set_ylabel("Pass Rate (%)")
+                ax_wow_pass.set_title("Week-over-Week Pass Rate Trend")
+                ax_wow_pass.grid(True, alpha=0.3)
+                ax_wow_pass.legend()
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                st.pyplot(fig_wow_pass)
+        else:
+            st.info("ℹ️ Need at least 2 weeks of data for week-over-week comparison")
+
+with analytics_tab2:
+    st.markdown("### Agent Improvement Trends")
+    
+    if "Agent" in filtered_df.columns and "Call Date" in filtered_df.columns and "QA Score" in filtered_df.columns:
+        # Group by agent and week
+        filtered_df["Week"] = pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
+        agent_weekly = filtered_df.groupby(["Agent", "Week"]).agg({
+            "QA Score": "mean",
+            "Call ID": "count"
+        }).reset_index()
+        agent_weekly.columns = ["Agent", "Week", "Avg_QA_Score", "Call_Count"]
+        
+        # Calculate improvement (first week vs last week for each agent)
+        agent_improvement = []
+        for agent in agent_weekly["Agent"].unique():
+            agent_data = agent_weekly[agent_weekly["Agent"] == agent].sort_values("Week")
+            if len(agent_data) > 1:
+                first_score = agent_data.iloc[0]["Avg_QA_Score"]
+                last_score = agent_data.iloc[-1]["Avg_QA_Score"]
+                improvement = last_score - first_score
+                agent_improvement.append({
+                    "Agent": agent,
+                    "First Week Score": f"{first_score:.1f}%",
+                    "Last Week Score": f"{last_score:.1f}%",
+                    "Improvement": f"{improvement:+.1f}%",
+                    "Trend": "📈 Improving" if improvement > 0 else "📉 Declining" if improvement < 0 else "➡️ Stable"
+                })
+        
+        if agent_improvement:
+            improvement_df = pd.DataFrame(agent_improvement)
+            improvement_df = improvement_df.sort_values("Improvement", key=lambda x: x.str.replace('%', '').str.replace('+', '').astype(float), ascending=False)
+            st.dataframe(improvement_df, use_container_width=True, hide_index=True)
+            
+            # Show trend chart for selected agents
+            selected_agents_trend = st.multiselect(
+                "Select agents to view trend:",
+                options=filtered_df["Agent"].unique().tolist(),
+                default=filtered_df["Agent"].unique().tolist()[:5] if len(filtered_df["Agent"].unique()) > 5 else filtered_df["Agent"].unique().tolist()
+            )
+            
+            if selected_agents_trend:
+                fig_agent_trend, ax_agent_trend = plt.subplots(figsize=(14, 6))
+                for agent in selected_agents_trend:
+                    agent_data = agent_weekly[agent_weekly["Agent"] == agent].sort_values("Week")
+                    ax_agent_trend.plot(agent_data["Week"], agent_data["Avg_QA_Score"], marker="o", label=agent, linewidth=2)
+                
+                ax_agent_trend.set_xlabel("Week")
+                ax_agent_trend.set_ylabel("Average QA Score (%)")
+                ax_agent_trend.set_title("Agent Performance Trends Over Time")
+                ax_agent_trend.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                ax_agent_trend.grid(True, alpha=0.3)
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                st.pyplot(fig_agent_trend)
+        else:
+            st.info("ℹ️ Need multiple weeks of data per agent to show improvement trends")
+    else:
+        st.warning("⚠️ Missing required columns for agent improvement analysis")
+
+with analytics_tab3:
+    st.markdown("### Most Common Failure Reasons")
+    
+    if "Rubric Details" in filtered_df.columns:
+        # Collect all failed rubric codes with their frequencies
+        failure_reasons = {}
+        for idx, row in filtered_df.iterrows():
+            rubric_details = row.get("Rubric Details", {})
+            if isinstance(rubric_details, dict):
+                for code, details in rubric_details.items():
+                    if isinstance(details, dict) and details.get('status', '').lower() == 'fail':
+                        if code not in failure_reasons:
+                            failure_reasons[code] = {
+                                'count': 0,
+                                'calls': set(),
+                                'notes': []
+                            }
+                        failure_reasons[code]['count'] += 1
+                        failure_reasons[code]['calls'].add(row.get('Call ID', ''))
+                        note = details.get('note', '')
+                        if note and note not in failure_reasons[code]['notes']:
+                            failure_reasons[code]['notes'].append(note)
+        
+        if failure_reasons:
+            # Sort by frequency
+            sorted_failures = sorted(failure_reasons.items(), key=lambda x: x[1]['count'], reverse=True)
+            
+            failure_col1, failure_col2 = st.columns([2, 1])
+            
+            with failure_col1:
+                st.write("**Top Failure Reasons**")
+                failure_data = []
+                for code, data in sorted_failures[:20]:  # Top 20
+                    failure_data.append({
+                        "Rubric Code": code,
+                        "Failure Count": data['count'],
+                        "Affected Calls": len(data['calls']),
+                        "Sample Notes": data['notes'][0][:50] + "..." if data['notes'] else "N/A"
+                    })
+                
+                failure_df = pd.DataFrame(failure_data)
+                st.dataframe(failure_df, use_container_width=True, hide_index=True)
+            
+            with failure_col2:
+                st.write("**Failure Distribution**")
+                top_10_failures = sorted_failures[:10]
+                codes = [item[0] for item in top_10_failures]
+                counts = [item[1]['count'] for item in top_10_failures]
+                
+                fig_fail, ax_fail = plt.subplots(figsize=(8, 6))
+                ax_fail.barh(range(len(codes)), counts, color="red", alpha=0.7)
+                ax_fail.set_yticks(range(len(codes)))
+                ax_fail.set_yticklabels(codes)
+                ax_fail.set_xlabel("Failure Count")
+                ax_fail.set_title("Top 10 Failure Reasons")
+                plt.tight_layout()
+                st.pyplot(fig_fail)
+            
+            # Show detailed view for selected failure code
+            selected_failure_code = st.selectbox(
+                "View details for failure code:",
+                options=[code for code, _ in sorted_failures],
+                help="Select a failure code to see detailed information"
+            )
+            
+            if selected_failure_code:
+                failure_info = failure_reasons[selected_failure_code]
+                st.markdown(f"### Failure Code: {selected_failure_code}")
+                st.metric("Total Failures", failure_info['count'])
+                st.metric("Affected Calls", len(failure_info['calls']))
+                
+                if failure_info['notes']:
+                    st.write("**Sample Failure Notes:**")
+                    for note in failure_info['notes'][:5]:  # Show first 5 notes
+                        st.text_area("", value=note, height=50, disabled=True, key=f"note_{hash(note)}")
+        else:
+            st.info("ℹ️ No failed rubric items found in the filtered data")
+    else:
+        st.warning("⚠️ Rubric Details column not found")
+
 # --- Export Options ---
 st.markdown("---")
 st.subheader("📥 Export Data")
 
+# Export Templates
+if 'export_templates' not in st.session_state:
+    st.session_state.export_templates = {
+        "Default (All Columns)": {"columns": "all", "format": "excel"},
+        "Summary Only": {"columns": ["Call ID", "Agent", "Call Date", "QA Score", "Label"], "format": "excel"},
+        "Detailed Report": {"columns": ["Call ID", "Agent", "Call Date", "QA Score", "Label", "Reason", "Outcome", "Summary"], "format": "excel"}
+    }
+
+with st.expander("📋 Export Templates", expanded=False):
+    template_col1, template_col2 = st.columns(2)
+    
+    with template_col1:
+        st.write("**Saved Templates:**")
+        selected_template = st.selectbox(
+            "Choose template:",
+            options=list(st.session_state.export_templates.keys()),
+            help="Select a template to customize or use as-is"
+        )
+    
+    with template_col2:
+        if st.button("➕ Save Current as Template", use_container_width=True):
+            template_name = st.text_input("Template name:", key="new_template_name")
+            if template_name:
+                # Get selected columns (will be set below)
+                st.session_state.export_templates[template_name] = {
+                    "columns": "all",  # Will be customized
+                    "format": "excel"
+                }
+                st.success(f"Template '{template_name}' saved!")
+                st.rerun()
+    
+    # Template customization
+    if selected_template:
+        template = st.session_state.export_templates[selected_template]
+        available_columns = filtered_df.columns.tolist()
+        selected_columns = st.multiselect(
+            "Select columns to export:",
+            options=available_columns,
+            default=template.get("columns", available_columns) if isinstance(template.get("columns"), list) else available_columns,
+            help="Choose which columns to include in export"
+        )
+        export_format = st.radio("Export format:", ["Excel", "CSV"], index=0 if template.get("format") == "excel" else 1)
+        
+        # Update template
+        st.session_state.export_templates[selected_template]["columns"] = selected_columns
+        st.session_state.export_templates[selected_template]["format"] = export_format.lower()
+
+# Get selected template columns
+selected_template_name = st.selectbox("Use template:", ["None"] + list(st.session_state.export_templates.keys()), key="export_template_select")
+if selected_template_name != "None":
+    template = st.session_state.export_templates[selected_template_name]
+    template_columns = template.get("columns", "all")
+    if template_columns == "all":
+        export_df = filtered_df.copy()
+    else:
+        # Only include columns that exist
+        available_template_cols = [col for col in template_columns if col in filtered_df.columns]
+        export_df = filtered_df[available_template_cols].copy()
+else:
+    export_df = filtered_df.copy()
+
 # Create Excel export
 excel_buffer = io.BytesIO()
 with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
-    export_df = filtered_df.copy()
+    export_df_template = export_df.copy()
 
     # Clean data for export
     from datetime import datetime, timezone
@@ -1683,10 +2753,10 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
             return val
         return val
 
-    for col in export_df.columns:
-        export_df[col] = export_df[col].map(_clean)
+    for col in export_df_template.columns:
+        export_df_template[col] = export_df_template[col].map(_clean)
 
-    export_df.to_excel(writer, sheet_name="QA Data", index=False)
+    export_df_template.to_excel(writer, sheet_name="QA Data", index=False)
     
     # Add Agent Leaderboard sheet for admin view
     if not user_agent_id:
@@ -1702,12 +2772,113 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
         agent_perf_export = agent_perf_export.sort_values("Avg_QA_Score", ascending=False)
         agent_perf_export.to_excel(writer, sheet_name="Agent Leaderboard", index=False)
 
-st.download_button(
-    label="📥 Download QA Data (Excel)",
-    data=excel_buffer.getvalue(),
-    file_name=f"qa_report_{start_date}_to_{end_date}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+# Export buttons
+export_col1, export_col2 = st.columns(2)
+
+with export_col1:
+    # Track export generation for audit (download buttons don't have callbacks)
+    export_key = f"export_excel_{start_date}_{end_date}_{len(export_df)}"
+    if export_key not in st.session_state:
+        if current_username and current_username.lower() in ["chloe", "shannon"]:
+            log_audit_event(current_username, "export_data", f"Generated Excel export: {start_date} to {end_date}, {len(export_df)} rows")
+        st.session_state[export_key] = True
+    
+    st.download_button(
+        label="📥 Download QA Data (Excel)",
+        data=excel_buffer.getvalue(),
+        file_name=f"qa_report_{start_date}_to_{end_date}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+with export_col2:
+    # CSV export
+    csv_buffer = io.StringIO()
+    export_df_csv = filtered_df.copy()
+    
+    # Clean data for CSV export
+    from datetime import datetime, timezone
+    def _clean_csv(val):
+        if isinstance(val, (dict, list)):
+            return json.dumps(val)
+        if isinstance(val, datetime) and val.tzinfo is not None:
+            val = val.astimezone(timezone.utc).replace(tzinfo=None)
+            return val
+        return val
+    
+    for col in export_df_csv.columns:
+        export_df_csv[col] = export_df_csv[col].map(_clean_csv)
+    
+    export_df_csv.to_csv(csv_buffer, index=False)
+    
+    # Track export generation for audit
+    export_csv_key = f"export_csv_{start_date}_{end_date}_{len(export_df_csv)}"
+    if export_csv_key not in st.session_state:
+        if current_username and current_username.lower() in ["chloe", "shannon"]:
+            log_audit_event(current_username, "export_data", f"Generated CSV export: {start_date} to {end_date}, {len(export_df_csv)} rows")
+        st.session_state[export_csv_key] = True
+    
+    st.download_button(
+        label="📥 Download QA Data (CSV)",
+        data=csv_buffer.getvalue(),
+        file_name=f"qa_report_{start_date}_to_{end_date}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+# Export selected individual calls (if any are selected)
+if 'selected_call_ids' not in st.session_state:
+    st.session_state.selected_call_ids = []
+
+if len(filtered_df) > 0:
+    st.markdown("### Export Selected Calls")
+    st.caption("Select calls from the 'Individual Call Details' section above, then export them here")
+    
+    # Show selected calls count
+    if st.session_state.selected_call_ids:
+        selected_calls_df = filtered_df[filtered_df['Call ID'].isin(st.session_state.selected_call_ids)]
+        st.info(f"📋 {len(selected_calls_df)} call(s) selected for export")
+        
+        export_selected_col1, export_selected_col2 = st.columns(2)
+        
+        with export_selected_col1:
+            # Excel export for selected calls
+            selected_excel_buffer = io.BytesIO()
+            with ExcelWriter(selected_excel_buffer, engine="xlsxwriter") as writer:
+                selected_export_df = selected_calls_df.copy()
+                for col in selected_export_df.columns:
+                    selected_export_df[col] = selected_export_df[col].map(_clean)
+                selected_export_df.to_excel(writer, sheet_name="Selected Calls", index=False)
+            
+            st.download_button(
+                label="📥 Export Selected (Excel)",
+                data=selected_excel_buffer.getvalue(),
+                file_name=f"selected_calls_{start_date}_to_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        with export_selected_col2:
+            # CSV export for selected calls
+            selected_csv_buffer = io.StringIO()
+            selected_export_df_csv = selected_calls_df.copy()
+            for col in selected_export_df_csv.columns:
+                selected_export_df_csv[col] = selected_export_df_csv[col].map(_clean_csv)
+            selected_export_df_csv.to_csv(selected_csv_buffer, index=False)
+            
+            st.download_button(
+                label="📥 Export Selected (CSV)",
+                data=selected_csv_buffer.getvalue(),
+                file_name=f"selected_calls_{start_date}_to_{end_date}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        if st.button("🗑️ Clear Selection", use_container_width=True):
+            st.session_state.selected_call_ids = []
+            st.rerun()
+    else:
+        st.caption("💡 No calls selected. Select calls from the 'Individual Call Details' section above.")
 
 st.markdown("---")
 st.markdown("Built with ❤️ by [Valence](https://www.getvalenceai.com) | QA Dashboard © 2025")
