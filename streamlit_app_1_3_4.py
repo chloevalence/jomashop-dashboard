@@ -227,11 +227,15 @@ def load_all_calls_internal(max_files=None):
         
         # Initialize progress tracking in session state
         if 'pdf_processing_progress' not in st.session_state:
-            st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0}
+            st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0, 'processing_start_time': None}
         else:
             st.session_state.pdf_processing_progress['total'] = total
             st.session_state.pdf_processing_progress['processed'] = 0
             st.session_state.pdf_processing_progress['errors'] = 0
+        
+        # Track actual processing start time
+        processing_start_time = time.time()
+        st.session_state.pdf_processing_progress['processing_start_time'] = processing_start_time
         
         # Process PDFs in parallel (max 10 workers to avoid overwhelming S3/CPU)
         with ThreadPoolExecutor(max_workers=10) as executor:
@@ -261,6 +265,12 @@ def load_all_calls_internal(max_files=None):
             st.session_state['processed_s3_keys'] = set()
         processed_keys = {call.get('_s3_key') for call in all_calls if call.get('_s3_key')}
         st.session_state['processed_s3_keys'].update(processed_keys)
+        
+        # Store actual processing time in session state
+        if 'processing_start_time' in st.session_state.pdf_processing_progress:
+            actual_processing_time = time.time() - st.session_state.pdf_processing_progress['processing_start_time']
+            st.session_state['last_actual_processing_time'] = actual_processing_time
+            st.session_state['last_processing_file_count'] = len(all_calls)
         
         # Return with info about total vs loaded
         return all_calls, errors
@@ -788,6 +798,7 @@ try:
     status_text.text("📥 Loading PDF files from S3...")
     
     t0 = time.time()
+    was_processing = False  # Track if we actually processed files
     
     # Check if we have merged data from smart refresh
     if 'merged_calls' in st.session_state:
@@ -842,9 +853,10 @@ try:
             st.stop()
         
         # Clear progress after loading
-        if st.session_state.pdf_processing_progress['total'] > 0:
+        was_processing = st.session_state.pdf_processing_progress.get('total', 0) > 0
+        if was_processing:
             progress_placeholder.empty()
-            st.session_state.pdf_processing_progress = {'processed': 0, 'total': 0, 'errors': 0}
+            st.session_state.pdf_processing_progress = {'processed': 0, 'total': 0, 'errors': 0, 'processing_start_time': None}
         
         elapsed = time.time() - t0
         status_text.empty()
@@ -883,7 +895,27 @@ try:
             st.stop()
     
     if call_data:
-        st.success(f"✅ Loaded {len(call_data)} calls in {elapsed:.2f}s")
+        # Check if we actually processed files or loaded from cache
+        if was_processing and 'last_actual_processing_time' in st.session_state:
+            # We actually processed files - show actual processing time
+            actual_time = st.session_state['last_actual_processing_time']
+            file_count = st.session_state.get('last_processing_file_count', len(call_data))
+            if actual_time > 60:
+                time_str = f"{actual_time/60:.1f} minutes"
+            else:
+                time_str = f"{actual_time:.1f}s"
+            st.success(f"✅ Loaded {file_count} calls in {time_str}")
+        elif 'last_actual_processing_time' in st.session_state:
+            # Data loaded from cache - show when it was last processed
+            last_time = st.session_state['last_actual_processing_time']
+            if last_time > 60:
+                time_str = f"{last_time/60:.1f} minutes"
+            else:
+                time_str = f"{last_time:.1f}s"
+            st.success(f"✅ Loaded {len(call_data)} calls (from cache, originally processed in {time_str})")
+        else:
+            # First time or no processing time tracked - show cache retrieval time
+            st.success(f"✅ Loaded {len(call_data)} calls (from cache)")
     else:
         st.error("❌ No call data found!")
         st.error("Possible issues:")
