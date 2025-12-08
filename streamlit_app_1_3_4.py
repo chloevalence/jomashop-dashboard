@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 import json
 from xlsxwriter.utility import xl_rowcol_to_cell
 import time
+import re
 from pdf_parser import parse_pdf_from_bytes
 
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
@@ -101,11 +102,12 @@ def load_all_calls_internal(max_files=None):
         # Extract just the keys for processing
         pdf_keys = [item['key'] for item in pdf_keys_with_dates]
         
-        # Download and parse each PDF
+        # Download and parse PDFs in parallel for faster processing
         errors = []
         total = len(pdf_keys)
         
-        for i, key in enumerate(pdf_keys):
+        def process_pdf(key):
+            """Process a single PDF: download, parse, and return result."""
             try:
                 # Download PDF from S3 (with timeout per file)
                 response = s3_client_with_timeout.get_object(Bucket=s3_bucket_name, Key=key)
@@ -121,20 +123,40 @@ def load_all_calls_internal(max_files=None):
                     # Add S3 metadata
                     parsed_data['_id'] = key
                     parsed_data['_s3_key'] = key
-                    all_calls.append(parsed_data)
+                    return parsed_data, None
                 else:
-                    errors.append(f"Failed to parse {filename}")
+                    return None, f"Failed to parse {filename}"
                     
             except Exception as e:
-                # Collect errors to show later
-                errors.append(f"{key}: {str(e)}")
-                continue
+                return None, f"{key}: {str(e)}"
+        
+        # Use parallel processing for faster parsing
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # Process PDFs in parallel (max 10 workers to avoid overwhelming S3/CPU)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            # Submit all tasks
+            future_to_key = {executor.submit(process_pdf, key): key for key in pdf_keys}
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_key):
+                parsed_data, error = future.result()
+                if parsed_data:
+                    all_calls.append(parsed_data)
+                elif error:
+                    errors.append(error)
         
         # Sort by call_date if available (already sorted by S3 date, but this ensures call_date order)
         try:
             all_calls.sort(key=lambda x: x.get('call_date', datetime.min) if isinstance(x.get('call_date'), datetime) else datetime.min, reverse=True)
         except:
             pass  # If sorting fails, just return unsorted
+        
+        # Track processed S3 keys in session state (for smart refresh)
+        if 'processed_s3_keys' not in st.session_state:
+            st.session_state['processed_s3_keys'] = set()
+        processed_keys = {call.get('_s3_key') for call in all_calls if call.get('_s3_key')}
+        st.session_state['processed_s3_keys'].update(processed_keys)
         
         # Return with info about total vs loaded
         if max_files and total_pdfs > max_files:
@@ -155,12 +177,103 @@ def load_all_calls_internal(max_files=None):
     except Exception as e:
         return [], f"Unexpected error loading from S3: {e}"
 
-# Cached wrapper - data is cached for 1 hour
-# First load will take time, subsequent loads within 1 hour will be instant
-@st.cache_data(ttl=3600, show_spinner=False)
+# Cached wrapper - data is cached indefinitely until manually refreshed
+# First load will take time, subsequent loads will be instant
+# Use "Refresh Data" button when new PDFs are added to S3
+# Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
+@st.cache_data(ttl=None, max_entries=1, show_spinner=False)
 def load_all_calls_cached(max_files=None):
-    """Cached wrapper - loads data once, then serves from cache for 1 hour."""
+    """Cached wrapper - loads data once, then serves from cache indefinitely until manually refreshed."""
     return load_all_calls_internal(max_files=max_files)
+
+def load_new_calls_only():
+    """
+    Smart refresh: Only loads PDFs that haven't been processed yet.
+    Returns tuple: (new_call_data_list, error_message, count_of_new_files)
+    """
+    try:
+        # Get already processed keys from session state
+        processed_keys = st.session_state.get('processed_s3_keys', set())
+        
+        # Configure S3 client
+        import botocore.config
+        config = botocore.config.Config(
+            connect_timeout=10,
+            read_timeout=30,
+            retries={'max_attempts': 2}
+        )
+        s3_client_with_timeout = boto3.client(
+            's3',
+            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+            region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            config=config
+        )
+        
+        # List all PDF files in S3
+        paginator = s3_client_with_timeout.get_paginator('list_objects_v2')
+        pages = paginator.paginate(
+            Bucket=s3_bucket_name,
+            Prefix=s3_prefix,
+            MaxKeys=1000
+        )
+        
+        # Find new PDFs (not in processed_keys)
+        new_pdf_keys = []
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    if key.lower().endswith('.pdf') and key not in processed_keys:
+                        new_pdf_keys.append({
+                            'key': key,
+                            'last_modified': obj.get('LastModified', datetime.min)
+                        })
+        
+        if not new_pdf_keys:
+            return [], None, 0  # No new files
+        
+        # Sort by modification date (most recent first)
+        new_pdf_keys.sort(key=lambda x: x['last_modified'], reverse=True)
+        
+        # Process new PDFs
+        new_calls = []
+        errors = []
+        
+        def process_pdf(key):
+            """Process a single PDF: download, parse, and return result."""
+            try:
+                response = s3_client_with_timeout.get_object(Bucket=s3_bucket_name, Key=key)
+                pdf_bytes = response['Body'].read()
+                filename = key.split('/')[-1]
+                parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
+                
+                if parsed_data:
+                    parsed_data['_id'] = key
+                    parsed_data['_s3_key'] = key
+                    return parsed_data, None
+                else:
+                    return None, f"Failed to parse {filename}"
+            except Exception as e:
+                return None, f"{key}: {str(e)}"
+        
+        # Process in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_key = {executor.submit(process_pdf, item['key']): item['key'] for item in new_pdf_keys}
+            
+            for future in as_completed(future_to_key):
+                parsed_data, error = future.result()
+                if parsed_data:
+                    new_calls.append(parsed_data)
+                elif error:
+                    errors.append(error)
+        
+        return new_calls, errors if errors else None, len(new_calls)
+        
+    except Exception as e:
+        return [], f"Error loading new calls: {e}", 0
 
 credentials = st.secrets["credentials"].to_dict()
 cookie = st.secrets["cookie"]
@@ -225,9 +338,54 @@ elif is_admin:
 else:
     st.sidebar.info("👤 User View: All Data")
 
-if st.button("Refresh data"):
-    st.cache_data.clear()
-    st.rerun()
+# Prominent refresh button for when new data is added
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔄 Refresh Data")
+st.sidebar.info("💡 **When to refresh:** Click 'Refresh New Data' after new PDFs are added to S3")
+st.sidebar.caption("ℹ️ **Cache never expires** - Data stays cached until you manually refresh")
+
+# Smart refresh button (available to all users) - only loads new PDFs
+# Note: files_to_load will be defined later, but we'll use None here to get all cached data
+if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs added since last refresh. Fast and efficient!", use_container_width=True, type="primary"):
+    with st.spinner("🔄 Checking for new PDFs..."):
+        new_calls, new_errors, new_count = load_new_calls_only()
+        
+        if new_count > 0:
+            # Get existing cached data - use None to get all cached data regardless of fast mode setting
+            existing_calls, _ = load_all_calls_cached(max_files=None)
+            
+            # Merge new calls with existing
+            all_calls_merged = existing_calls + new_calls
+            
+            # Clear and update cache with merged data
+            load_all_calls_cached.clear()
+            # We need to manually update the cache - store in session state temporarily
+            st.session_state['merged_calls'] = all_calls_merged
+            st.session_state['merged_errors'] = new_errors if new_errors else []
+            
+            # Update processed keys tracking
+            if 'processed_s3_keys' not in st.session_state:
+                st.session_state['processed_s3_keys'] = set()
+            new_keys = {call.get('_s3_key') for call in new_calls if call.get('_s3_key')}
+            st.session_state['processed_s3_keys'].update(new_keys)
+            
+            st.success(f"✅ Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls")
+            if new_errors:
+                st.warning(f"⚠️ {len(new_errors)} file(s) had errors")
+            st.rerun()
+        else:
+            st.info("ℹ️ No new PDFs found. All data is up to date!")
+
+# Admin-only: Full reload button
+if is_admin:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 👑 Admin: Full Reload")
+    if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take a while.", use_container_width=True, type="secondary"):
+        st.cache_data.clear()
+        if 'processed_s3_keys' in st.session_state:
+            del st.session_state['processed_s3_keys']
+        st.success("🔄 Cache cleared! Reloading all data from S3...")
+        st.rerun()
 
 # --- Load Rubric Reference ---
 @st.cache_data
@@ -350,13 +508,29 @@ try:
     
     t0 = time.time()
     
-    # Load data with smart limit - most recent files first
-    # After first load, data is CACHED for 1 hour - subsequent loads will be INSTANT
-    with st.spinner("⏳ Processing PDFs..."):
-        call_data, errors = load_all_calls_cached(max_files=files_to_load)
-    
-    elapsed = time.time() - t0
-    status_text.empty()
+    # Check if we have merged data from smart refresh
+    if 'merged_calls' in st.session_state:
+        # Use merged data from smart refresh
+        call_data = st.session_state['merged_calls']
+        errors = st.session_state.get('merged_errors', [])
+        # Clear the temporary session state
+        del st.session_state['merged_calls']
+        if 'merged_errors' in st.session_state:
+            del st.session_state['merged_errors']
+        # Update cache with merged data (by calling the cached function)
+        load_all_calls_cached.clear()
+        # Note: We can't directly update cache, so we'll let it reload on next access
+        elapsed = time.time() - t0
+        status_text.empty()
+    else:
+        # Normal load from cache or S3
+        # Load data with smart limit - most recent files first
+        # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
+        with st.spinner("⏳ Processing PDFs..."):
+            call_data, errors = load_all_calls_cached(max_files=files_to_load)
+        
+        elapsed = time.time() - t0
+        status_text.empty()
     
     # Handle errors - could be a tuple (errors_list, info_message) or just errors
     if errors:
@@ -412,6 +586,33 @@ if "call_date" in meta_df.columns:
     # If call_date is already datetime, keep it; otherwise try to parse
     if meta_df["call_date"].dtype == 'object':
         meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
+
+# --- Normalize Agent IDs to bpagent## format ---
+def normalize_agent_id(agent_str):
+    """Normalize agent ID to bpagent## format (e.g., bpagent01, bpagent02)"""
+    if pd.isna(agent_str) or not agent_str:
+        return agent_str
+    
+    agent_str = str(agent_str).lower().strip()
+    
+    # Extract number from bpagent### pattern (could be bpagent01, bpagent030844482, etc.)
+    match = re.search(r'bpagent(\d+)', agent_str)
+    if match:
+        # Get the number and take only first 2 digits (or pad to 2 digits)
+        agent_num = match.group(1)
+        # If number is longer than 2 digits, take first 2; otherwise pad to 2 digits
+        if len(agent_num) >= 2:
+            agent_num = agent_num[:2]  # Take first 2 digits
+        else:
+            agent_num = agent_num.zfill(2)  # Pad to 2 digits
+        return f"bpagent{agent_num}"
+    
+    # If no match, return as is
+    return agent_str
+
+# Normalize agent IDs
+if "agent" in meta_df.columns:
+    meta_df["agent"] = meta_df["agent"].apply(normalize_agent_id)
 
 # --- Normalize QA fields ---
 meta_df.rename(columns={
@@ -472,6 +673,10 @@ if ("Call Date" not in meta_df.columns) or meta_df["Call Date"].isna().all():
 meta_df.dropna(subset=["Call Date"], inplace=True)
 
 # --- Determine if agent view or admin view ---
+# Normalize user_agent_id if it exists
+if user_agent_id:
+    user_agent_id = normalize_agent_id(user_agent_id)
+
 # If user has agent_id, automatically filter to their data
 if user_agent_id:
     # Agent view - filter to their calls only
@@ -748,7 +953,7 @@ else:
 # --- Agent Leaderboard ---
 if not user_agent_id:
     # Admin view - show all agents
-    st.subheader("🏆 Agent Performance")
+    st.subheader("🏆 Agent Leaderboard")
     agent_performance = filtered_df.groupby("Agent").agg(
         Total_Calls=("Call ID", "count"),
         Avg_QA_Score=("QA Score", "mean"),
@@ -1505,7 +1710,20 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
         export_df[col] = export_df[col].map(_clean)
     
     export_df.to_excel(writer, sheet_name="QA Data", index=False)
-    agent_performance.to_excel(writer, sheet_name="Agent Performance", index=False)
+    
+    # Add Agent Leaderboard sheet for admin view
+    if not user_agent_id:
+        # Recalculate agent performance for export
+        agent_perf_export = filtered_df.groupby("Agent").agg(
+            Total_Calls=("Call ID", "count"),
+            Avg_QA_Score=("QA Score", "mean"),
+            Total_Pass=("Rubric Pass Count", "sum"),
+            Total_Fail=("Rubric Fail Count", "sum"),
+            Avg_Call_Duration=("Call Duration (min)", "mean")
+        ).reset_index()
+        agent_perf_export["Pass_Rate"] = (agent_perf_export["Total_Pass"] / (agent_perf_export["Total_Pass"] + agent_perf_export["Total_Fail"]) * 100).fillna(0)
+        agent_perf_export = agent_perf_export.sort_values("Avg_QA_Score", ascending=False)
+        agent_perf_export.to_excel(writer, sheet_name="Agent Leaderboard", index=False)
 
 st.download_button(
     label="📥 Download QA Data (Excel)",
