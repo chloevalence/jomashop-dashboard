@@ -806,14 +806,19 @@ try:
     # Quick count of PDFs (approximate, for display) with timeout
     pdf_count = None
     try:
+        logger.info("Creating S3 paginator...")
         paginator = test_client.get_paginator('list_objects_v2')
+        logger.info("Starting pagination...")
         pages = paginator.paginate(Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=100)
+        logger.info("Counting PDF files from pages...")
         pdf_count = sum(1 for page in pages for obj in page.get('Contents', []) if obj['Key'].lower().endswith('.pdf'))
         logger.info(f"Found approximately {pdf_count} PDF files")
         # Note: This is approximate if there are >100 files, actual count will be shown after loading
     except Exception as list_error:
         logger.warning(f"Could not count PDFs: {list_error}")
         pdf_count = None  # If counting fails, just continue
+    
+    logger.info("PDF file listing completed, proceeding to data loading...")
     
 except ClientError as e:
     status_text.empty()
@@ -843,14 +848,19 @@ except Exception as e:
 # First load will process all PDFs, then cached indefinitely for instant access
 
 # Now load the actual data
+logger.info("Entering data loading section...")
 try:
     status_text.text("📥 Loading PDF files from S3...")
+    logger.info("Status text updated, starting timer...")
     
     t0 = time.time()
     was_processing = False  # Track if we actually processed files
+    logger.info(f"Timer started at {t0}")
     
     # Check if we have merged data from smart refresh
+    logger.info("Checking for merged calls in session state...")
     if 'merged_calls' in st.session_state:
+        logger.info("Found merged calls in session state, using cached data")
         # Use merged data from smart refresh
         call_data = st.session_state['merged_calls']
         errors = st.session_state.get('merged_errors', [])
@@ -863,18 +873,25 @@ try:
         # Note: We can't directly update cache, so we'll let it reload on next access
         elapsed = time.time() - t0
         status_text.empty()
+        logger.info(f"Merged data loaded in {elapsed:.2f} seconds")
     else:
+        logger.info("No merged calls found, proceeding with normal load from cache or S3")
         # Normal load from cache or S3
         # Load all files - first load will process all PDFs, then cached indefinitely for instant access
         # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
+        logger.info("Setting up progress tracking...")
         
         # Initialize progress tracking
         if 'pdf_processing_progress' not in st.session_state:
             st.session_state.pdf_processing_progress = {'processed': 0, 'total': 0, 'errors': 0}
+            logger.info("Initialized new progress tracking in session state")
+        else:
+            logger.info("Using existing progress tracking from session state")
         
         # Create progress bar placeholder
         progress_placeholder = st.empty()
         progress_bar = None
+        logger.info("Progress placeholder created")
         
         # Show progress if we're processing files
         def update_progress():
@@ -890,16 +907,24 @@ try:
         # User can click "Reload ALL Data" to get everything
         initial_load_limit = st.session_state.get('initial_load_complete', False)
         max_files_for_initial_load = None if initial_load_limit else 50  # Load only 50 most recent on first run
+        logger.info(f"Initial load limit check: initial_load_complete={initial_load_limit}, max_files={max_files_for_initial_load}")
         
         try:
             logger.info(f"Starting data load from cache or S3... (max_files={max_files_for_initial_load if not initial_load_limit else None})")
+            logger.info("About to call load_all_calls_cached...")
             with st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets."):
                 # Add progress indicator
                 if not initial_load_limit:
                     status_text.text("📥 Loading first 50 most recent PDFs... (Click 'Reload ALL Data' for complete dataset)")
+                    logger.info("Set status text for initial limited load")
                 else:
                     status_text.text("📥 Loading data... (This may take a while on first load)")
+                    logger.info("Set status text for full load")
+                
+                logger.info("Calling load_all_calls_cached now...")
                 call_data, errors = load_all_calls_cached(max_files=max_files_for_initial_load)
+                logger.info(f"load_all_calls_cached returned. call_data length: {len(call_data) if call_data else 0}, errors: {type(errors)}")
+                
                 if not initial_load_limit and call_data:
                     st.session_state['initial_load_complete'] = True
                     logger.info(f"Initial load completed. Loaded {len(call_data)} calls (limited to most recent 50)")
