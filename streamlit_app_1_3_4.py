@@ -159,10 +159,7 @@ def load_all_calls_internal(max_files=None):
         st.session_state['processed_s3_keys'].update(processed_keys)
         
         # Return with info about total vs loaded
-        if max_files and total_pdfs > max_files:
-            return all_calls, (errors, f"⚡ Fast Mode: Loaded {len(all_calls)} most recent files out of {total_pdfs} total PDF files. Use 'Load All Files' button for complete data.")
-        else:
-            return all_calls, errors
+        return all_calls, errors
         
     except NoCredentialsError:
         return [], "AWS credentials not found. Please configure S3 credentials in secrets."
@@ -350,8 +347,14 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
     with st.spinner("🔄 Checking for new PDFs..."):
         new_calls, new_errors, new_count = load_new_calls_only()
         
-        if new_count > 0:
-            # Get existing cached data - use None to get all cached data regardless of fast mode setting
+        # Check if there was an overall error (returns string instead of list)
+        if isinstance(new_errors, str):
+            # Overall error occurred (e.g., network timeout, S3 access issue)
+            st.error(f"❌ Error refreshing data: {new_errors}")
+            st.info("💡 Try using 'Reload ALL Data' button if the issue persists")
+        elif new_count > 0:
+            # Successfully found and processed new files
+            # Get existing cached data - use None to get all cached data
             existing_calls, _ = load_all_calls_cached(max_files=None)
             
             # Merge new calls with existing
@@ -374,6 +377,7 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
                 st.warning(f"⚠️ {len(new_errors)} file(s) had errors")
             st.rerun()
         else:
+            # No new files found and no errors
             st.info("ℹ️ No new PDFs found. All data is up to date!")
 
 # Admin-only: Full reload button
@@ -470,41 +474,12 @@ except Exception as e:
         st.code(traceback.format_exc())
     st.stop()
 
-# --- Smart Loading: Load most recent files first for fast access ---
-# Load 150 most recent files by default for fast access
-DEFAULT_LOAD_LIMIT = 150
-
-# Check if user wants to load all files
-if 'load_all_files' not in st.session_state:
-    st.session_state.load_all_files = False
-
-# Sidebar info about loading mode
-st.sidebar.markdown("---")
-if st.session_state.load_all_files:
-    st.sidebar.info("📊 **Loading Mode:** All Files")
-else:
-    st.sidebar.success(f"⚡ **Fast Mode:** Loading {DEFAULT_LOAD_LIMIT} most recent files")
-
-# Button in sidebar to toggle loading all files
-if st.sidebar.button("🔄 Load All Files", help="Load all PDF files (may take longer)", use_container_width=True):
-    st.session_state.load_all_files = True
-    st.cache_data.clear()  # Clear cache to reload
-    st.rerun()
-
-if st.sidebar.button("⚡ Fast Mode (Recent Only)", help=f"Load only the {DEFAULT_LOAD_LIMIT} most recent files for faster access", use_container_width=True):
-    st.session_state.load_all_files = False
-    st.cache_data.clear()  # Clear cache to reload
-    st.rerun()
-
-# Determine how many files to load
-files_to_load = None if st.session_state.load_all_files else DEFAULT_LOAD_LIMIT
+# Always load all files - caching handles performance
+# First load will process all PDFs, then cached indefinitely for instant access
 
 # Now load the actual data
 try:
-    if files_to_load:
-        status_text.text(f"⚡ Loading {files_to_load} most recent PDF files (fast mode)...")
-    else:
-        status_text.text("📥 Loading ALL PDF files from S3 (this may take a while)...")
+    status_text.text("📥 Loading PDF files from S3...")
     
     t0 = time.time()
     
@@ -524,10 +499,10 @@ try:
         status_text.empty()
     else:
         # Normal load from cache or S3
-        # Load data with smart limit - most recent files first
+        # Load all files - first load will process all PDFs, then cached indefinitely for instant access
         # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
         with st.spinner("⏳ Processing PDFs..."):
-            call_data, errors = load_all_calls_cached(max_files=files_to_load)
+            call_data, errors = load_all_calls_cached(max_files=None)
         
         elapsed = time.time() - t0
         status_text.empty()
@@ -610,10 +585,6 @@ def normalize_agent_id(agent_str):
     # If no match, return as is
     return agent_str
 
-# Normalize agent IDs
-if "agent" in meta_df.columns:
-    meta_df["agent"] = meta_df["agent"].apply(normalize_agent_id)
-
 # --- Normalize QA fields ---
 meta_df.rename(columns={
     "company":        "Company",
@@ -671,6 +642,11 @@ if ("Call Date" not in meta_df.columns) or meta_df["Call Date"].isna().all():
         st.stop()
 
 meta_df.dropna(subset=["Call Date"], inplace=True)
+
+# Normalize agent IDs AFTER column rename (works for both cached and new data)
+# This ensures normalization works regardless of whether data came from cache or fresh load
+if "Agent" in meta_df.columns:
+    meta_df["Agent"] = meta_df["Agent"].apply(normalize_agent_id)
 
 # --- Determine if agent view or admin view ---
 # Normalize user_agent_id if it exists
@@ -735,6 +711,7 @@ else:
         st.warning("⚠️ Please select a valid date range.")
         st.stop()
 
+# Extract start_date and end_date from selected_dates (works for both preset and custom)
 start_date, end_date = selected_dates
 
 # Agent filter (only for admin view)
@@ -955,7 +932,7 @@ if not user_agent_id:
     # Admin view - show all agents
     st.subheader("🏆 Agent Leaderboard")
     agent_performance = filtered_df.groupby("Agent").agg(
-        Total_Calls=("Call ID", "count"),
+            Total_Calls=("Call ID", "count"),
         Avg_QA_Score=("QA Score", "mean"),
         Total_Pass=("Rubric Pass Count", "sum"),
         Total_Fail=("Rubric Fail Count", "sum"),
@@ -1695,7 +1672,7 @@ st.subheader("📥 Export Data")
 excel_buffer = io.BytesIO()
 with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
     export_df = filtered_df.copy()
-    
+
     # Clean data for export
     from datetime import datetime, timezone
     def _clean(val):
@@ -1705,10 +1682,10 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
             val = val.astimezone(timezone.utc).replace(tzinfo=None)
             return val
         return val
-    
+
     for col in export_df.columns:
         export_df[col] = export_df[col].map(_clean)
-    
+
     export_df.to_excel(writer, sheet_name="QA Data", index=False)
     
     # Add Agent Leaderboard sheet for admin view
