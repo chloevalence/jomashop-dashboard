@@ -1249,19 +1249,62 @@ try:
         # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
         logger.info("Loading data - Streamlit cache will handle it automatically")
         
+        # Show prominent loading message
+        loading_container = st.container()
+        with loading_container:
+            st.info("🔄 **Loading data...** Please wait. This may take 1-2 minutes if loading from S3 for the first time.")
+            st.info("💡 **Tip:** If this takes longer than 5 minutes, refresh the page or check your S3 connection.")
+        
         try:
-            with st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets."):
-                call_data, errors = load_all_calls_cached()
-                logger.info(f"Data loaded. Got {len(call_data) if call_data else 0} calls")
+            # Add timeout wrapper
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Data loading timed out after 5 minutes")
+            
+            # Try to load with better error visibility
+            loading_placeholder = st.empty()
+            with loading_placeholder.container():
+                st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets.")
+            
+            call_data, errors = load_all_calls_cached()
+            logger.info(f"Data loaded. Got {len(call_data) if call_data else 0} calls")
+            
+            # Clear loading messages
+            loading_container.empty()
+            loading_placeholder.empty()
+        except TimeoutError as e:
+            logger.exception("Timeout during data loading")
+            loading_container.empty()
+            loading_placeholder.empty()
+            status_text.empty()
+            st.error("⏱️ **Loading Timeout**")
+            st.error("The data loading is taking too long. This might be due to:")
+            st.error("1. Slow S3 connection")
+            st.error("2. Large number of files to process")
+            st.error("3. Network issues")
+            st.info("💡 **Quick Fixes:**")
+            st.info("1. **Refresh the page** - if cache exists, it will load instantly")
+            st.info("2. **Wait 2-3 minutes** and refresh - the cache may be building")
+            st.info("3. **Check your internet connection**")
+            st.info("4. If you're an admin, try the '🔄 Reload ALL Data' button after refresh")
+            st.stop()
         except Exception as e:
             logger.exception("Error during data loading")
+            loading_container.empty()
+            loading_placeholder.empty()
             status_text.empty()
-            st.error(f"❌ Error loading data: {str(e)}")
+            st.error("❌ **Error Loading Data**")
+            st.error(f"**Error:** {str(e)}")
             st.error("The app may be trying to load too many files at once.")
             st.info("💡 **Try this:**")
-            st.info("1. Clear the cache by clicking '🔄 Reload ALL Data (Admin Only)' button")
-            st.info("2. Or wait a few minutes and refresh the page")
-            st.info("3. If the problem persists, check the terminal/logs for detailed errors")
+            st.info("1. **Refresh the page** - if cache exists, it will load instantly")
+            st.info("2. Clear the cache by clicking '🔄 Reload ALL Data (Admin Only)' button (if you're an admin)")
+            st.info("3. Wait a few minutes and refresh the page")
+            st.info("4. Check the terminal/logs for detailed errors")
+            with st.expander("Show full error details"):
+                import traceback
+                st.code(traceback.format_exc())
             st.stop()
         
         # Clear progress after loading
