@@ -867,7 +867,9 @@ except Exception as e:
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
 # Show view mode
-if user_agent_id:
+if is_anonymous_user:
+    st.sidebar.info("🔒 Anonymous View: De-identified Data")
+elif user_agent_id:
     st.sidebar.info(f"👤 Agent View: {user_agent_id}")
 elif is_admin:
     st.sidebar.info("👑 Admin View: All Data")
@@ -1339,6 +1341,79 @@ except Exception as e:
 
 meta_df = pd.DataFrame(call_data)
 
+# --- ANONYMIZATION FUNCTIONS ---
+# Check if user is anonymous
+is_anonymous_user = current_username and current_username.lower() == "anonymous"
+
+def create_anonymous_mapping(values, prefix="ID"):
+    """
+    Create a consistent mapping from real values to anonymous identifiers.
+    Same input always produces same output for consistency.
+    Uses sorted order to ensure deterministic mapping.
+    """
+    if not is_anonymous_user:
+        return {}
+    
+    # Filter out null/empty values and get unique sorted list for consistency
+    unique_values = sorted([str(v).strip() for v in values if pd.notna(v) and str(v).strip()])
+    
+    # Create mapping: real value -> anonymous ID (Agent-001, Agent-002, etc.)
+    mapping = {}
+    for idx, value in enumerate(unique_values, start=1):
+        mapping[value] = f"{prefix}-{idx:03d}"
+    
+    return mapping
+
+# Store anonymization mappings in session state for consistency across the app
+if 'anonymization_mappings' not in st.session_state:
+    st.session_state.anonymization_mappings = {}
+
+def anonymize_dataframe(df, create_mappings_from=None):
+    """
+    Anonymize identifying columns in the dataframe.
+    
+    Args:
+        df: DataFrame to anonymize
+        create_mappings_from: Optional DataFrame to use for creating mappings (for consistency)
+    """
+    if not is_anonymous_user:
+        return df
+    
+    df = df.copy()
+    
+    # Use provided dataframe for mapping creation, or use current df
+    mapping_source = create_mappings_from if create_mappings_from is not None else df
+    
+    # Create or reuse mappings from session state for consistency
+    if "Agent" in mapping_source.columns:
+        if "agent_mapping" not in st.session_state.anonymization_mappings:
+            st.session_state.anonymization_mappings["agent_mapping"] = create_anonymous_mapping(
+                mapping_source["Agent"].dropna().unique(), "Agent"
+            )
+        agent_mapping = st.session_state.anonymization_mappings["agent_mapping"]
+        if "Agent" in df.columns:
+            df["Agent"] = df["Agent"].apply(lambda x: agent_mapping.get(str(x).strip(), x) if pd.notna(x) and str(x).strip() else x)
+    
+    if "Company" in mapping_source.columns:
+        if "company_mapping" not in st.session_state.anonymization_mappings:
+            st.session_state.anonymization_mappings["company_mapping"] = create_anonymous_mapping(
+                mapping_source["Company"].dropna().unique(), "Company"
+            )
+        company_mapping = st.session_state.anonymization_mappings["company_mapping"]
+        if "Company" in df.columns:
+            df["Company"] = df["Company"].apply(lambda x: company_mapping.get(str(x).strip(), x) if pd.notna(x) and str(x).strip() else x)
+    
+    if "Call ID" in mapping_source.columns:
+        if "call_id_mapping" not in st.session_state.anonymization_mappings:
+            st.session_state.anonymization_mappings["call_id_mapping"] = create_anonymous_mapping(
+                mapping_source["Call ID"].dropna().unique(), "Call"
+            )
+        call_id_mapping = st.session_state.anonymization_mappings["call_id_mapping"]
+        if "Call ID" in df.columns:
+            df["Call ID"] = df["Call ID"].apply(lambda x: call_id_mapping.get(str(x).strip(), x) if pd.notna(x) and str(x).strip() else x)
+    
+    return df
+
 # Convert call_date to datetime if it's not already
 if "call_date" in meta_df.columns:
     # If call_date is already datetime, keep it; otherwise try to parse
@@ -1430,6 +1505,16 @@ meta_df.dropna(subset=["Call Date"], inplace=True)
 # This ensures normalization works regardless of whether data came from cache or fresh load
 if "Agent" in meta_df.columns:
     meta_df["Agent"] = meta_df["Agent"].apply(normalize_agent_id)
+
+# Apply anonymization if user is anonymous
+# Create mappings from full dataset before any filtering
+if is_anonymous_user:
+    logger.info("🔒 Anonymous user detected - creating anonymization mappings from full dataset")
+    # Create mappings from the full meta_df to ensure consistency
+    _ = anonymize_dataframe(meta_df, create_mappings_from=meta_df)
+    # Now apply anonymization to meta_df
+    meta_df = anonymize_dataframe(meta_df, create_mappings_from=meta_df)
+    st.sidebar.warning("🔒 **Anonymous Mode**: All identifying information has been anonymized")
 
 # --- Determine if agent view or admin view ---
 # Normalize user_agent_id if it exists
