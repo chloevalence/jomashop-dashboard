@@ -528,17 +528,17 @@ def load_all_calls_cached():
         max_files = None
         st.session_state['reload_all_triggered'] = False  # Clear flag after use
     else:
-        # Check if disk cache exists first - if it does, use it immediately without loading from S3
-        disk_result = load_cached_data_from_disk()
-        if disk_result[0] is not None and len(disk_result[0]) > 0:
-            # We have disk cache - use it instead of loading from S3
-            logger.info(f"✅ Found disk cache with {len(disk_result[0])} calls - using it for fast startup")
-            # Return disk cache data immediately - no need to load from S3
-            return disk_result[0], disk_result[1] if disk_result[1] else []
+        # Check if we have disk cache - if it's substantial, we can use it
+        # But we still want to check Streamlit cache to see which is better
+        # So we'll load from Streamlit cache (which may be faster/more complete) and compare
+        if disk_call_data and len(disk_call_data) > 0:
+            logger.info(f"📂 Found disk cache with {len(disk_call_data)} calls - will compare with Streamlit cache")
         
-        # No disk cache - load smaller initial batch for faster startup
+        # Load from Streamlit cache (will use in-memory cache if available, or load from S3)
+        # This allows us to compare both caches and use the best one
         INITIAL_BATCH_SIZE = st.secrets.get("app", {}).get("max_calls", 1000)  # Default 1000 for normal use
-        logger.info(f"🔍 No persistent cache found - loading initial batch of {INITIAL_BATCH_SIZE} most recent files")
+        if not disk_call_data or len(disk_call_data) == 0:
+            logger.info(f"🔍 No persistent cache found - loading initial batch of {INITIAL_BATCH_SIZE} most recent files")
         max_files = INITIAL_BATCH_SIZE
     
     try:
