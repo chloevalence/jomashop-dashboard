@@ -103,7 +103,11 @@ if 'session_started' not in st.session_state:
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
 logger.info("Page config set, starting app initialization...")
 
-# Initialize S3 client from secrets
+# Show immediate feedback - app is loading
+initial_status = st.empty()
+initial_status.info("🔄 **Initializing dashboard...** Please wait.")
+
+# Initialize S3 client from secrets (but don't test connection yet - do that after login)
 logger.info("Initializing S3 client from secrets...")
 try:
     # Check if secrets are available
@@ -119,9 +123,10 @@ try:
     s3_bucket_name = st.secrets["s3"]["bucket_name"]
     s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
     logger.info(f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}")
+    initial_status.empty()  # Clear initial status once S3 client is ready
 except KeyError as e:
     logger.error(f"Missing S3 configuration in secrets: {e}")
-    logger.error(f"Available secrets sections: {list(st.secrets.keys()) if hasattr(st.secrets, 'keys') else 'N/A'}")
+    initial_status.empty()
     st.error(f"❌ Missing S3 configuration in secrets: {e}")
     st.error("Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set.")
     st.error(f"**Current working directory:** `{os.getcwd()}`")
@@ -130,6 +135,7 @@ except KeyError as e:
     st.stop()
 except Exception as e:
     logger.exception(f"Error initializing S3 client: {e}")
+    initial_status.empty()
     st.error(f"❌ Error initializing S3 client: {e}")
     st.error("Please check your AWS credentials and try again.")
     st.stop()
@@ -1109,19 +1115,19 @@ else:
     st.sidebar.warning("⚠️ Rubric file not found")
 
 # --- Fetch Call Metadata ---
+# Only test S3 connection AFTER user is logged in (moved from before login)
 status_text = st.empty()
-status_text.text("📋 Connecting to S3...")
-logger.info("Starting S3 connection test...")
+status_text.text("📋 Preparing to load data...")
+logger.info("Starting data load process (user is authenticated)")
 
 try:
-    # Quick connection test first with aggressive timeouts
+    # Quick connection test with aggressive timeouts (only after login)
     import botocore.config
-    import signal
     
     config = botocore.config.Config(
-        connect_timeout=3,  # Reduced from 5 to 3 seconds
-        read_timeout=5,     # Reduced from 10 to 5 seconds
-        retries={'max_attempts': 1}
+        connect_timeout=5,  # 5 seconds max
+        read_timeout=10,    # 10 seconds max
+        retries={'max_attempts': 1}  # No retries for faster failure
     )
     test_client = boto3.client(
         's3',
@@ -1138,25 +1144,20 @@ try:
     try:
         test_client.head_bucket(Bucket=s3_bucket_name)
         logger.info("S3 connection test successful")
+        status_text.text("✅ Connected! Loading data...")
     except Exception as bucket_error:
         logger.error(f"S3 bucket access failed: {bucket_error}")
-        raise
+        status_text.empty()
+        st.warning("⚠️ **S3 Connection Issue**")
+        st.warning("Could not connect to S3. The app will try to use cached data if available.")
+        st.info("💡 **If you see cached data below, you can continue using the app.**")
+        st.info("💡 **If not, check your S3 credentials or network connection.**")
+        # Don't stop - try to load from cache instead
+        status_text.text("📋 Attempting to load from cache...")
     
-    status_text.text("✅ Connected! Listing PDF files...")
-    logger.info("Starting PDF file listing...")
-    
-    # Quick count of PDFs (approximate, for display) with timeout
+    # Skip PDF count for faster startup - just load data
     pdf_count = None
     try:
-        logger.info("Creating S3 paginator...")
-        paginator = test_client.get_paginator('list_objects_v2')
-        logger.info("Starting pagination...")
-        pages = paginator.paginate(Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=100)
-        logger.info("Counting PDF files from pages...")
-        pdf_count = sum(1 for page in pages for obj in page.get('Contents', []) if obj['Key'].lower().endswith('.pdf'))
-        logger.info(f"Found approximately {pdf_count} PDF files")
-        # Note: This is approximate if there are >100 files, actual count will be shown after loading
-    except Exception as list_error:
         logger.warning(f"Could not count PDFs: {list_error}")
         pdf_count = None  # If counting fails, just continue
     
