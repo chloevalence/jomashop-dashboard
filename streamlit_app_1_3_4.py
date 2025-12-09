@@ -168,11 +168,15 @@ def load_all_calls_internal(max_files=None):
         
         # List all PDF files in the S3 bucket
         try:
+            # In demo mode, only list a small number of files for faster startup
+            demo_mode = st.secrets.get("app", {}).get("demo_mode", False)
+            max_keys_for_listing = 20 if demo_mode else 1000  # Only list 20 files in demo mode
+            
             paginator = s3_client_with_timeout.get_paginator('list_objects_v2')
             pages = paginator.paginate(
                 Bucket=s3_bucket_name,
                 Prefix=s3_prefix,
-                MaxKeys=1000  # Limit to prevent huge lists
+                MaxKeys=max_keys_for_listing  # Limit to prevent huge lists
             )
             
             # Collect all PDF file keys with their modification dates
@@ -526,9 +530,14 @@ def load_all_calls_cached():
             return disk_result[0], disk_result[1] if disk_result[1] else []
         
         # No disk cache - load smaller initial batch for faster startup
-        # Reduced from 2000 to 1000 for faster initial load
-        INITIAL_BATCH_SIZE = 1000
-        logger.info(f"🔍 No persistent cache found - loading initial batch of {INITIAL_BATCH_SIZE} most recent files (fast startup)")
+        # Check if demo mode is enabled (loads only a few calls for fast demo)
+        demo_mode = st.secrets.get("app", {}).get("demo_mode", False)
+        if demo_mode:
+            INITIAL_BATCH_SIZE = st.secrets.get("app", {}).get("demo_max_calls", 10)  # Default 10 calls for demo
+            logger.info(f"🎯 DEMO MODE: Loading only {INITIAL_BATCH_SIZE} most recent calls for fast demo")
+        else:
+            INITIAL_BATCH_SIZE = st.secrets.get("app", {}).get("max_calls", 1000)  # Default 1000 for normal use
+            logger.info(f"🔍 No persistent cache found - loading initial batch of {INITIAL_BATCH_SIZE} most recent files")
         max_files = INITIAL_BATCH_SIZE
     
     try:
@@ -1247,10 +1256,14 @@ try:
         logger.info("Loading data - Streamlit cache will handle it automatically")
         
         # Show prominent loading message
+        demo_mode = st.secrets.get("app", {}).get("demo_mode", False)
         loading_container = st.container()
         with loading_container:
-            st.info("🔄 **Loading data...** Please wait. This may take 1-2 minutes if loading from S3 for the first time.")
-            st.info("💡 **Tip:** If this takes longer than 5 minutes, refresh the page or check your S3 connection.")
+            if demo_mode:
+                st.info("🎯 **Demo Mode:** Loading just a few calls for fast demo...")
+            else:
+                st.info("🔄 **Loading data...** Please wait. This may take 1-2 minutes if loading from S3 for the first time.")
+                st.info("💡 **Tip:** If this takes longer than 5 minutes, refresh the page or check your S3 connection.")
         
         try:
             # Add timeout wrapper
