@@ -292,12 +292,17 @@ def load_all_calls_internal(max_files=None):
                     should_save = (processed % 500 == 0) or (time_since_last_save > 120) or (processed % 100 == 0 and elapsed > 600)
                     if should_save:
                         try:
+                            # Deduplicate before incremental save to prevent cache bloat
+                            calls_to_save = deduplicate_calls(all_calls.copy())
+                            if len(calls_to_save) < len(all_calls):
+                                logger.info(f"🔍 Deduplicated before incremental save: {len(all_calls)} → {len(calls_to_save)} unique calls")
+                            
                             # Save current progress to disk cache incrementally
                             cache_data = {
-                                'call_data': all_calls.copy(),  # Copy to avoid modification during save
+                                'call_data': calls_to_save,  # Already deduplicated
                                 'errors': errors.copy(),
                                 'timestamp': datetime.now().isoformat(),
-                                'count': len(all_calls),
+                                'count': len(calls_to_save),
                                 'partial': True,  # Mark as partial/in-progress
                                 'processed': processed,
                                 'total': total
@@ -305,12 +310,18 @@ def load_all_calls_internal(max_files=None):
                             with open(CACHE_FILE, 'w', encoding='utf-8') as f:
                                 json.dump(cache_data, f, default=str, indent=2)
                             st.session_state._last_incremental_save_time = time.time()
-                            logger.info(f"💾 Incremental save: Saved {len(all_calls)} calls to disk cache ({processed}/{total} = {processed*100//total}% complete - progress protected)")
+                            logger.info(f"💾 Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed}/{total} = {processed*100//total}% complete - progress protected)")
                         except Exception as e:
                             logger.warning(f"⚠️ Failed incremental save: {e}")
         
         elapsed_total = time.time() - processing_start_time
         logger.info(f"✅ Completed processing {total} files in {elapsed_total/60:.1f} minutes. Success: {len(all_calls)}, Errors: {len(errors)}")
+        
+        # Deduplicate before returning (in case of any duplicates from S3 or processing)
+        original_count = len(all_calls)
+        all_calls = deduplicate_calls(all_calls)
+        if len(all_calls) < original_count:
+            logger.info(f"🔍 Deduplication after S3 load: {original_count} calls → {len(all_calls)} unique calls (removed {original_count - len(all_calls)} duplicates)")
         
         # Sort by call_date if available (already sorted by S3 date, but this ensures call_date order)
         try:
@@ -360,6 +371,29 @@ def load_all_calls_internal(max_files=None):
 # Persistent cache file that survives app restarts (prevents timeout issues)
 CACHE_FILE = log_dir / "cached_calls_data.json"
 
+def deduplicate_calls(call_data):
+    """Remove duplicate calls based on _s3_key or _id. Keeps the first occurrence."""
+    if not call_data:
+        return []
+    
+    seen_keys = set()
+    deduplicated = []
+    duplicates_count = 0
+    
+    for call in call_data:
+        # Use _s3_key as primary identifier, fall back to _id
+        key = call.get('_s3_key') or call.get('_id') or call.get('Call ID')
+        if key and key not in seen_keys:
+            seen_keys.add(key)
+            deduplicated.append(call)
+        elif key:
+            duplicates_count += 1
+    
+    if duplicates_count > 0:
+        logger.warning(f"🔍 Removed {duplicates_count} duplicate calls (kept {len(deduplicated)} unique calls)")
+    
+    return deduplicated
+
 def load_cached_data_from_disk():
     """Load cached data from disk if it exists. Handles both complete and partial saves."""
     if CACHE_FILE.exists():
@@ -370,8 +404,16 @@ def load_cached_data_from_disk():
                 call_data = cached_data.get('call_data', [])
                 errors = cached_data.get('errors', [])
                 cache_timestamp = cached_data.get('timestamp', None)
-                cache_count = cached_data.get('count', len(call_data))
+                original_count = len(call_data)
+                
+                # Deduplicate before returning
+                call_data = deduplicate_calls(call_data)
+                cache_count = len(call_data)
+                
                 is_partial = cached_data.get('partial', False)
+                
+                if original_count != cache_count:
+                    logger.warning(f"⚠️ Cache had {original_count} calls, deduplicated to {cache_count} unique calls")
                 
                 if is_partial:
                     processed = cached_data.get('processed', 0)
@@ -386,8 +428,15 @@ def load_cached_data_from_disk():
     return None, None
 
 def save_cached_data_to_disk(call_data, errors):
-    """Save cached data to disk for persistence across app restarts."""
+    """Save cached data to disk for persistence across app restarts. Automatically deduplicates before saving."""
     try:
+        # Deduplicate before saving to prevent cache bloat
+        if call_data:
+            original_count = len(call_data)
+            call_data = deduplicate_calls(call_data)
+            if len(call_data) < original_count:
+                logger.info(f"🔍 Deduplicated before save: {original_count} → {len(call_data)} unique calls")
+        
         cache_data = {
             'call_data': call_data,
             'errors': errors,
@@ -528,6 +577,12 @@ def load_all_calls_cached():
         # Use the best cache
         if use_streamlit_cache:
             final_call_data, final_errors = streamlit_call_data, streamlit_errors
+            # Deduplicate Streamlit cache data
+            if final_call_data:
+                original_count = len(final_call_data)
+                final_call_data = deduplicate_calls(final_call_data)
+                if len(final_call_data) < original_count:
+                    logger.info(f"🔍 Deduplicated Streamlit cache: {original_count} → {len(final_call_data)} unique calls")
             # ALWAYS update disk cache with Streamlit cache data (it's more recent)
             # This ensures Streamlit cache is preserved to disk for future restarts
             if final_call_data:
@@ -541,11 +596,22 @@ def load_all_calls_cached():
                     logger.info(f"💾 Saved Streamlit cache to disk cache ({len(final_call_data)} calls) - preserved for future restarts")
         elif use_disk_cache:
             final_call_data, final_errors = disk_call_data, disk_errors
+            # Deduplicate disk cache data (should already be deduplicated, but double-check)
+            if final_call_data:
+                original_count = len(final_call_data)
+                final_call_data = deduplicate_calls(final_call_data)
+                if len(final_call_data) < original_count:
+                    logger.info(f"🔍 Deduplicated disk cache: {original_count} → {len(final_call_data)} unique calls")
             logger.info(f"💾 Using disk cache - populating Streamlit's in-memory cache for faster access")
         else:
             # No cache available - use what we loaded
             final_call_data, final_errors = streamlit_call_data, streamlit_errors
+            # Deduplicate before saving
             if final_call_data:
+                original_count = len(final_call_data)
+                final_call_data = deduplicate_calls(final_call_data)
+                if len(final_call_data) < original_count:
+                    logger.info(f"🔍 Deduplicated fresh load: {original_count} → {len(final_call_data)} unique calls")
                 save_cached_data_to_disk(final_call_data, final_errors)
         
         logger.info(f"⏱️ Total time: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
@@ -951,8 +1017,14 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
             # Get existing cached data - use None to get all cached data
             existing_calls, _ = load_all_calls_cached()
             
-            # Merge new calls with existing
+            # Merge new calls with existing, then deduplicate
             all_calls_merged = existing_calls + new_calls
+            # Deduplicate based on _s3_key or _id
+            all_calls_merged = deduplicate_calls(all_calls_merged)
+            
+            original_total = len(existing_calls) + len(new_calls)
+            if len(all_calls_merged) < original_total:
+                logger.info(f"🔍 Deduplication: {original_total} calls → {len(all_calls_merged)} unique calls (removed {original_total - len(all_calls_merged)} duplicates)")
             
             # Clear and update cache with merged data
             load_all_calls_cached.clear()
