@@ -1155,13 +1155,9 @@ try:
         # Don't stop - try to load from cache instead
         status_text.text("📋 Attempting to load from cache...")
     
-    # Skip PDF count for faster startup - just load data
+    # Skip PDF count for faster startup - just load data directly
     pdf_count = None
-    try:
-        logger.warning(f"Could not count PDFs: {list_error}")
-        pdf_count = None  # If counting fails, just continue
-    
-    logger.info("PDF file listing completed, proceeding to data loading...")
+    logger.info("Skipping PDF count for faster startup - proceeding to data loading...")
     
 except ClientError as e:
     status_text.empty()
