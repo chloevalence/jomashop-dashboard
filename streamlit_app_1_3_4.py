@@ -511,9 +511,17 @@ def load_all_calls_cached():
         max_files = None
         st.session_state['reload_all_triggered'] = False  # Clear flag after use
     else:
-        # No disk cache - load initial batch for fast startup (prevents timeout)
-        # Load 2000 most recent files first - this should complete in 2-3 minutes
-        INITIAL_BATCH_SIZE = 2000
+        # Check if disk cache exists first - if it does, use it immediately without loading from S3
+        disk_result = load_cached_data_from_disk()
+        if disk_result[0] is not None and len(disk_result[0]) > 0:
+            # We have disk cache - use it instead of loading from S3
+            logger.info(f"✅ Found disk cache with {len(disk_result[0])} calls - using it for fast startup")
+            # Return disk cache data immediately - no need to load from S3
+            return disk_result[0], disk_result[1] if disk_result[1] else []
+        
+        # No disk cache - load smaller initial batch for faster startup
+        # Reduced from 2000 to 1000 for faster initial load
+        INITIAL_BATCH_SIZE = 1000
         logger.info(f"🔍 No persistent cache found - loading initial batch of {INITIAL_BATCH_SIZE} most recent files (fast startup)")
         max_files = INITIAL_BATCH_SIZE
     
@@ -1370,7 +1378,7 @@ if 'anonymization_mappings' not in st.session_state:
 
 def anonymize_dataframe(df, create_mappings_from=None):
     """
-    Anonymize identifying columns in the dataframe.
+    Anonymize identifying columns in the dataframe using vectorized operations for speed.
     
     Args:
         df: DataFrame to anonymize
@@ -1387,30 +1395,42 @@ def anonymize_dataframe(df, create_mappings_from=None):
     # Create or reuse mappings from session state for consistency
     if "Agent" in mapping_source.columns:
         if "agent_mapping" not in st.session_state.anonymization_mappings:
+            logger.info("Creating agent anonymization mapping...")
             st.session_state.anonymization_mappings["agent_mapping"] = create_anonymous_mapping(
                 mapping_source["Agent"].dropna().unique(), "Agent"
             )
         agent_mapping = st.session_state.anonymization_mappings["agent_mapping"]
-        if "Agent" in df.columns:
-            df["Agent"] = df["Agent"].apply(lambda x: agent_mapping.get(str(x).strip(), x) if pd.notna(x) and str(x).strip() else x)
+        if "Agent" in df.columns and agent_mapping:
+            # Use vectorized replace for much faster performance
+            # Handle NaN values properly
+            mask = df["Agent"].notna()
+            df.loc[mask, "Agent"] = df.loc[mask, "Agent"].astype(str).str.strip().replace(agent_mapping)
     
     if "Company" in mapping_source.columns:
         if "company_mapping" not in st.session_state.anonymization_mappings:
+            logger.info("Creating company anonymization mapping...")
             st.session_state.anonymization_mappings["company_mapping"] = create_anonymous_mapping(
                 mapping_source["Company"].dropna().unique(), "Company"
             )
         company_mapping = st.session_state.anonymization_mappings["company_mapping"]
-        if "Company" in df.columns:
-            df["Company"] = df["Company"].apply(lambda x: company_mapping.get(str(x).strip(), x) if pd.notna(x) and str(x).strip() else x)
+        if "Company" in df.columns and company_mapping:
+            # Use vectorized replace for much faster performance
+            # Handle NaN values properly
+            mask = df["Company"].notna()
+            df.loc[mask, "Company"] = df.loc[mask, "Company"].astype(str).str.strip().replace(company_mapping)
     
     if "Call ID" in mapping_source.columns:
         if "call_id_mapping" not in st.session_state.anonymization_mappings:
+            logger.info("Creating call ID anonymization mapping...")
             st.session_state.anonymization_mappings["call_id_mapping"] = create_anonymous_mapping(
                 mapping_source["Call ID"].dropna().unique(), "Call"
             )
         call_id_mapping = st.session_state.anonymization_mappings["call_id_mapping"]
-        if "Call ID" in df.columns:
-            df["Call ID"] = df["Call ID"].apply(lambda x: call_id_mapping.get(str(x).strip(), x) if pd.notna(x) and str(x).strip() else x)
+        if "Call ID" in df.columns and call_id_mapping:
+            # Use vectorized replace for much faster performance
+            # Handle NaN values properly
+            mask = df["Call ID"].notna()
+            df.loc[mask, "Call ID"] = df.loc[mask, "Call ID"].astype(str).str.strip().replace(call_id_mapping)
     
     return df
 
@@ -1509,11 +1529,17 @@ if "Agent" in meta_df.columns:
 # Apply anonymization if user is anonymous
 # Create mappings from full dataset before any filtering
 if is_anonymous_user:
+    import time
+    anonymize_start = time.time()
     logger.info("🔒 Anonymous user detected - creating anonymization mappings from full dataset")
     # Create mappings from the full meta_df to ensure consistency
-    _ = anonymize_dataframe(meta_df, create_mappings_from=meta_df)
-    # Now apply anonymization to meta_df
+    # Only create mappings if they don't exist (faster on subsequent loads)
+    if not st.session_state.anonymization_mappings:
+        _ = anonymize_dataframe(meta_df, create_mappings_from=meta_df)
+    # Now apply anonymization to meta_df (this is fast with vectorized operations)
     meta_df = anonymize_dataframe(meta_df, create_mappings_from=meta_df)
+    anonymize_duration = time.time() - anonymize_start
+    logger.info(f"🔒 Anonymization completed in {anonymize_duration:.2f}s")
     st.sidebar.warning("🔒 **Anonymous Mode**: All identifying information has been anonymized")
 
 # --- Determine if agent view or admin view ---
