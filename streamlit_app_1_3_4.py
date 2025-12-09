@@ -528,18 +528,25 @@ def load_all_calls_cached():
         max_files = None
         st.session_state['reload_all_triggered'] = False  # Clear flag after use
     else:
-        # Check if we have disk cache - if it's substantial, we can use it
-        # But we still want to check Streamlit cache to see which is better
-        # So we'll load from Streamlit cache (which may be faster/more complete) and compare
+        # Check if we have disk cache - if it's substantial (has most of the data), use it directly
+        # Only load from S3 if disk cache is missing or very small
         if disk_call_data and len(disk_call_data) > 0:
-            logger.info(f"📂 Found disk cache with {len(disk_call_data)} calls - will compare with Streamlit cache")
-        
-        # Load from Streamlit cache (will use in-memory cache if available, or load from S3)
-        # This allows us to compare both caches and use the best one
-        INITIAL_BATCH_SIZE = st.secrets.get("app", {}).get("max_calls", 1000)  # Default 1000 for normal use
-        if not disk_call_data or len(disk_call_data) == 0:
-            logger.info(f"🔍 No persistent cache found - loading initial batch of {INITIAL_BATCH_SIZE} most recent files")
-        max_files = INITIAL_BATCH_SIZE
+            cache_count = len(disk_call_data)
+            # If disk cache has substantial data (5000+ calls), use it directly without loading from S3
+            # This prevents unnecessary S3 loads when we already have the full dataset cached
+            if cache_count >= 5000:
+                logger.info(f"✅ Found substantial disk cache with {cache_count} calls - using it directly")
+                # Return disk cache immediately - no need to load from S3
+                # Streamlit cache will be populated from this return value
+                return disk_call_data, disk_errors if disk_errors else []
+            else:
+                logger.info(f"📂 Found disk cache with {cache_count} calls - will compare with Streamlit cache")
+                # Load from S3 to compare, but load ALL files (not limited)
+                max_files = None  # Load all files from S3
+        else:
+            # No disk cache - load ALL files from S3 (not limited)
+            logger.info(f"🔍 No persistent cache found - loading ALL files from S3")
+            max_files = None  # Load all files
     
     try:
         load_start = time.time()
