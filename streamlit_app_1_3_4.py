@@ -840,6 +840,9 @@ if auth_status is False:
 current_username = st.session_state.get("username")
 current_name = st.session_state.get("name")
 
+# Check if user is anonymous (needed early for view mode display)
+is_anonymous_user = current_username and current_username.lower() == "anonymous"
+
 # Session management - track activity and timeout
 if 'last_activity' not in st.session_state:
     st.session_state.last_activity = time.time()
@@ -1403,8 +1406,7 @@ except Exception as e:
 meta_df = pd.DataFrame(call_data)
 
 # --- ANONYMIZATION FUNCTIONS ---
-# Check if user is anonymous
-is_anonymous_user = current_username and current_username.lower() == "anonymous"
+# Note: is_anonymous_user is already defined earlier in the code
 
 def create_anonymous_mapping(values, prefix="ID"):
     """
