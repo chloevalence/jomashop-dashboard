@@ -528,11 +528,17 @@ def load_all_calls_cached():
         # Use the best cache
         if use_streamlit_cache:
             final_call_data, final_errors = streamlit_call_data, streamlit_errors
-            # Update disk cache with Streamlit cache data (it's more recent)
-            # Only save if we didn't already save it above (for slow loads)
-            if final_call_data and not (load_duration >= 2.0):
-                save_cached_data_to_disk(final_call_data, final_errors)
-                logger.info(f"💾 Updated disk cache with Streamlit cache data ({len(final_call_data)} calls)")
+            # ALWAYS update disk cache with Streamlit cache data (it's more recent)
+            # This ensures Streamlit cache is preserved to disk for future restarts
+            if final_call_data:
+                # Only skip save if we already saved it above (for slow S3 loads)
+                if load_duration >= 2.0:
+                    # Already saved above for slow loads, just log
+                    logger.info(f"💾 Streamlit cache data already saved to disk (from S3 load)")
+                else:
+                    # Fast load = from Streamlit cache, save it to disk now
+                    save_cached_data_to_disk(final_call_data, final_errors)
+                    logger.info(f"💾 Saved Streamlit cache to disk cache ({len(final_call_data)} calls) - preserved for future restarts")
         elif use_disk_cache:
             final_call_data, final_errors = disk_call_data, disk_errors
             logger.info(f"💾 Using disk cache - populating Streamlit's in-memory cache for faster access")
