@@ -533,7 +533,7 @@ def load_all_calls_cached():
         # Check if demo mode is enabled (loads only a few calls for fast demo)
         demo_mode = st.secrets.get("app", {}).get("demo_mode", False)
         if demo_mode:
-            INITIAL_BATCH_SIZE = st.secrets.get("app", {}).get("demo_max_calls", 10)  # Default 10 calls for demo
+            INITIAL_BATCH_SIZE = st.secrets.get("app", {}).get("demo_max_calls", 100)  # Default 100 calls for demo
             logger.info(f"🎯 DEMO MODE: Loading only {INITIAL_BATCH_SIZE} most recent calls for fast demo")
         else:
             INITIAL_BATCH_SIZE = st.secrets.get("app", {}).get("max_calls", 1000)  # Default 1000 for normal use
