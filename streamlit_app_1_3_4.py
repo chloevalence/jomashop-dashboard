@@ -290,12 +290,12 @@ def load_all_calls_internal(max_files=None):
                     logger.info(f"📊 Progress: {processed}/{total} files processed ({processed*100//total}%), {len(all_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
                     last_log_time = time.time()
                     
-                    # INCREMENTAL SAVE: Save to disk cache every 500 files or every 2 minutes
+                    # INCREMENTAL SAVE: Save to disk cache every 100 files or every 1 minute
                     # This prevents losing all progress if app restarts during long loads
                     last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
                     time_since_last_save = time.time() - last_save_time
-                    # Save more frequently: every 500 files OR every 2 minutes OR every 100 files if > 10 min elapsed
-                    should_save = (processed % 500 == 0) or (time_since_last_save > 120) or (processed % 100 == 0 and elapsed > 600)
+                    # Save every 100 files OR every 1 minute (more frequent saves to prevent data loss on restarts)
+                    should_save = (processed % 100 == 0) or (time_since_last_save > 60)
                     if should_save:
                         try:
                             # Deduplicate before incremental save to prevent cache bloat
