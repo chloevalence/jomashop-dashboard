@@ -251,13 +251,38 @@ def load_all_calls_internal(max_files=None):
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
         # Initialize progress tracking in session state
-        if 'pdf_processing_progress' not in st.session_state:
-            st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0, 'processing_start_time': None}
-        else:
-            st.session_state.pdf_processing_progress['total'] = total
-            st.session_state.pdf_processing_progress['processed'] = 0
-            st.session_state.pdf_processing_progress['errors'] = 0
+        # Try to restore progress from disk cache if it exists (for partial cache continuation)
+        restored_progress = False
+        if CACHE_FILE.exists():
+            try:
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                    if cached_data.get('partial', False):
+                        partial_processed = cached_data.get('processed', 0)
+                        partial_total = cached_data.get('total', 0)
+                        if partial_total > 0 and partial_processed > 0:
+                            # Restore progress from cache
+                            if 'pdf_processing_progress' not in st.session_state:
+                                st.session_state.pdf_processing_progress = {
+                                    'processed': partial_processed,
+                                    'total': partial_total,
+                                    'errors': 0,
+                                    'processing_start_time': None
+                                }
+                                restored_progress = True
+                                logger.info(f"📂 Restored progress from cache: {partial_processed}/{partial_total} files")
+            except:
+                pass
         
+        if not restored_progress:
+            if 'pdf_processing_progress' not in st.session_state:
+                st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0, 'processing_start_time': None}
+        else:
+                st.session_state.pdf_processing_progress['total'] = total
+                # Don't reset processed count if we're continuing from partial cache
+                if not restored_progress:
+                    st.session_state.pdf_processing_progress['processed'] = 0
+                st.session_state.pdf_processing_progress['errors'] = 0
         # Track actual processing start time
         processing_start_time = time.time()
         st.session_state.pdf_processing_progress['processing_start_time'] = processing_start_time
@@ -292,7 +317,18 @@ def load_all_calls_internal(max_files=None):
                     
                     # INCREMENTAL SAVE: Save to disk cache every 100 files or every 1 minute
                     # This prevents losing all progress if app restarts during long loads
-                    last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
+                    # Try to get last save time from disk cache metadata first (survives restarts)
+                    last_save_time = 0
+                    try:
+                        if CACHE_FILE.exists():
+                            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                                cached_data = json.load(f)
+                                last_save_time = cached_data.get('last_save_time', 0)
+                    except:
+                        pass
+                    # Fallback to session state if not in cache
+                    if not last_save_time:
+                        last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
                     time_since_last_save = time.time() - last_save_time
                     # Save every 100 files OR every 1 minute (more frequent saves to prevent data loss on restarts)
                     should_save = (processed % 100 == 0) or (time_since_last_save > 60)
@@ -308,6 +344,7 @@ def load_all_calls_internal(max_files=None):
                                 'call_data': calls_to_save,  # Already deduplicated
                                 'errors': errors.copy(),
                                 'timestamp': datetime.now().isoformat(),
+                                'last_save_time': time.time(),  # Track last save time for time-based saves
                                 'count': len(calls_to_save),
                                 'partial': True,  # Mark as partial/in-progress
                                 'processed': processed,
@@ -458,7 +495,9 @@ def save_cached_data_to_disk(call_data, errors):
             'call_data': call_data,
             'errors': errors,
             'timestamp': datetime.now().isoformat(),
-            'count': len(call_data)
+            'last_save_time': time.time(),  # Track last save time
+            'count': len(call_data),
+            'partial': False  # Mark as complete when saving final data
         }
         with open(CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(cache_data, f, default=str, indent=2)
@@ -522,18 +561,22 @@ def load_all_calls_cached():
             except Exception as e:
                 logger.warning(f"⚠️ Failed to read cache metadata: {e}")
         
-        # CRITICAL: If we have ANY cache (even partial with 100+ calls), use it UNLESS user explicitly requested reload
-        # This prevents the restart loop where app restarts and loses all progress
+        # Log cache comparison immediately after loading disk cache
+        logger.info(f"📊 Cache Comparison: Disk cache = {cache_count} files (partial={is_partial}, {partial_processed}/{partial_total if partial_total > 0 else '?'} processed)")
+        
+        # CRITICAL: Only return early if cache is COMPLETE (not partial)
+        # If partial, continue loading to complete it with incremental saves
         if not reload_all_triggered:
             if cache_count >= 100:  # Use cache if we have 100+ calls
                 if is_partial:
                     progress_pct = (partial_processed * 100 // partial_total) if partial_total > 0 else 0
-                    logger.info(f"✅ USING PARTIAL CACHE: {cache_count} calls ({progress_pct}% complete) - prevents restart loss")
-                    logger.info(f"💡 To continue loading remaining files, use 'Reload ALL Data' button when ready")
+                    logger.info(f"📦 Found PARTIAL cache: {cache_count} calls ({progress_pct}% complete)")
+                    logger.info(f"🔄 Will continue loading remaining files from S3 with incremental saves")
+                    # Don't return early - continue to load remaining files
                 else:
                     logger.info(f"✅ USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss")
-                # Return disk cache immediately - NO S3 load to prevent restarts
-                return disk_call_data, disk_errors if disk_errors else []
+                    # Return disk cache immediately - NO S3 load needed for complete cache
+                    return disk_call_data, disk_errors if disk_errors else []
             else:
                 logger.info(f"⚠️ Cache has only {cache_count} calls (< 100), will load from S3")
         else:
@@ -543,6 +586,7 @@ def load_all_calls_cached():
     # 1. No cache found, OR
     # 2. Cache has < 100 calls, OR  
     # 3. User explicitly requested reload (reload_all_triggered = True)
+    # 4. Cache is partial (will continue loading remaining files)
     
     # Determine what to load
     if reload_all_triggered:
@@ -550,6 +594,12 @@ def load_all_calls_cached():
         logger.info(f"🔍 Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)")
         max_files = None
         st.session_state['reload_all_triggered'] = False  # Clear flag after use
+    elif is_partial and partial_total > 0 and partial_processed < partial_total:
+        # Partial cache exists - continue loading remaining files
+        remaining_files = partial_total - partial_processed
+        logger.info(f"🔄 Continuing partial cache: {partial_processed}/{partial_total} files loaded, {remaining_files} remaining")
+        logger.info(f"📥 Loading remaining {remaining_files} files from S3 with incremental saves")
+        max_files = None  # Load all remaining files (will be deduplicated)
     else:
         # No substantial cache - load ALL files from S3
         logger.info(f"🔍 No substantial cache found - loading ALL files from S3")
@@ -567,10 +617,10 @@ def load_all_calls_cached():
         
         streamlit_call_data, streamlit_errors = result
         
-        # Log cache counts for debugging
+        # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
         streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
         disk_cache_count = len(disk_call_data) if disk_call_data else 0
-        logger.info(f"📊 Cache Comparison: Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files")
+        logger.info(f"📊 Cache Comparison (after load): Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files")
         
         # Determine which cache is better (more recent or more complete)
         use_streamlit_cache = False
@@ -840,6 +890,22 @@ def load_new_calls_only():
         last_log_time = time.time()
         processed_count = 0
         
+        # Initialize incremental save tracking
+        # Try to get last save time from disk cache metadata
+        last_save_time = 0
+        try:
+            disk_result = load_cached_data_from_disk()
+            if disk_result[0] is not None and CACHE_FILE.exists():
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                    last_save_time = cached_data.get('last_save_time', 0)
+        except:
+            pass
+        
+        # Also check session state as fallback
+        if not last_save_time:
+            last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
+        
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_key = {executor.submit(process_pdf, item['key']): item['key'] for item in new_pdf_keys}
             
@@ -859,6 +925,45 @@ def load_new_calls_only():
                     remaining = (total_new - processed_count) / rate if rate > 0 else 0
                     logger.info(f"📊 Refresh Progress: {processed_count}/{total_new} files processed ({processed_count*100//total_new}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
                     last_log_time = time.time()
+                    
+                    # INCREMENTAL SAVE: Save to disk cache every 100 files or every 1 minute
+                    # This prevents losing all progress if app restarts during refresh
+                    time_since_last_save = time.time() - last_save_time
+                    should_save = (processed_count % 100 == 0) or (time_since_last_save > 60)
+                    if should_save:
+                        try:
+                            # Get existing cached data from disk (don't trigger full load)
+                            existing_calls = []
+                            disk_result = load_cached_data_from_disk()
+                            if disk_result[0] is not None:
+                                existing_calls = disk_result[0]
+                            
+                            # Merge new calls with existing
+                            all_calls_merged = existing_calls + new_calls
+                            
+                            # Deduplicate before incremental save
+                            calls_to_save = deduplicate_calls(all_calls_merged.copy())
+                            if len(calls_to_save) < len(all_calls_merged):
+                                logger.info(f"🔍 Deduplicated before incremental save: {len(all_calls_merged)} → {len(calls_to_save)} unique calls")
+                            
+                            # Save current progress to disk cache incrementally
+                            cache_data = {
+                                'call_data': calls_to_save,
+                                'errors': errors.copy(),
+                                'timestamp': datetime.now().isoformat(),
+                                'last_save_time': time.time(),
+                                'count': len(calls_to_save),
+                                'partial': True,  # Mark as partial/in-progress during refresh
+                                'processed': processed_count,
+                                'total': total_new
+                            }
+                            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                                json.dump(cache_data, f, default=str, indent=2)
+                            last_save_time = time.time()
+                            st.session_state._last_incremental_save_time = last_save_time
+                            logger.info(f"💾 Incremental save (refresh): Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count*100//total_new}% complete - progress protected)")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed incremental save during refresh: {e}")
         
         elapsed_total = time.time() - processing_start_time
         logger.info(f"✅ Refresh completed: Processed {total_new} new files in {elapsed_total/60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}")
@@ -994,8 +1099,53 @@ def check_for_new_pdfs_lightweight():
     Returns: (new_count, error_message)
     """
     try:
-        # Get already processed keys from session state
-        processed_keys = st.session_state.get('processed_s3_keys', set())
+        # Get already processed keys from disk cache (survives restarts)
+        # Also check session state as a fallback
+        processed_keys = set()
+        
+        # First, try to load from disk cache to get already processed keys
+        disk_result = load_cached_data_from_disk()
+        if disk_result[0] is not None and len(disk_result[0]) > 0:
+            cached_calls = disk_result[0]
+            logger.info(f"📂 Checking disk cache for processed keys: {len(cached_calls)} calls")
+            
+            # Extract all S3 keys from cached calls
+            keys_found = 0
+            keys_missing = 0
+            for call in cached_calls:
+                # Try multiple ways to get the S3 key
+                s3_key = call.get('_s3_key') or call.get('_id')
+                
+                # If still no key, try to get from filename
+                if not s3_key:
+                    filename = call.get('Filename') or call.get('Call ID')
+                    if filename:
+                        # Reconstruct S3 key from filename
+                        if s3_prefix:
+                            s3_key = f"{s3_prefix.rstrip('/')}/{filename}" if not filename.startswith(s3_prefix) else filename
+                        else:
+                            s3_key = filename
+                        # Ensure it ends with .pdf
+                        if not s3_key.lower().endswith('.pdf'):
+                            s3_key = f"{s3_key}.pdf"
+                
+                if s3_key:
+                    processed_keys.add(s3_key)
+                    keys_found += 1
+                else:
+                    keys_missing += 1
+            
+            logger.info(f"📂 Found {keys_found} processed S3 keys in disk cache ({keys_missing} calls missing keys)")
+        else:
+            logger.info("📂 No disk cache found - all files will be treated as new")
+        
+        # Also check session state (for files processed in current session)
+        session_keys = st.session_state.get('processed_s3_keys', set())
+        if session_keys:
+            processed_keys.update(session_keys)
+            logger.info(f"📋 Found {len(session_keys)} additional files in session state")
+        
+        logger.info(f"🔍 Total {len(processed_keys)} files already processed")
         
         # Configure S3 client with short timeout for quick checks
         import botocore.config
@@ -1022,12 +1172,17 @@ def check_for_new_pdfs_lightweight():
         
         # Count new PDFs (not in processed_keys)
         new_count = 0
+        total_pdfs = 0
         for page in pages:
             if 'Contents' in page:
                 for obj in page['Contents']:
                     key = obj['Key']
-                    if key.lower().endswith('.pdf') and key not in processed_keys:
-                        new_count += 1
+                    if key.lower().endswith('.pdf'):
+                        total_pdfs += 1
+                        if key not in processed_keys:
+                            new_count += 1
+        
+        logger.info(f"📊 PDF Count: {total_pdfs} total in S3, {len(processed_keys)} processed, {new_count} new")
         
         return new_count, None
         
@@ -1127,10 +1282,12 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
             st.info("💡 Try using 'Reload ALL Data' button if the issue persists")
         elif new_count > 0:
             # Successfully found and processed new files
-            # Get existing cached data - use None to get all cached data
-            existing_calls, _ = load_all_calls_cached()
+            # Get existing cached data from disk (incremental saves already merged during refresh)
+            disk_result = load_cached_data_from_disk()
+            existing_calls = disk_result[0] if disk_result[0] is not None else []
             
             # Merge new calls with existing, then deduplicate
+            # Note: Incremental saves during refresh already merged, but we merge again here to be safe
             all_calls_merged = existing_calls + new_calls
             # Deduplicate based on _s3_key or _id
             all_calls_merged = deduplicate_calls(all_calls_merged)
@@ -1139,10 +1296,20 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
             if len(all_calls_merged) < original_total:
                 logger.info(f"🔍 Deduplication: {original_total} calls → {len(all_calls_merged)} unique calls (removed {original_total - len(all_calls_merged)} duplicates)")
             
-            # Clear and update cache with merged data
-            load_all_calls_cached.clear()
-            # Save merged data to disk cache
-            save_cached_data_to_disk(all_calls_merged, new_errors if new_errors else [])
+            # Save merged data to disk cache (mark as complete now that refresh is done)
+            # The disk cache already has the merged data from incremental saves during refresh, but update to mark complete
+            import time
+            cache_data = {
+                'call_data': all_calls_merged,
+                'errors': new_errors if new_errors else [],
+                'timestamp': datetime.now().isoformat(),
+                'last_save_time': time.time(),
+                'count': len(all_calls_merged),
+                'partial': False  # Mark as complete
+            }
+            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, default=str, indent=2)
+            logger.info(f"💾 Saved {len(all_calls_merged)} calls to persistent cache (refresh complete)")
             # We need to manually update the cache - store in session state temporarily
             st.session_state['merged_calls'] = all_calls_merged
             st.session_state['merged_errors'] = new_errors if new_errors else []
@@ -1304,9 +1471,7 @@ try:
         del st.session_state['merged_calls']
         if 'merged_errors' in st.session_state:
             del st.session_state['merged_errors']
-        # Update cache with merged data (by calling the cached function)
-        load_all_calls_cached.clear()
-        # Note: We can't directly update cache, so we'll let it reload on next access
+        # Note: Disk cache already has the merged data from refresh, Streamlit cache will update on next access
         elapsed = time.time() - t0
         status_text.empty()
         logger.info(f"Merged data loaded in {elapsed:.2f} seconds")
