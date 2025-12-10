@@ -586,7 +586,7 @@ def load_all_calls_cached():
                         # Same size - use Streamlit cache (it's in memory, faster)
                         logger.info(f"✅ Streamlit cache matches disk cache - using in-memory version for speed")
                         use_streamlit_cache = True
-        else:
+                    else:
                         # Disk cache has more data - but Streamlit cache might be newer
                         # Since we can't easily compare timestamps, prefer Streamlit cache if it's substantial
                         if len(streamlit_call_data) > 1000:
@@ -714,12 +714,44 @@ def load_new_calls_only():
         disk_result = load_cached_data_from_disk()
         if disk_result[0] is not None and len(disk_result[0]) > 0:
             cached_calls = disk_result[0]
+            logger.info(f"📂 Loaded {len(cached_calls)} calls from disk cache - extracting S3 keys...")
+            
             # Extract all S3 keys from cached calls
+            keys_found = 0
+            keys_missing = 0
+            sample_keys = []
             for call in cached_calls:
+                # Try multiple ways to get the S3 key
                 s3_key = call.get('_s3_key') or call.get('_id')
+                
+                # If still no key, try to get from filename
+                if not s3_key:
+                    filename = call.get('Filename') or call.get('Call ID')
+                    if filename:
+                        # Reconstruct S3 key from filename
+                        if s3_prefix:
+                            s3_key = f"{s3_prefix.rstrip('/')}/{filename}" if not filename.startswith(s3_prefix) else filename
+                        else:
+                            s3_key = filename
+                        # Ensure it ends with .pdf
+                        if not s3_key.lower().endswith('.pdf'):
+                            s3_key = f"{s3_key}.pdf"
+                
                 if s3_key:
                     processed_keys.add(s3_key)
-            logger.info(f"📂 Found {len(processed_keys)} already processed files in disk cache")
+                    keys_found += 1
+                    if len(sample_keys) < 3:
+                        sample_keys.append(s3_key)
+                else:
+                    keys_missing += 1
+            
+            logger.info(f"📂 Found {keys_found} S3 keys in cache ({keys_missing} calls missing keys)")
+            if sample_keys:
+                logger.info(f"📋 Sample cached keys: {sample_keys[:3]}")
+            if keys_missing > 0:
+                logger.warning(f"⚠️ {keys_missing} cached calls are missing _s3_key - they may be reprocessed")
+        else:
+            logger.info("📂 No disk cache found - all files will be treated as new")
         
         # Also check session state (for files processed in current session)
         session_keys = st.session_state.get('processed_s3_keys', set())
