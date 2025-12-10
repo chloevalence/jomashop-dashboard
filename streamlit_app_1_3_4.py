@@ -521,32 +521,47 @@ def load_all_calls_cached():
                 except:
                     pass
     
-    # Determine what to load
+    # CRITICAL FIX: If we have ANY partial cache with progress, use it immediately to prevent restart loops
+    # The app keeps restarting during loads, losing progress. We MUST use partial caches.
+    if disk_call_data and len(disk_call_data) > 0:
+        cache_count = len(disk_call_data)
+        # Check if this is a partial cache
+        is_partial = False
+        partial_processed = 0
+        partial_total = 0
+        if CACHE_FILE.exists():
+            try:
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                    is_partial = cached_data.get('partial', False)
+                    partial_processed = cached_data.get('processed', 0)
+                    partial_total = cached_data.get('total', 0)
+            except:
+                pass
+        
+        # If we have a partial cache with ANY progress (even 100+ calls), use it to prevent restart loops
+        # Only skip using cache if user explicitly requested reload
+        if not reload_all_triggered:
+            if cache_count >= 100:  # Lowered threshold - use cache if we have 100+ calls
+                if is_partial:
+                    progress_pct = (partial_processed * 100 // partial_total) if partial_total > 0 else 0
+                    logger.info(f"✅ Using partial cache with {cache_count} calls ({progress_pct}% complete) - prevents restart loss")
+                    logger.info(f"💡 To continue loading remaining files, use 'Reload ALL Data' button when ready")
+                else:
+                    logger.info(f"✅ Using complete disk cache with {cache_count} calls - prevents restart loss")
+                # Return disk cache immediately - NO S3 load to prevent restarts
+                return disk_call_data, disk_errors if disk_errors else []
+    
+    # Determine what to load (only if we don't have cache or user explicitly requested reload)
     if reload_all_triggered:
         # User explicitly requested full dataset - load ALL files (may take 10-20 min)
         logger.info(f"🔍 Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)")
         max_files = None
         st.session_state['reload_all_triggered'] = False  # Clear flag after use
     else:
-        # Check if we have disk cache - if it's substantial (has most of the data), use it directly
-        # Only load from S3 if disk cache is missing or very small
-        if disk_call_data and len(disk_call_data) > 0:
-            cache_count = len(disk_call_data)
-            # If disk cache has substantial data (5000+ calls), use it directly without loading from S3
-            # This prevents unnecessary S3 loads when we already have the full dataset cached
-            if cache_count >= 5000:
-                logger.info(f"✅ Found substantial disk cache with {cache_count} calls - using it directly")
-                # Return disk cache immediately - no need to load from S3
-                # Streamlit cache will be populated from this return value
-                return disk_call_data, disk_errors if disk_errors else []
-            else:
-                logger.info(f"📂 Found disk cache with {cache_count} calls - will compare with Streamlit cache")
-                # Load from S3 to compare, but load ALL files (not limited)
-                max_files = None  # Load all files from S3
-        else:
-            # No disk cache - load ALL files from S3 (not limited)
-            logger.info(f"🔍 No persistent cache found - loading ALL files from S3")
-            max_files = None  # Load all files
+        # No substantial cache - load ALL files from S3
+        logger.info(f"🔍 No substantial cache found - loading ALL files from S3")
+        max_files = None  # Load all files
     
     try:
         load_start = time.time()
