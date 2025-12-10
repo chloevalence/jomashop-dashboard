@@ -586,7 +586,7 @@ def load_all_calls_cached():
                         # Same size - use Streamlit cache (it's in memory, faster)
                         logger.info(f"✅ Streamlit cache matches disk cache - using in-memory version for speed")
                         use_streamlit_cache = True
-                    else:
+        else:
                         # Disk cache has more data - but Streamlit cache might be newer
                         # Since we can't easily compare timestamps, prefer Streamlit cache if it's substantial
                         if len(streamlit_call_data) > 1000:
@@ -706,8 +706,28 @@ def load_new_calls_only():
     Returns tuple: (new_call_data_list, error_message, count_of_new_files)
     """
     try:
-        # Get already processed keys from session state
-        processed_keys = st.session_state.get('processed_s3_keys', set())
+        # Get already processed keys from disk cache (survives restarts)
+        # Also check session state as a fallback
+        processed_keys = set()
+        
+        # First, try to load from disk cache to get already processed keys
+        disk_result = load_cached_data_from_disk()
+        if disk_result[0] is not None and len(disk_result[0]) > 0:
+            cached_calls = disk_result[0]
+            # Extract all S3 keys from cached calls
+            for call in cached_calls:
+                s3_key = call.get('_s3_key') or call.get('_id')
+                if s3_key:
+                    processed_keys.add(s3_key)
+            logger.info(f"📂 Found {len(processed_keys)} already processed files in disk cache")
+        
+        # Also check session state (for files processed in current session)
+        session_keys = st.session_state.get('processed_s3_keys', set())
+        if session_keys:
+            processed_keys.update(session_keys)
+            logger.info(f"📋 Found {len(session_keys)} additional files in session state")
+        
+        logger.info(f"🔍 Total {len(processed_keys)} files already processed - will skip these")
         
         # Configure S3 client
         import botocore.config
@@ -916,6 +936,19 @@ elif is_admin:
     st.sidebar.info("👑 Admin View: All Data")
 else:
     st.sidebar.info("👤 User View: All Data")
+
+# Logout button
+st.sidebar.markdown("---")
+if st.sidebar.button("🚪 Logout", help="Log out of your account", width='stretch', type="secondary"):
+    try:
+        authenticator.logout("Logout", "sidebar")
+        st.session_state.authentication_status = None
+        st.session_state.username = None
+        st.session_state.name = None
+        st.rerun()
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        st.sidebar.error("Error logging out. Please refresh the page.")
 
 # --- Background Refresh: Check for new PDFs periodically ---
 def check_for_new_pdfs_lightweight():
