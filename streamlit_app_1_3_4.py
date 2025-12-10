@@ -886,14 +886,17 @@ def load_new_calls_only():
         processed_keys_normalized = {key.strip('/') for key in processed_keys}
         total_s3_files = 0
         sample_s3_keys = []
+        all_s3_keys = []  # Store all S3 keys for comparison
         
         for page in pages:
             if 'Contents' in page:
                 for obj in page['Contents']:
-                    key = obj['Key'].strip('/')  # Normalize S3 key
+                    key_raw = obj['Key']  # Raw key from S3
+                    key = key_raw.strip('/')  # Normalize S3 key
                     if key.lower().endswith('.pdf'):
                         total_s3_files += 1
-                        if len(sample_s3_keys) < 5:
+                        all_s3_keys.append(key)
+                        if len(sample_s3_keys) < 10:
                             sample_s3_keys.append(key)
                         if key not in processed_keys_normalized:
                             new_pdf_keys.append({
@@ -901,27 +904,77 @@ def load_new_calls_only():
                                 'last_modified': obj.get('LastModified', datetime.min)
                             })
         
+        # Direct key comparison test - find matches
+        matches_found = 0
+        mismatches = []
+        if len(processed_keys_normalized) > 0 and len(all_s3_keys) > 0:
+            # Test first 20 keys from each set
+            test_cached_keys = list(processed_keys_normalized)[:20]
+            test_s3_keys = all_s3_keys[:20]
+            
+            for cached_key in test_cached_keys:
+                if cached_key in all_s3_keys:
+                    matches_found += 1
+                else:
+                    # Find closest match for debugging
+                    closest = None
+                    for s3_key in test_s3_keys:
+                        if cached_key.lower() in s3_key.lower() or s3_key.lower() in cached_key.lower():
+                            closest = s3_key
+                            break
+                    mismatches.append((cached_key, closest))
+            
+            logger.info(f"🔍 Direct Key Comparison Test:")
+            logger.info(f"   - Tested {len(test_cached_keys)} cached keys vs {len(test_s3_keys)} S3 keys")
+            logger.info(f"   - Exact matches found: {matches_found}/{len(test_cached_keys)}")
+            if mismatches:
+                logger.warning(f"   - Mismatches (first 5): {mismatches[:5]}")
+                # Show detailed comparison
+                for cached_key, closest in mismatches[:3]:
+                    logger.warning(f"     Cached: '{cached_key}' vs S3: '{closest if closest else 'NO MATCH'}'")
+        
+        # Count actual matches
+        actual_matches = len([k for k in all_s3_keys if k in processed_keys_normalized])
+        match_rate = (actual_matches / total_s3_files * 100) if total_s3_files > 0 else 0
+        
         # Comprehensive debug logging
         logger.info(f"📊 Comparison Summary:")
         logger.info(f"   - Total files in S3: {total_s3_files}")
-        logger.info(f"   - Files already processed: {len(processed_keys_normalized)}")
+        logger.info(f"   - Files already processed (cached): {len(processed_keys_normalized)}")
+        logger.info(f"   - Actual matches found: {actual_matches} ({match_rate:.1f}% match rate)")
         logger.info(f"   - New files to process: {len(new_pdf_keys)}")
         if sample_s3_keys:
-            logger.info(f"📋 Sample S3 keys (first 5): {sample_s3_keys[:5]}")
+            logger.info(f"📋 Sample S3 keys (first 10): {sample_s3_keys[:10]}")
+        
+        # If match rate is very low, log detailed comparison
+        if len(processed_keys_normalized) > 0 and match_rate < 10:
+            logger.error(f"❌ CRITICAL: Only {match_rate:.1f}% match rate! Keys don't match.")
+            logger.error(f"❌ This means key extraction or normalization is failing.")
+            logger.error(f"❌ Sample cached keys: {list(processed_keys_normalized)[:5]}")
+            logger.error(f"❌ Sample S3 keys: {all_s3_keys[:5]}")
         
         # Validation check: if we're about to process too many files and cache exists, something is wrong
         if len(processed_keys_normalized) > 0 and len(new_pdf_keys) > 0:
             new_ratio = len(new_pdf_keys) / total_s3_files if total_s3_files > 0 else 0
             if new_ratio > 0.5:
                 logger.warning(f"⚠️ WARNING: About to process {len(new_pdf_keys)} files ({new_ratio*100:.1f}% of total) even though {len(processed_keys_normalized)} files are already cached!")
-                logger.warning(f"⚠️ This suggests a key matching issue. Check sample keys above.")
+                logger.warning(f"⚠️ Match rate: {match_rate:.1f}% - This suggests a key matching issue!")
+                logger.warning(f"⚠️ Check the detailed comparison above to identify the mismatch pattern.")
             elif len(new_pdf_keys) == total_s3_files:
                 logger.error(f"❌ ERROR: All {total_s3_files} files are being treated as new, but {len(processed_keys_normalized)} are cached!")
-                logger.error(f"❌ Key extraction from cache may have failed. Check logs above.")
+                logger.error(f"❌ Match rate: {match_rate:.1f}% - Key extraction from cache has failed!")
+                logger.error(f"❌ This is a critical error - keys are not matching. Check logs above.")
         
+        # Early exit if all files are already processed
         if not new_pdf_keys:
             logger.info("✅ No new files found - all files are already processed")
             return [], None, 0  # No new files
+        
+        # Additional check: if processed count matches total, all should be cached
+        if len(processed_keys_normalized) >= total_s3_files and total_s3_files > 0:
+            logger.warning(f"⚠️ WARNING: Cached keys ({len(processed_keys_normalized)}) >= Total S3 files ({total_s3_files})")
+            logger.warning(f"⚠️ But {len(new_pdf_keys)} files are marked as new. This indicates a key format mismatch.")
+            logger.warning(f"⚠️ Match rate: {match_rate:.1f}% - Keys are not matching correctly.")
         
         # Sort by modification date (most recent first)
         new_pdf_keys.sort(key=lambda x: x['last_modified'], reverse=True)
@@ -930,23 +983,42 @@ def load_new_calls_only():
         new_calls = []
         errors = []
         
-        def process_pdf(key):
-            """Process a single PDF: download, parse, and return result."""
+        def process_pdf(key_item):
+            """Process a single PDF: download, parse, and return result.
+            
+            Args:
+                key_item: Either a string (normalized key) or dict with 'key' and 'last_modified'
+            """
             try:
-                response = s3_client_with_timeout.get_object(Bucket=s3_bucket_name, Key=key)
+                # Handle both string and dict formats
+                if isinstance(key_item, dict):
+                    normalized_key = key_item['key']
+                else:
+                    normalized_key = key_item
+                
+                # Use normalized key for S3 (S3 keys typically don't have leading slashes anyway)
+                # But ensure it works - if download fails, try with prefix
+                s3_key_to_use = normalized_key
+                if s3_prefix and not normalized_key.startswith(s3_prefix):
+                    # Try adding prefix if not present
+                    s3_key_to_use = f"{s3_prefix.rstrip('/')}/{normalized_key}" if not normalized_key.startswith(s3_prefix) else normalized_key
+                
+                response = s3_client_with_timeout.get_object(Bucket=s3_bucket_name, Key=s3_key_to_use)
                 pdf_bytes = response['Body'].read()
-                filename = key.split('/')[-1]
+                filename = normalized_key.split('/')[-1]
                 parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
                 
                 if parsed_data:
-                    # Normalize key for consistent comparison (key is already normalized from new_pdf_keys)
-                    parsed_data['_id'] = key
-                    parsed_data['_s3_key'] = key
+                    # Store normalized key for consistent comparison
+                    parsed_data['_id'] = normalized_key
+                    parsed_data['_s3_key'] = normalized_key
                     return parsed_data, None
                 else:
                     return None, f"Failed to parse {filename}"
             except Exception as e:
-                return None, f"{key}: {str(e)}"
+                # If download failed with normalized key, log the error
+                logger.warning(f"⚠️ Failed to download with key '{normalized_key}': {e}")
+                return None, f"{normalized_key}: {str(e)}"
         
         # Process in parallel
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -977,7 +1049,7 @@ def load_new_calls_only():
             last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
         
         with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_key = {executor.submit(process_pdf, item['key']): item['key'] for item in new_pdf_keys}
+            future_to_key = {executor.submit(process_pdf, item): item['key'] for item in new_pdf_keys}
             
             for future in as_completed(future_to_key):
                 parsed_data, error = future.result()
