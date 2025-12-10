@@ -567,6 +567,11 @@ def load_all_calls_cached():
         
         streamlit_call_data, streamlit_errors = result
         
+        # Log cache counts for debugging
+        streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
+        disk_cache_count = len(disk_call_data) if disk_call_data else 0
+        logger.info(f"📊 Cache Comparison: Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files")
+        
         # Determine which cache is better (more recent or more complete)
         use_streamlit_cache = False
         use_disk_cache = False
