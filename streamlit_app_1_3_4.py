@@ -1065,15 +1065,28 @@ if auth_status is None:
     except Exception as e:
         # Handle CookieManager component loading issues gracefully
         error_msg = str(e).lower()
-        if "cookiemanager" in error_msg or "component" in error_msg or "frontend" in error_msg:
-            st.error("⚠️ Authentication component is loading. Please wait a moment and refresh the page.")
-            st.info("💡 If this persists, try:")
-            st.info("1. Hard refresh the page (Ctrl+Shift+R or Cmd+Shift+R)")
-            st.info("2. Clear your browser cache")
-            st.info("3. Check your network connection")
+        if "cookiemanager" in error_msg or "component" in error_msg or "frontend" in error_msg or "extra_streamlit_components" in error_msg:
+            st.error("⚠️ **Authentication Component Loading Issue**")
+            st.warning("The authentication component is having trouble loading. This is usually a temporary network or CDN issue.")
+            st.markdown("### 🔧 **Quick Fixes (try in order):**")
+            st.markdown("1. **Wait 10-15 seconds** and refresh the page (F5 or Cmd+R)")
+            st.markdown("2. **Hard refresh** the page:")
+            st.code("Windows/Linux: Ctrl+Shift+R\nMac: Cmd+Shift+R", language=None)
+            st.markdown("3. **Clear browser cache** and cookies for this site")
+            st.markdown("4. **Try a different browser** or incognito/private mode")
+            st.markdown("5. **Check your network connection** - ensure you can access external CDNs")
+            st.markdown("6. **Verify installation** - ensure `extra-streamlit-components` is installed:")
+            st.code("pip install --upgrade extra-streamlit-components", language="bash")
+            st.markdown("---")
+            st.info("💡 **If the issue persists:** This may be a network/proxy/CDN issue. Contact your administrator or check if your deployment environment allows access to Streamlit component CDNs.")
             logger.warning(f"CookieManager component loading issue: {e}")
+            # Don't stop immediately - let user try to refresh
+            st.markdown("---")
+            if st.button("🔄 **Try Again After Refreshing**", type="primary"):
+                st.rerun()
         else:
-            st.error(f"❌ Authentication error: {e}")
+            st.error(f"❌ **Authentication Error**")
+            st.error(f"Error: {str(e)}")
             logger.exception("Authentication error")
         st.stop()
     st.stop()
