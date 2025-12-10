@@ -277,7 +277,7 @@ def load_all_calls_internal(max_files=None):
         if not restored_progress:
             if 'pdf_processing_progress' not in st.session_state:
                 st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0, 'processing_start_time': None}
-        else:
+            else:
                 st.session_state.pdf_processing_progress['total'] = total
                 # Don't reset processed count if we're continuing from partial cache
                 if not restored_progress:
