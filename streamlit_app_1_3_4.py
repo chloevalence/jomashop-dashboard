@@ -575,6 +575,30 @@ def load_all_calls_cached():
                     # Don't return early - continue to load remaining files
                 else:
                     logger.info(f"✅ USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss")
+                    # After loading from cache, check for new files in background
+                    # Set flag to trigger background refresh check
+                    if 'auto_refresh_checked' not in st.session_state:
+                        st.session_state.auto_refresh_checked = False
+                    
+                    if not st.session_state.auto_refresh_checked:
+                        # Check for new files (lightweight check)
+                        logger.info("🔍 Checking for new files in background...")
+                        try:
+                            new_count, check_error = check_for_new_pdfs_lightweight()
+                            if check_error:
+                                logger.warning(f"⚠️ Background check error: {check_error}")
+                            elif new_count > 0:
+                                logger.info(f"🆕 Found {new_count} new PDF(s) - will load in background")
+                                # Set flag to trigger background load
+                                st.session_state.auto_refresh_pending = new_count
+                                st.session_state.new_pdfs_notification_count = new_count
+                            else:
+                                logger.info("✅ No new files found - cache is up to date")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to check for new files: {e}")
+                        
+                        st.session_state.auto_refresh_checked = True
+                    
                     # Return disk cache immediately - NO S3 load needed for complete cache
                     return disk_call_data, disk_errors if disk_errors else []
             else:
@@ -785,14 +809,20 @@ def load_new_calls_only():
                     if filename:
                         # Reconstruct S3 key from filename
                         if s3_prefix:
-                            s3_key = f"{s3_prefix.rstrip('/')}/{filename}" if not filename.startswith(s3_prefix) else filename
+                            # Handle both cases: filename with or without prefix
+                            if filename.startswith(s3_prefix):
+                                s3_key = filename
+                            else:
+                                s3_key = f"{s3_prefix.rstrip('/')}/{filename}"
                         else:
                             s3_key = filename
                         # Ensure it ends with .pdf
                         if not s3_key.lower().endswith('.pdf'):
                             s3_key = f"{s3_key}.pdf"
                 
+                # Normalize the key (remove leading/trailing slashes for comparison)
                 if s3_key:
+                    s3_key = s3_key.strip('/')
                     processed_keys.add(s3_key)
                     keys_found += 1
                     if len(sample_keys) < 3:
@@ -841,13 +871,15 @@ def load_new_calls_only():
         
         # Find new PDFs (not in processed_keys)
         new_pdf_keys = []
+        processed_keys_normalized = {key.strip('/') for key in processed_keys}
+        
         for page in pages:
             if 'Contents' in page:
                 for obj in page['Contents']:
-                    key = obj['Key']
-                    if key.lower().endswith('.pdf') and key not in processed_keys:
+                    key = obj['Key'].strip('/')  # Normalize S3 key
+                    if key.lower().endswith('.pdf') and key not in processed_keys_normalized:
                         new_pdf_keys.append({
-                            'key': key,
+                            'key': key,  # Store normalized key
                             'last_modified': obj.get('LastModified', datetime.min)
                         })
         
@@ -1122,14 +1154,20 @@ def check_for_new_pdfs_lightweight():
                     if filename:
                         # Reconstruct S3 key from filename
                         if s3_prefix:
-                            s3_key = f"{s3_prefix.rstrip('/')}/{filename}" if not filename.startswith(s3_prefix) else filename
+                            # Handle both cases: filename with or without prefix
+                            if filename.startswith(s3_prefix):
+                                s3_key = filename
+                            else:
+                                s3_key = f"{s3_prefix.rstrip('/')}/{filename}"
                         else:
                             s3_key = filename
                         # Ensure it ends with .pdf
                         if not s3_key.lower().endswith('.pdf'):
                             s3_key = f"{s3_key}.pdf"
                 
+                # Normalize the key (remove leading/trailing slashes for comparison)
                 if s3_key:
+                    s3_key = s3_key.strip('/')
                     processed_keys.add(s3_key)
                     keys_found += 1
                 else:
@@ -1173,13 +1211,15 @@ def check_for_new_pdfs_lightweight():
         # Count new PDFs (not in processed_keys)
         new_count = 0
         total_pdfs = 0
+        processed_keys_normalized = {key.strip('/') for key in processed_keys}
+        
         for page in pages:
             if 'Contents' in page:
                 for obj in page['Contents']:
-                    key = obj['Key']
+                    key = obj['Key'].strip('/')  # Normalize S3 key
                     if key.lower().endswith('.pdf'):
                         total_pdfs += 1
-                        if key not in processed_keys:
+                        if key not in processed_keys_normalized:
                             new_count += 1
         
         logger.info(f"📊 PDF Count: {total_pdfs} total in S3, {len(processed_keys)} processed, {new_count} new")
@@ -1325,6 +1365,9 @@ if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs adde
                 st.warning(f"⚠️ {len(new_errors)} file(s) had errors")
             # Clear notification count after successful refresh
             st.session_state.new_pdfs_notification_count = 0
+            # Clear Streamlit cache to force reload with new data
+            load_all_calls_cached.clear()
+            # Rerun to show updated data
             st.rerun()
         else:
             # No new files found and no errors
@@ -1574,6 +1617,57 @@ try:
         
         elapsed = time.time() - t0
         status_text.empty()
+    
+    # Auto-load new files if detected during startup
+    if 'auto_refresh_pending' in st.session_state and st.session_state.auto_refresh_pending > 0:
+        new_count = st.session_state.auto_refresh_pending
+        logger.info(f"🔄 Auto-loading {new_count} new files detected during startup...")
+        with st.spinner(f"🔄 Loading {new_count} new PDF(s) in background..."):
+            new_calls, new_errors, actual_new_count = load_new_calls_only()
+            
+            if isinstance(new_errors, str):
+                logger.error(f"❌ Error auto-loading new files: {new_errors}")
+                st.warning(f"⚠️ Could not auto-load new files: {new_errors}")
+            elif actual_new_count > 0:
+                # Merge with existing data
+                disk_result = load_cached_data_from_disk()
+                existing_calls = disk_result[0] if disk_result[0] is not None else []
+                all_calls_merged = existing_calls + new_calls
+                all_calls_merged = deduplicate_calls(all_calls_merged)
+                
+                # Save to disk
+                import time
+                cache_data = {
+                    'call_data': all_calls_merged,
+                    'errors': new_errors if new_errors else [],
+                    'timestamp': datetime.now().isoformat(),
+                    'last_save_time': time.time(),
+                    'count': len(all_calls_merged),
+                    'partial': False
+                }
+                with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(cache_data, f, default=str, indent=2)
+                
+                logger.info(f"✅ Auto-loaded {actual_new_count} new files. Total: {len(all_calls_merged)} calls")
+                st.success(f"✅ Auto-loaded {actual_new_count} new file(s)! Total: {len(all_calls_merged)} calls")
+                
+                # Update call_data to include new files
+                call_data = all_calls_merged
+                errors = new_errors if new_errors else []
+                
+                # Clear Streamlit cache to force reload
+                load_all_calls_cached.clear()
+                
+                # Clear flags
+                del st.session_state.auto_refresh_pending
+                st.session_state.new_pdfs_notification_count = 0
+                
+                # Rerun to show updated data
+                st.rerun()
+            else:
+                logger.info("ℹ️ No new files to load (may have been processed already)")
+                del st.session_state.auto_refresh_pending
+                st.session_state.new_pdfs_notification_count = 0
     
     # Check if we got valid data
     if not call_data and not errors:
