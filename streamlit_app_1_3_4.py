@@ -228,9 +228,11 @@ def load_all_calls_internal(max_files=None):
                     parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
                     
                     if parsed_data:
-                        # Add S3 metadata
-                        parsed_data['_id'] = key
-                        parsed_data['_s3_key'] = key
+                        # Add S3 metadata - normalize key for consistent comparison
+                        # Store normalized key but keep original for S3 operations
+                        normalized_key = key.strip('/')
+                        parsed_data['_id'] = normalized_key
+                        parsed_data['_s3_key'] = normalized_key
                         return parsed_data, None
                     else:
                         return None, f"Failed to parse {filename}"
@@ -798,10 +800,19 @@ def load_new_calls_only():
             # Extract all S3 keys from cached calls
             keys_found = 0
             keys_missing = 0
+            keys_from_s3_key = 0
+            keys_from_id = 0
+            keys_from_filename = 0
             sample_keys = []
             for call in cached_calls:
                 # Try multiple ways to get the S3 key
-                s3_key = call.get('_s3_key') or call.get('_id')
+                s3_key = call.get('_s3_key')
+                if s3_key:
+                    keys_from_s3_key += 1
+                else:
+                    s3_key = call.get('_id')
+                    if s3_key:
+                        keys_from_id += 1
                 
                 # If still no key, try to get from filename
                 if not s3_key:
@@ -819,20 +830,21 @@ def load_new_calls_only():
                         # Ensure it ends with .pdf
                         if not s3_key.lower().endswith('.pdf'):
                             s3_key = f"{s3_key}.pdf"
+                        keys_from_filename += 1
                 
                 # Normalize the key (remove leading/trailing slashes for comparison)
                 if s3_key:
                     s3_key = s3_key.strip('/')
                     processed_keys.add(s3_key)
                     keys_found += 1
-                    if len(sample_keys) < 3:
+                    if len(sample_keys) < 5:
                         sample_keys.append(s3_key)
                 else:
                     keys_missing += 1
             
-            logger.info(f"📂 Found {keys_found} S3 keys in cache ({keys_missing} calls missing keys)")
+            logger.info(f"📊 Key Extraction Summary: {keys_found} found ({keys_from_s3_key} from _s3_key, {keys_from_id} from _id, {keys_from_filename} from filename), {keys_missing} missing")
             if sample_keys:
-                logger.info(f"📋 Sample cached keys: {sample_keys[:3]}")
+                logger.info(f"📋 Sample cached keys (first 5): {sample_keys[:5]}")
             if keys_missing > 0:
                 logger.warning(f"⚠️ {keys_missing} cached calls are missing _s3_key - they may be reprocessed")
         else:
@@ -872,18 +884,43 @@ def load_new_calls_only():
         # Find new PDFs (not in processed_keys)
         new_pdf_keys = []
         processed_keys_normalized = {key.strip('/') for key in processed_keys}
+        total_s3_files = 0
+        sample_s3_keys = []
         
         for page in pages:
             if 'Contents' in page:
                 for obj in page['Contents']:
                     key = obj['Key'].strip('/')  # Normalize S3 key
-                    if key.lower().endswith('.pdf') and key not in processed_keys_normalized:
-                        new_pdf_keys.append({
-                            'key': key,  # Store normalized key
-                            'last_modified': obj.get('LastModified', datetime.min)
-                        })
+                    if key.lower().endswith('.pdf'):
+                        total_s3_files += 1
+                        if len(sample_s3_keys) < 5:
+                            sample_s3_keys.append(key)
+                        if key not in processed_keys_normalized:
+                            new_pdf_keys.append({
+                                'key': key,  # Store normalized key
+                                'last_modified': obj.get('LastModified', datetime.min)
+                            })
+        
+        # Comprehensive debug logging
+        logger.info(f"📊 Comparison Summary:")
+        logger.info(f"   - Total files in S3: {total_s3_files}")
+        logger.info(f"   - Files already processed: {len(processed_keys_normalized)}")
+        logger.info(f"   - New files to process: {len(new_pdf_keys)}")
+        if sample_s3_keys:
+            logger.info(f"📋 Sample S3 keys (first 5): {sample_s3_keys[:5]}")
+        
+        # Validation check: if we're about to process too many files and cache exists, something is wrong
+        if len(processed_keys_normalized) > 0 and len(new_pdf_keys) > 0:
+            new_ratio = len(new_pdf_keys) / total_s3_files if total_s3_files > 0 else 0
+            if new_ratio > 0.5:
+                logger.warning(f"⚠️ WARNING: About to process {len(new_pdf_keys)} files ({new_ratio*100:.1f}% of total) even though {len(processed_keys_normalized)} files are already cached!")
+                logger.warning(f"⚠️ This suggests a key matching issue. Check sample keys above.")
+            elif len(new_pdf_keys) == total_s3_files:
+                logger.error(f"❌ ERROR: All {total_s3_files} files are being treated as new, but {len(processed_keys_normalized)} are cached!")
+                logger.error(f"❌ Key extraction from cache may have failed. Check logs above.")
         
         if not new_pdf_keys:
+            logger.info("✅ No new files found - all files are already processed")
             return [], None, 0  # No new files
         
         # Sort by modification date (most recent first)
@@ -902,6 +939,7 @@ def load_new_calls_only():
                 parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
                 
                 if parsed_data:
+                    # Normalize key for consistent comparison (key is already normalized from new_pdf_keys)
                     parsed_data['_id'] = key
                     parsed_data['_s3_key'] = key
                     return parsed_data, None
@@ -916,7 +954,7 @@ def load_new_calls_only():
         
         total_new = len(new_pdf_keys)
         logger.info(f"🔄 Refresh New Data: Found {total_new} new PDF files to process")
-        logger.info(f"📥 Starting to process {total_new} new PDF files in parallel")
+        logger.info(f"📥 Starting to process {total_new} new PDF files in parallel (out of {total_s3_files} total in S3)")
         
         processing_start_time = time.time()
         last_log_time = time.time()
