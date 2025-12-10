@@ -495,64 +495,56 @@ def load_all_calls_cached():
     # 3. Compare and use the best/most recent data
     # 4. Update disk cache with the best data
     
+    # CRITICAL: Always check disk cache FIRST to prevent restart loops
+    # The app keeps restarting during loads, losing progress. We MUST use partial caches.
     disk_call_data = None
     disk_errors = None
     disk_cache_timestamp = None
+    is_partial = False
+    partial_processed = 0
+    partial_total = 0
     
-    if not reload_all_triggered:
-        # Load disk cache to compare later
-        disk_result = load_cached_data_from_disk()
-        if disk_result[0] is not None:
-            disk_call_data, disk_errors = disk_result
-            # Get timestamp and check if it's a partial cache
-            if CACHE_FILE.exists():
-                try:
-                    with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                        cached_data = json.load(f)
-                        disk_cache_timestamp = cached_data.get('timestamp', None)
-                        is_partial = cached_data.get('partial', False)
-                        partial_processed = cached_data.get('processed', 0)
-                        partial_total = cached_data.get('total', 0)
-                        
-                        # If we have a partial cache with substantial progress, use it instead of starting fresh
-                        if is_partial and len(disk_call_data) > 1000 and partial_processed > 0:
-                            progress_pct = (partial_processed * 100 // partial_total) if partial_total > 0 else 0
-                            logger.info(f"📦 Found partial cache with {len(disk_call_data)} calls ({progress_pct}% complete) - will use if more complete than fresh load")
-                except:
-                    pass
-    
-    # CRITICAL FIX: If we have ANY partial cache with progress, use it immediately to prevent restart loops
-    # The app keeps restarting during loads, losing progress. We MUST use partial caches.
-    if disk_call_data and len(disk_call_data) > 0:
+    # Load disk cache regardless of reload_all_triggered - we'll check that flag later
+    disk_result = load_cached_data_from_disk()
+    if disk_result[0] is not None and len(disk_result[0]) > 0:
+        disk_call_data, disk_errors = disk_result
         cache_count = len(disk_call_data)
-        # Check if this is a partial cache
-        is_partial = False
-        partial_processed = 0
-        partial_total = 0
+        
+        # Get cache metadata
         if CACHE_FILE.exists():
             try:
                 with open(CACHE_FILE, 'r', encoding='utf-8') as f:
                     cached_data = json.load(f)
+                    disk_cache_timestamp = cached_data.get('timestamp', None)
                     is_partial = cached_data.get('partial', False)
                     partial_processed = cached_data.get('processed', 0)
                     partial_total = cached_data.get('total', 0)
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to read cache metadata: {e}")
         
-        # If we have a partial cache with ANY progress (even 100+ calls), use it to prevent restart loops
-        # Only skip using cache if user explicitly requested reload
+        # CRITICAL: If we have ANY cache (even partial with 100+ calls), use it UNLESS user explicitly requested reload
+        # This prevents the restart loop where app restarts and loses all progress
         if not reload_all_triggered:
-            if cache_count >= 100:  # Lowered threshold - use cache if we have 100+ calls
+            if cache_count >= 100:  # Use cache if we have 100+ calls
                 if is_partial:
                     progress_pct = (partial_processed * 100 // partial_total) if partial_total > 0 else 0
-                    logger.info(f"✅ Using partial cache with {cache_count} calls ({progress_pct}% complete) - prevents restart loss")
+                    logger.info(f"✅ USING PARTIAL CACHE: {cache_count} calls ({progress_pct}% complete) - prevents restart loss")
                     logger.info(f"💡 To continue loading remaining files, use 'Reload ALL Data' button when ready")
                 else:
-                    logger.info(f"✅ Using complete disk cache with {cache_count} calls - prevents restart loss")
+                    logger.info(f"✅ USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss")
                 # Return disk cache immediately - NO S3 load to prevent restarts
                 return disk_call_data, disk_errors if disk_errors else []
+            else:
+                logger.info(f"⚠️ Cache has only {cache_count} calls (< 100), will load from S3")
+        else:
+            logger.info(f"🔄 Reload ALL Data triggered - ignoring cache with {cache_count} calls, will load fresh from S3")
     
-    # Determine what to load (only if we don't have cache or user explicitly requested reload)
+    # Only reach here if:
+    # 1. No cache found, OR
+    # 2. Cache has < 100 calls, OR  
+    # 3. User explicitly requested reload (reload_all_triggered = True)
+    
+    # Determine what to load
     if reload_all_triggered:
         # User explicitly requested full dataset - load ALL files (may take 10-20 min)
         logger.info(f"🔍 Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)")
