@@ -20,6 +20,9 @@ from collections import defaultdict
 from pdf_parser import parse_pdf_from_bytes
 from utils import log_audit_event, check_session_timeout, load_metrics, track_feature_usage
 
+# --- Configuration: Limit for faster testing (set to None to load all files) ---
+MAX_FILES_FOR_TESTING = 100  # Set to None to disable limit
+
 # --- Logging Setup ---
 log_dir = Path("logs")
 try:
@@ -618,7 +621,7 @@ def load_all_calls_cached():
     if reload_all_triggered:
         # User explicitly requested full dataset - load ALL files (may take 10-20 min)
         logger.info(f"🔍 Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)")
-        max_files = None
+        max_files = MAX_FILES_FOR_TESTING  # Use testing limit if set
         st.session_state['reload_all_triggered'] = False  # Clear flag after use
     elif is_partial and partial_total > 0 and partial_processed < partial_total:
         # Partial cache exists - continue loading remaining files
@@ -658,7 +661,7 @@ def load_all_calls_cached():
     else:
         # No substantial cache - load ALL files from S3
         logger.info(f"🔍 No substantial cache found - loading ALL files from S3")
-        max_files = None  # Load all files
+        max_files = MAX_FILES_FOR_TESTING  # Use testing limit if set
     
     try:
         load_start = time.time()
@@ -1007,6 +1010,11 @@ def load_new_calls_only():
         
         # Sort by modification date (most recent first)
         new_pdf_keys.sort(key=lambda x: x['last_modified'], reverse=True)
+        
+        # Apply testing limit if configured
+        if MAX_FILES_FOR_TESTING is not None and len(new_pdf_keys) > MAX_FILES_FOR_TESTING:
+            logger.info(f"🧪 Testing mode: Limiting to {MAX_FILES_FOR_TESTING} files (out of {len(new_pdf_keys)} new files)")
+            new_pdf_keys = new_pdf_keys[:MAX_FILES_FOR_TESTING]
         
         # Process new PDFs
         new_calls = []
