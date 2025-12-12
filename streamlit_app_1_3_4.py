@@ -299,6 +299,7 @@ def load_all_calls_internal(max_files=None):
         logger.info(f"📥 Starting to process {total} PDF files in batches of {BATCH_SIZE} (this will take 10-20 minutes)")
         
         last_dashboard_update = 0
+        last_log_time = time.time()  # Initialize last_log_time before loop
         
         # Process in batches
         for batch_start in range(0, total, BATCH_SIZE):
@@ -321,12 +322,13 @@ def load_all_calls_internal(max_files=None):
                     st.session_state.pdf_processing_progress['processed'] += 1
                     
                     processed = st.session_state.pdf_processing_progress['processed']
-                    if processed % 100 == 0 or (time.time() - last_log_time) > 30:
-                        elapsed = time.time() - processing_start_time
+                    current_time = time.time()
+                    if processed % 100 == 0 or (current_time - last_log_time) > 30:
+                        elapsed = current_time - processing_start_time
                         rate = processed / elapsed if elapsed > 0 else 0
                         remaining = (total - processed) / rate if rate > 0 else 0
                         logger.info(f"📊 Progress: {processed}/{total} files processed ({processed*100//total}%), {len(all_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
-                        last_log_time = time.time()
+                    last_log_time = current_time  # Always update outside if block to prevent UnboundLocalError
                         
                         # INCREMENTAL SAVE: Save to disk cache every 100 files or every 1 minute
                         # This prevents losing all progress if app restarts during long loads
@@ -1112,6 +1114,18 @@ def load_new_calls_only():
             
             logger.info(f"📦 Processing batch {batch_start//BATCH_SIZE + 1}/{(total_new + BATCH_SIZE - 1)//BATCH_SIZE}: files {batch_start+1}-{batch_end} of {total_new}")
             
+            # Track calls from this batch only (for incremental save)
+            batch_calls = []
+            
+            # Load existing cache keys BEFORE processing batch to check for duplicates
+            existing_cache_keys = set()
+            try:
+                disk_result_pre = load_cached_data_from_disk()
+                if disk_result_pre[0]:
+                    existing_cache_keys = {call.get('_s3_key') or call.get('_id') for call in disk_result_pre[0] if call.get('_s3_key') or call.get('_id')}
+            except:
+                pass
+            
             with ThreadPoolExecutor(max_workers=10) as executor:
                 future_to_key = {executor.submit(process_pdf, item): item['key'] for item in batch_keys}
                 
@@ -1121,6 +1135,28 @@ def load_new_calls_only():
                     
                     if parsed_data:
                         new_calls.append(parsed_data)
+                        batch_calls.append(parsed_data)  # Track for this batch
+                        
+                        # Check if this call is already in cache
+                        call_key = parsed_data.get('_s3_key') or parsed_data.get('_id')
+                        if call_key and call_key in existing_cache_keys:
+                            # #region agent log
+                            import json as json_module
+                            with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                                f.write(json_module.dumps({
+                                    'sessionId': 'debug-session',
+                                    'runId': 'pre-fix',
+                                    'hypothesisId': 'C',
+                                    'location': 'streamlit_app_1_3_4.py:1127',
+                                    'message': 'WARNING: Processing file already in cache',
+                                    'data': {
+                                        'call_key': call_key,
+                                        'batch_num': batch_start//BATCH_SIZE + 1,
+                                        'processed_count': processed_count
+                                    },
+                                    'timestamp': int(time.time() * 1000)
+                                }) + '\n')
+                            # #endregion
                     elif error:
                         errors.append(error)
                     
@@ -1134,10 +1170,92 @@ def load_new_calls_only():
             
             # Save incrementally after each batch
             try:
+                # #region agent log
+                import json as json_module
+                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'pre-fix',
+                        'hypothesisId': 'A',
+                        'location': 'streamlit_app_1_3_4.py:1137',
+                        'message': 'Before incremental save - checking counts',
+                        'data': {
+                            'batch_num': batch_start//BATCH_SIZE + 1,
+                            'new_calls_count': len(new_calls),
+                            'batch_calls_count': len(batch_calls),
+                            'processed_count': processed_count
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                
                 disk_result = load_cached_data_from_disk()
                 existing_calls = disk_result[0] if disk_result[0] is not None else []
-                all_calls_merged = existing_calls + new_calls
+                
+                # #region agent log
+                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'pre-fix',
+                        'hypothesisId': 'A',
+                        'location': 'streamlit_app_1_3_4.py:1140',
+                        'message': 'After loading disk - checking for duplicates',
+                        'data': {
+                            'existing_calls_count': len(existing_calls),
+                            'new_calls_count': len(new_calls),
+                            'batch_calls_count': len(batch_calls),
+                            'will_merge_all_new_calls': True
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                
+                # FIX: Only merge batch_calls (current batch) with existing, not all new_calls
+                # This prevents duplicates from previous batches
+                
+                # Check for duplicates BEFORE merging
+                existing_keys = {call.get('_s3_key') or call.get('_id') for call in existing_calls if call.get('_s3_key') or call.get('_id')}
+                batch_keys = {call.get('_s3_key') or call.get('_id') for call in batch_calls if call.get('_s3_key') or call.get('_id')}
+                overlapping_keys = existing_keys & batch_keys
+                
+                # #region agent log
+                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'pre-fix',
+                        'hypothesisId': 'A',
+                        'location': 'streamlit_app_1_3_4.py:1185',
+                        'message': 'Checking for overlapping keys before merge',
+                        'data': {
+                            'existing_keys_count': len(existing_keys),
+                            'batch_keys_count': len(batch_keys),
+                            'overlapping_keys_count': len(overlapping_keys),
+                            'overlapping_keys_sample': list(overlapping_keys)[:5] if overlapping_keys else []
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                
+                all_calls_merged = existing_calls + batch_calls
                 calls_to_save = deduplicate_calls(all_calls_merged.copy())
+                
+                # #region agent log
+                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'pre-fix',
+                        'hypothesisId': 'A',
+                        'location': 'streamlit_app_1_3_4.py:1200',
+                        'message': 'After deduplication - checking result',
+                        'data': {
+                            'before_dedup_count': len(all_calls_merged),
+                            'after_dedup_count': len(calls_to_save),
+                            'duplicates_removed': len(all_calls_merged) - len(calls_to_save),
+                            'expected_duplicates_from_overlap': len(overlapping_keys)
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
                 
                 cache_data = {
                     'call_data': calls_to_save,
@@ -1159,6 +1277,25 @@ def load_new_calls_only():
             
             # Update dashboard every 500 calls
             if processed_count >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
+                # #region agent log
+                import json as json_module
+                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'pre-fix',
+                        'hypothesisId': 'B',
+                        'location': 'streamlit_app_1_3_4.py:1161',
+                        'message': 'About to trigger st.rerun() for dashboard update',
+                        'data': {
+                            'processed_count': processed_count,
+                            'last_dashboard_update': last_dashboard_update,
+                            'new_calls_count': len(new_calls),
+                            'will_rerun': True
+                        },
+                        'timestamp': int(time.time() * 1000)
+                    }) + '\n')
+                # #endregion
+                
                 logger.info(f"🔄 Dashboard update: {processed_count} calls processed, updating dashboard...")
                 last_dashboard_update = processed_count
                 
