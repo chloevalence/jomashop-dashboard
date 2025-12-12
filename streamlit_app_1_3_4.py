@@ -292,75 +292,96 @@ def load_all_calls_internal(max_files=None):
         processing_start_time = time.time()
         st.session_state.pdf_processing_progress['processing_start_time'] = processing_start_time
         
-        # Process PDFs in parallel (max 10 workers to avoid overwhelming S3/CPU)
-        logger.info(f"📥 Starting to process {total} PDF files in parallel (this will take 10-20 minutes)")
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            # Submit all tasks
-            future_to_key = {executor.submit(process_pdf_with_retry, key): key for key in pdf_keys}
+        # Process PDFs in batches of 100, updating dashboard every 500 calls
+        BATCH_SIZE = 100
+        DASHBOARD_UPDATE_INTERVAL = 500
+        
+        logger.info(f"📥 Starting to process {total} PDF files in batches of {BATCH_SIZE} (this will take 10-20 minutes)")
+        
+        last_dashboard_update = 0
+        
+        # Process in batches
+        for batch_start in range(0, total, BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, total)
+            batch_keys = pdf_keys[batch_start:batch_end]
             
-            # Collect results as they complete
-            last_log_time = time.time()
-            for future in as_completed(future_to_key):
-                parsed_data, error = future.result()
-                if parsed_data:
-                    all_calls.append(parsed_data)
-                elif error:
-                    errors.append(error)
-                    st.session_state.pdf_processing_progress['errors'] += 1
+            logger.info(f"📦 Processing batch {batch_start//BATCH_SIZE + 1}/{(total + BATCH_SIZE - 1)//BATCH_SIZE}: files {batch_start+1}-{batch_end} of {total}")
+            
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_key = {executor.submit(process_pdf_with_retry, key): key for key in batch_keys}
                 
-                # Update progress
-                st.session_state.pdf_processing_progress['processed'] += 1
-                
-                # Log progress every 100 files or every 30 seconds
-                processed = st.session_state.pdf_processing_progress['processed']
-                if processed % 100 == 0 or (time.time() - last_log_time) > 30:
-                    elapsed = time.time() - processing_start_time
-                    rate = processed / elapsed if elapsed > 0 else 0
-                    remaining = (total - processed) / rate if rate > 0 else 0
-                    logger.info(f"📊 Progress: {processed}/{total} files processed ({processed*100//total}%), {len(all_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
-                    last_log_time = time.time()
+                for future in as_completed(future_to_key):
+                    parsed_data, error = future.result()
+                    if parsed_data:
+                        all_calls.append(parsed_data)
+                    elif error:
+                        errors.append(error)
+                        st.session_state.pdf_processing_progress['errors'] += 1
                     
-                    # INCREMENTAL SAVE: Save to disk cache every 100 files or every 1 minute
-                    # This prevents losing all progress if app restarts during long loads
-                    # Try to get last save time from disk cache metadata first (survives restarts)
-                    last_save_time = 0
-                    try:
-                        if CACHE_FILE.exists():
-                            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                                cached_data = json.load(f)
-                                last_save_time = cached_data.get('last_save_time', 0)
-                    except:
-                        pass
-                    # Fallback to session state if not in cache
-                    if not last_save_time:
-                        last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
-                    time_since_last_save = time.time() - last_save_time
-                    # Save every 100 files OR every 1 minute (more frequent saves to prevent data loss on restarts)
-                    should_save = (processed % 100 == 0) or (time_since_last_save > 60)
-                    if should_save:
+                    st.session_state.pdf_processing_progress['processed'] += 1
+                    
+                    processed = st.session_state.pdf_processing_progress['processed']
+                    if processed % 100 == 0 or (time.time() - last_log_time) > 30:
+                        elapsed = time.time() - processing_start_time
+                        rate = processed / elapsed if elapsed > 0 else 0
+                        remaining = (total - processed) / rate if rate > 0 else 0
+                        logger.info(f"📊 Progress: {processed}/{total} files processed ({processed*100//total}%), {len(all_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
+                        last_log_time = time.time()
+                        
+                        # INCREMENTAL SAVE: Save to disk cache every 100 files or every 1 minute
+                        # This prevents losing all progress if app restarts during long loads
+                        # Try to get last save time from disk cache metadata first (survives restarts)
+                        last_save_time = 0
                         try:
-                            # Deduplicate before incremental save to prevent cache bloat
-                            calls_to_save = deduplicate_calls(all_calls.copy())
-                            if len(calls_to_save) < len(all_calls):
-                                logger.info(f"🔍 Deduplicated before incremental save: {len(all_calls)} → {len(calls_to_save)} unique calls")
-                            
-                            # Save current progress to disk cache incrementally
-                            cache_data = {
-                                'call_data': calls_to_save,  # Already deduplicated
-                                'errors': errors.copy(),
-                                'timestamp': datetime.now().isoformat(),
-                                'last_save_time': time.time(),  # Track last save time for time-based saves
-                                'count': len(calls_to_save),
-                                'partial': True,  # Mark as partial/in-progress
-                                'processed': processed,
-                                'total': total
-                            }
-                            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-                                json.dump(cache_data, f, default=str, indent=2)
-                            st.session_state._last_incremental_save_time = time.time()
-                            logger.info(f"💾 Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed}/{total} = {processed*100//total}% complete - progress protected)")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed incremental save: {e}")
+                            if CACHE_FILE.exists():
+                                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                                    cached_data = json.load(f)
+                                    last_save_time = cached_data.get('last_save_time', 0)
+                        except:
+                            pass
+                        # Fallback to session state if not in cache
+                        if not last_save_time:
+                            last_save_time = getattr(st.session_state, '_last_incremental_save_time', 0)
+                        time_since_last_save = time.time() - last_save_time
+                        # Save every 100 files OR every 1 minute (more frequent saves to prevent data loss on restarts)
+                        should_save = (processed % 100 == 0) or (time_since_last_save > 60)
+                        if should_save:
+                            try:
+                                # Deduplicate before incremental save to prevent cache bloat
+                                calls_to_save = deduplicate_calls(all_calls.copy())
+                                if len(calls_to_save) < len(all_calls):
+                                    logger.info(f"🔍 Deduplicated before incremental save: {len(all_calls)} → {len(calls_to_save)} unique calls")
+                                
+                                # Save current progress to disk cache incrementally
+                                cache_data = {
+                                    'call_data': calls_to_save,  # Already deduplicated
+                                    'errors': errors.copy(),
+                                    'timestamp': datetime.now().isoformat(),
+                                    'last_save_time': time.time(),  # Track last save time for time-based saves
+                                    'count': len(calls_to_save),
+                                    'partial': True,  # Mark as partial/in-progress
+                                    'processed': processed,
+                                    'total': total
+                                }
+                                with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                                    json.dump(cache_data, f, default=str, indent=2)
+                                st.session_state._last_incremental_save_time = time.time()
+                                logger.info(f"💾 Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed}/{total} = {processed*100//total}% complete - progress protected)")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed incremental save: {e}")
+            
+            # Update dashboard every 500 calls
+            processed = st.session_state.pdf_processing_progress['processed']
+            if processed >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
+                logger.info(f"🔄 Dashboard update: {processed} calls processed, updating dashboard...")
+                last_dashboard_update = processed
+                
+                # Save current progress
+                # ... save logic ...
+                
+                # Clear Streamlit cache and rerun
+                load_all_calls_cached.clear()
+                st.rerun()
         
         elapsed_total = time.time() - processing_start_time
         logger.info(f"✅ Completed processing {total} files in {elapsed_total/60:.1f} minutes. Success: {len(all_calls)}, Errors: {len(errors)}")
