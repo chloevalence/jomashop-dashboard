@@ -3963,7 +3963,7 @@ with analytics_tab3:
                 if failure_info['notes']:
                     st.write("**Sample Failure Notes:**")
                     for note in failure_info['notes'][:5]:  # Show first 5 notes
-                        st.text_area("Note", value=note, height=50, disabled=True, key=f"note_{hash(note)}", label_visibility="collapsed")
+                        st.text_area("Note", value=note, height=68, disabled=True, key=f"note_{hash(note)}", label_visibility="collapsed")
         else:
             st.info("ℹ️ No failed rubric items found in the filtered data")
     else:
