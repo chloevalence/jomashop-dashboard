@@ -299,7 +299,6 @@ def load_all_calls_internal(max_files=None):
         logger.info(f"📥 Starting to process {total} PDF files in batches of {BATCH_SIZE} (this will take 10-20 minutes)")
         
         last_dashboard_update = 0
-        last_log_time = time.time()  # Initialize last_log_time before loop
         
         # Process in batches
         for batch_start in range(0, total, BATCH_SIZE):
@@ -322,15 +321,14 @@ def load_all_calls_internal(max_files=None):
                     st.session_state.pdf_processing_progress['processed'] += 1
                     
                     processed = st.session_state.pdf_processing_progress['processed']
-                    current_time = time.time()
-                    if processed % 100 == 0 or (current_time - last_log_time) > 30:
+                    if processed % 100 == 0:
+                        current_time = time.time()
                         elapsed = current_time - processing_start_time
                         rate = processed / elapsed if elapsed > 0 else 0
                         remaining = (total - processed) / rate if rate > 0 else 0
                         logger.info(f"📊 Progress: {processed}/{total} files processed ({processed*100//total}%), {len(all_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
-                    last_log_time = current_time  # Always update outside if block to prevent UnboundLocalError
                         
-                        # INCREMENTAL SAVE: Save to disk cache every 100 files or every 1 minute
+                        # INCREMENTAL SAVE: Save to disk cache every 100 files
                         # This prevents losing all progress if app restarts during long loads
                         # Try to get last save time from disk cache metadata first (survives restarts)
                         last_save_time = 0
@@ -1087,7 +1085,6 @@ def load_new_calls_only():
         logger.info(f"📥 Starting to process {total_new} new PDF files in batches of {BATCH_SIZE} (out of {total_s3_files} total in S3)")
         
         processing_start_time = time.time()
-        last_log_time = time.time()
         processed_count = 0
         last_dashboard_update = 0
         
@@ -1160,13 +1157,12 @@ def load_new_calls_only():
                     elif error:
                         errors.append(error)
                     
-                    # Log progress every 100 files or every 30 seconds
-                    if processed_count % 100 == 0 or (time.time() - last_log_time) > 30:
+                    # Log progress every 100 files
+                    if processed_count % 100 == 0:
                         elapsed = time.time() - processing_start_time
                         rate = processed_count / elapsed if elapsed > 0 else 0
                         remaining = (total_new - processed_count) / rate if rate > 0 else 0
                         logger.info(f"📊 Refresh Progress: {processed_count}/{total_new} files processed ({processed_count*100//total_new}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
-                        last_log_time = time.time()
             
             # Save incrementally after each batch
             try:
