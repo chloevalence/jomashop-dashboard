@@ -4083,8 +4083,7 @@ with export_col1:
         label="📥 Download QA Data (Excel)",
         data=excel_buffer.getvalue(),
         file_name=f"qa_report_{start_date}_to_{end_date}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        width='stretch'
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 with export_col2:
@@ -4118,8 +4117,7 @@ with export_col2:
         label="📥 Download QA Data (CSV)",
         data=csv_buffer.getvalue(),
         file_name=f"qa_report_{start_date}_to_{end_date}.csv",
-        mime="text/csv",
-        width='stretch'
+        mime="text/csv"
     )
 
 # Export selected individual calls (if any are selected)
@@ -4150,8 +4148,7 @@ if len(filtered_df) > 0:
                 label="📥 Export Selected (Excel)",
                 data=selected_excel_buffer.getvalue(),
                 file_name=f"selected_calls_{start_date}_to_{end_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width='stretch'
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
         with export_selected_col2:
@@ -4166,8 +4163,7 @@ if len(filtered_df) > 0:
                 label="📥 Export Selected (CSV)",
                 data=selected_csv_buffer.getvalue(),
                 file_name=f"selected_calls_{start_date}_to_{end_date}.csv",
-                mime="text/csv",
-                width='stretch'
+                mime="text/csv"
             )
         
         if st.button("🗑️ Clear Selection"):
