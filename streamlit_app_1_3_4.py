@@ -620,6 +620,8 @@ def load_all_calls_cached():
                                 st.session_state.new_pdfs_notification_count = new_count
                             else:
                                 logger.info("✅ No new files found - cache is up to date")
+                                # Clear notification count since there are no new files
+                                st.session_state.new_pdfs_notification_count = 0
                         except Exception as e:
                             logger.warning(f"⚠️ Failed to check for new files: {e}")
                         
@@ -941,13 +943,22 @@ def load_new_calls_only():
         sample_s3_keys = []
         all_s3_keys = []  # Store all S3 keys for comparison
         
+        # Track pagination progress
+        page_count = 0
+        files_per_page = []
+        is_truncated = False
+        
         for page in pages:
+            page_count += 1
+            page_file_count = 0
+            
             if 'Contents' in page:
                 for obj in page['Contents']:
                     key_raw = obj['Key']  # Raw key from S3
-                    key = key_raw.strip('/')  # Normalize S3 key
+                    key = key_raw.strip('/')  # Normalize S3 key (consistent with cache normalization)
                     if key.lower().endswith('.pdf'):
                         total_s3_files += 1
+                        page_file_count += 1
                         all_s3_keys.append(key)
                         if len(sample_s3_keys) < 10:
                             sample_s3_keys.append(key)
@@ -956,71 +967,119 @@ def load_new_calls_only():
                                 'key': key,  # Store normalized key
                                 'last_modified': obj.get('LastModified', datetime.min)
                             })
-        
-        # Direct key comparison test - find matches
-        matches_found = 0
-        mismatches = []
-        if len(processed_keys_normalized) > 0 and len(all_s3_keys) > 0:
-            # Test first 20 keys from each set
-            test_cached_keys = list(processed_keys_normalized)[:20]
-            test_s3_keys = all_s3_keys[:20]
             
-            for cached_key in test_cached_keys:
-                if cached_key in all_s3_keys:
-                    matches_found += 1
-                else:
-                    # Find closest match for debugging
-                    closest = None
-                    for s3_key in test_s3_keys:
-                        if cached_key.lower() in s3_key.lower() or s3_key.lower() in cached_key.lower():
-                            closest = s3_key
-                            break
-                    mismatches.append((cached_key, closest))
+            files_per_page.append(page_file_count)
+            # Check if pagination is truncated (though paginator should handle this automatically)
+            if 'IsTruncated' in page:
+                is_truncated = page['IsTruncated']
+                # Log IsTruncated status for each page to debug pagination issues
+                if page_count % 5 == 0 or is_truncated:
+                    logger.info(f"📄 Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}")
             
-            logger.info(f"🔍 Direct Key Comparison Test:")
-            logger.info(f"   - Tested {len(test_cached_keys)} cached keys vs {len(test_s3_keys)} S3 keys")
-            logger.info(f"   - Exact matches found: {matches_found}/{len(test_cached_keys)}")
-            if mismatches:
-                logger.warning(f"   - Mismatches (first 5): {mismatches[:5]}")
-                # Show detailed comparison
-                for cached_key, closest in mismatches[:3]:
-                    logger.warning(f"     Cached: '{cached_key}' vs S3: '{closest if closest else 'NO MATCH'}'")
+            # Log pagination progress every 5 pages
+            if page_count % 5 == 0:
+                logger.info(f"📄 Processing page {page_count}, found {total_s3_files} PDF files so far...")
         
-        # Count actual matches
+        # Log pagination completion with final IsTruncated status
+        logger.info(f"📄 Pagination complete: {page_count} pages processed, {total_s3_files} total PDF files found")
+        logger.info(f"📄 Final IsTruncated status: {is_truncated} (False means no more pages, True means pagination may be incomplete)")
+        if files_per_page:
+            logger.info(f"📄 Files per page: min={min(files_per_page)}, max={max(files_per_page)}, last_page={files_per_page[-1]}")
+        
+        # Verify pagination completed (warn if suspicious)
+        if total_s3_files > 0 and total_s3_files % 1000 == 0:
+            logger.warning(f"⚠️ Total files ({total_s3_files}) is exactly divisible by 1000 - pagination might be incomplete!")
+        if is_truncated:
+            logger.error(f"❌ CRITICAL: Last page had IsTruncated=True! Pagination may be incomplete - expected more pages!")
+        
+        # Additional check: If cache has files and S3 listing found same count, but user expects more files,
+        # this might indicate files are in a different location or being filtered
+        # Check if last page was full (1000 files) - if so, there might be more pages even if IsTruncated=False
+        if files_per_page and len(files_per_page) > 0:
+            last_page_count = files_per_page[-1]
+            if last_page_count == 1000 and not is_truncated:
+                logger.warning(f"⚠️ WARNING: Last page had exactly 1000 files but IsTruncated=False!")
+                logger.warning(f"⚠️ This is unusual - typically a full page (1000 files) means more pages exist.")
+                logger.warning(f"⚠️ If you know there are more files in S3, they may be in a different prefix/folder.")
+        
+        # Exhaustive key comparison - compare ALL cache keys against ALL S3 keys
+        # Count actual matches (exhaustive comparison)
         actual_matches = len([k for k in all_s3_keys if k in processed_keys_normalized])
+        
+        # Count S3 keys NOT in cache (should equal new files)
+        s3_keys_not_in_cache = len([k for k in all_s3_keys if k not in processed_keys_normalized])
+        
+        # Count cache keys NOT in S3 (orphaned cache entries)
+        cache_keys_not_in_s3 = len([k for k in processed_keys_normalized if k not in all_s3_keys])
+        
         match_rate = (actual_matches / total_s3_files * 100) if total_s3_files > 0 else 0
         cache_hit_rate = (actual_matches / len(processed_keys_normalized) * 100) if len(processed_keys_normalized) > 0 else 0
         
-        # Comprehensive debug logging
-        logger.info(f"📊 Comparison Summary:")
-        logger.info(f"   - Total files in S3: {total_s3_files}")
-        logger.info(f"   - Files already processed (cached): {len(processed_keys_normalized)}")
-        logger.info(f"   - Actual matches found: {actual_matches} (cache hit rate: {cache_hit_rate:.1f}%)")
+        # Comprehensive debug logging with exhaustive comparison results
+        logger.info(f"📊 Exhaustive Key Comparison Results:")
+        logger.info(f"   - Total S3 keys found: {total_s3_files}")
+        logger.info(f"   - Total cache keys extracted: {len(processed_keys_normalized)}")
+        logger.info(f"   - Exact matches found: {actual_matches}")
+        logger.info(f"   - S3 keys NOT in cache (new files): {s3_keys_not_in_cache}")
+        logger.info(f"   - Cache keys NOT in S3 (orphaned): {cache_keys_not_in_s3}")
+        logger.info(f"   - Match rate: {match_rate:.1f}% (matches/total S3 files)")
+        logger.info(f"   - Cache hit rate: {cache_hit_rate:.1f}% (matches/cached files)")
         logger.info(f"   - New files to process: {len(new_pdf_keys)}")
+        
+        # Validate that new file count matches expected
+        if s3_keys_not_in_cache != len(new_pdf_keys):
+            logger.warning(f"⚠️ WARNING: Mismatch! S3 keys not in cache ({s3_keys_not_in_cache}) != new_pdf_keys count ({len(new_pdf_keys)})")
+        
         if sample_s3_keys:
             logger.info(f"📋 Sample S3 keys (first 10): {sample_s3_keys[:10]}")
         
-        # Only error if cache hit rate is low (meaning cached files aren't being found in S3)
+        # Diagnostic warnings for key matching issues
         if len(processed_keys_normalized) > 0 and cache_hit_rate < 90:
-            logger.error(f"❌ CRITICAL: Cache hit rate is only {cache_hit_rate:.1f}%! Keys don't match.")
-            logger.error(f"❌ This means key extraction or normalization is failing.")
+            logger.warning(f"⚠️ Cache hit rate is only {cache_hit_rate:.1f}% - some cached keys not found in S3")
+            logger.warning(f"⚠️ This could indicate key normalization issues or orphaned cache entries")
+            if cache_keys_not_in_s3 > 0:
+                logger.warning(f"⚠️ Found {cache_keys_not_in_s3} orphaned cache keys (not in S3)")
+        
+        # Warn if all files are being treated as new when cache exists
+        if len(new_pdf_keys) == total_s3_files and len(processed_keys_normalized) > 0 and total_s3_files > 0:
+            logger.error(f"❌ ERROR: All {total_s3_files} files are being treated as new, but {len(processed_keys_normalized)} are cached!")
+            logger.error(f"❌ Cache hit rate: {cache_hit_rate:.1f}% - Key extraction or normalization may have failed!")
             logger.error(f"❌ Sample cached keys: {list(processed_keys_normalized)[:5]}")
             logger.error(f"❌ Sample S3 keys: {all_s3_keys[:5]}")
         
-        # Validation check: only warn if cache hit rate is low (keys not matching)
-        if len(processed_keys_normalized) > 0 and len(new_pdf_keys) > 0:
-            if cache_hit_rate < 90:
-                logger.warning(f"⚠️ WARNING: Cache hit rate is {cache_hit_rate:.1f}% - keys may not be matching correctly!")
-                logger.warning(f"⚠️ About to process {len(new_pdf_keys)} files even though {len(processed_keys_normalized)} files are cached.")
-                logger.warning(f"⚠️ Check the detailed comparison above to identify the mismatch pattern.")
-            elif len(new_pdf_keys) == total_s3_files and len(processed_keys_normalized) > 0:
-                logger.error(f"❌ ERROR: All {total_s3_files} files are being treated as new, but {len(processed_keys_normalized)} are cached!")
-                logger.error(f"❌ Cache hit rate: {cache_hit_rate:.1f}% - Key extraction from cache has failed!")
-                logger.error(f"❌ This is a critical error - keys are not matching. Check logs above.")
+        # Validate S3 listing completeness before early exit
+        # IMPORTANT: If cache count matches S3 count exactly, but user knows there are more files in S3,
+        # this indicates S3 listing is incomplete (files might be in different prefix/folder or filtered out)
+        if len(processed_keys_normalized) > total_s3_files:
+            logger.error(f"❌ CRITICAL: Cache has MORE keys ({len(processed_keys_normalized)}) than S3 ({total_s3_files})!")
+            logger.error(f"❌ This suggests S3 listing is incomplete or cache has orphaned entries.")
+            logger.error(f"❌ Difference: {len(processed_keys_normalized) - total_s3_files} keys")
+            logger.error(f"❌ S3 prefix used: '{s3_prefix}' (empty means root of bucket)")
+            logger.error(f"❌ If you know there are more files, they may be in a different prefix/folder.")
+            # Don't exit early - S3 listing appears incomplete, continue to process
+        elif len(processed_keys_normalized) == total_s3_files and total_s3_files > 0:
+            # Cache count matches S3 count - verify all are actually matched
+            # WARNING: This doesn't mean S3 listing is complete - files might be in different locations
+            if actual_matches == total_s3_files and not new_pdf_keys:
+                logger.info(f"✅ All {total_s3_files} S3 files (found with prefix '{s3_prefix}') are in cache and verified")
+                logger.info(f"ℹ️ Note: If you know there are more files in S3, they may be in a different prefix/folder.")
+                logger.info(f"ℹ️ Current S3 prefix: '{s3_prefix}' (empty = root of bucket)")
+                logger.info(f"ℹ️ To find files in other locations, check your S3 bucket structure or use 'Reload ALL Data'")
+                return [], None, 0  # No new files - verified complete match for current prefix
+            elif actual_matches == total_s3_files and len(new_pdf_keys) > 0:
+                logger.warning(f"⚠️ WARNING: All keys match, but {len(new_pdf_keys)} files marked as new!")
+                logger.warning(f"⚠️ This indicates a logic error - proceeding to process new files")
+            else:
+                logger.warning(f"⚠️ Cache count ({len(processed_keys_normalized)}) matches S3 count ({total_s3_files}), but only {actual_matches} keys match!")
+                logger.warning(f"⚠️ This suggests key normalization issues - proceeding to process new files")
+        elif not new_pdf_keys and len(processed_keys_normalized) < total_s3_files:
+            # S3 has more files than cache, but no new files found - this shouldn't happen
+            logger.warning(f"⚠️ WARNING: S3 has {total_s3_files} files, cache has {len(processed_keys_normalized)}, but no new files found!")
+            logger.warning(f"⚠️ This suggests a comparison issue - proceeding anyway")
         
-        # Early exit if all files are already processed
-        if not new_pdf_keys:
-            logger.info("✅ No new files found - all files are already processed")
+        # Final early exit check (only if validation passed above)
+        if not new_pdf_keys and len(processed_keys_normalized) <= total_s3_files and actual_matches == total_s3_files:
+            logger.info("✅ No new files found - all files are already processed and verified")
             return [], None, 0  # No new files
         
         # Additional check: if processed count matches total, all should be cached
@@ -1528,18 +1587,49 @@ def check_for_new_pdfs_lightweight():
         # Count new PDFs (not in processed_keys)
         new_count = 0
         total_pdfs = 0
-        processed_keys_normalized = {key.strip('/') for key in processed_keys}
+        processed_keys_normalized = {key.strip('/') for key in processed_keys}  # Consistent normalization
+        
+        # Track pagination progress
+        page_count = 0
+        is_truncated = False
         
         for page in pages:
+            page_count += 1
+            
             if 'Contents' in page:
                 for obj in page['Contents']:
-                    key = obj['Key'].strip('/')  # Normalize S3 key
+                    key = obj['Key'].strip('/')  # Normalize S3 key (consistent with cache normalization)
                     if key.lower().endswith('.pdf'):
                         total_pdfs += 1
                         if key not in processed_keys_normalized:
                             new_count += 1
+            
+            # Check if pagination is truncated
+            if 'IsTruncated' in page:
+                is_truncated = page['IsTruncated']
+                # Log IsTruncated status for debugging
+                if page_count % 5 == 0 or is_truncated:
+                    logger.info(f"📄 Page {page_count}: IsTruncated={is_truncated}")
         
-        logger.info(f"📊 PDF Count: {total_pdfs} total in S3, {len(processed_keys)} processed, {new_count} new")
+        # Log pagination completion with final IsTruncated status
+        logger.info(f"📄 Lightweight check: {page_count} pages processed, {total_pdfs} total PDF files found")
+        logger.info(f"📄 Final IsTruncated status: {is_truncated} (False means no more pages, True means pagination may be incomplete)")
+        
+        # Verify pagination completed (warn if suspicious)
+        if total_pdfs > 0 and total_pdfs % 1000 == 0:
+            logger.warning(f"⚠️ Total files ({total_pdfs}) is exactly divisible by 1000 - pagination might be incomplete!")
+        if is_truncated:
+            logger.error(f"❌ CRITICAL: Last page had IsTruncated=True! Pagination may be incomplete - expected more pages!")
+        
+        # Validate S3 listing completeness
+        if len(processed_keys_normalized) > total_pdfs:
+            logger.error(f"❌ CRITICAL: Cache has MORE keys ({len(processed_keys_normalized)}) than S3 ({total_pdfs})!")
+            logger.error(f"❌ This suggests S3 listing is incomplete or cache has orphaned entries.")
+        
+        logger.info(f"📊 PDF Count: {total_pdfs} total in S3, {len(processed_keys_normalized)} processed, {new_count} new")
+        
+        # Note: For lightweight check, we don't do full exhaustive comparison to save time
+        # The full exhaustive comparison happens in load_new_calls_only()
         
         return new_count, None
         
@@ -1573,6 +1663,9 @@ if st.session_state.bg_refresh_enabled and time_since_last_check >= st.session_s
         st.session_state.bg_check_error = None
         if new_count > 0:
             st.session_state.new_pdfs_notification_count = new_count
+        else:
+            # Clear notification count since there are no new files
+            st.session_state.new_pdfs_notification_count = 0
 
 # Show notification if new PDFs are available
 if st.session_state.new_pdfs_notification_count > 0:
