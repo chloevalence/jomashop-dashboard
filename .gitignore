@@ -4,3 +4,5 @@ skipped_files.txt
 __pycache__/
 .DS_Store
 logs/
+.cursor/debug.log
+.vscode/
