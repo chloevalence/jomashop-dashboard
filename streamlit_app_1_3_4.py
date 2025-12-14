@@ -20,6 +20,17 @@ from collections import defaultdict
 from pdf_parser import parse_pdf_from_bytes
 from utils import log_audit_event, check_session_timeout, load_metrics, track_feature_usage
 
+# --- Project root directory (portable across systems) ---
+PROJECT_ROOT = Path(__file__).parent.resolve()
+DEBUG_LOG_FILE = PROJECT_ROOT / ".cursor" / "debug.log"
+
+# --- Create .cursor directory for debug logging ---
+try:
+    DEBUG_LOG_FILE.parent.mkdir(exist_ok=True)
+except Exception as e:
+    # Silently fail - debug logging is optional
+    pass
+
 # --- Configuration: Limit for faster testing (set to None to load all files) ---
 MAX_FILES_FOR_TESTING = None  # Set to None to disable limit
 
@@ -134,7 +145,7 @@ except KeyError as e:
     st.error("Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set.")
     st.error(f"**Current working directory:** `{os.getcwd()}`")
     st.error(f"**Expected secrets path:** `.streamlit/secrets.toml` in the project directory")
-    st.error(f"**Make sure you're running Streamlit from:** `/Users/Chloe/Downloads/jomashop-dashboard`")
+    st.error(f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`")
     st.stop()
 except Exception as e:
     logger.exception(f"Error initializing S3 client: {e}")
@@ -282,12 +293,12 @@ def load_all_calls_internal(max_files=None):
         if not restored_progress:
             if 'pdf_processing_progress' not in st.session_state:
                 st.session_state.pdf_processing_progress = {'processed': 0, 'total': total, 'errors': 0, 'processing_start_time': None}
-            else:
-                st.session_state.pdf_processing_progress['total'] = total
-                # Don't reset processed count if we're continuing from partial cache
-                if not restored_progress:
-                    st.session_state.pdf_processing_progress['processed'] = 0
-                st.session_state.pdf_processing_progress['errors'] = 0
+        else:
+            st.session_state.pdf_processing_progress['total'] = total
+            # Don't reset processed count if we're continuing from partial cache
+            if not restored_progress:
+                st.session_state.pdf_processing_progress['processed'] = 0
+            st.session_state.pdf_processing_progress['errors'] = 0
         # Track actual processing start time
         processing_start_time = time.time()
         st.session_state.pdf_processing_progress['processing_start_time'] = processing_start_time
@@ -309,7 +320,7 @@ def load_all_calls_internal(max_files=None):
             
             with ThreadPoolExecutor(max_workers=10) as executor:
                 future_to_key = {executor.submit(process_pdf_with_retry, key): key for key in batch_keys}
-                
+            
                 for future in as_completed(future_to_key):
                     parsed_data, error = future.result()
                     if parsed_data:
@@ -317,7 +328,7 @@ def load_all_calls_internal(max_files=None):
                     elif error:
                         errors.append(error)
                         st.session_state.pdf_processing_progress['errors'] += 1
-                    
+                
                     st.session_state.pdf_processing_progress['processed'] += 1
                     
                     processed = st.session_state.pdf_processing_progress['processed']
@@ -369,19 +380,19 @@ def load_all_calls_internal(max_files=None):
                                 logger.info(f"💾 Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed}/{total} = {processed*100//total}% complete - progress protected)")
                             except Exception as e:
                                 logger.warning(f"⚠️ Failed incremental save: {e}")
-            
-            # Update dashboard every 500 calls
-            processed = st.session_state.pdf_processing_progress['processed']
-            if processed >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
-                logger.info(f"🔄 Dashboard update: {processed} calls processed, updating dashboard...")
-                last_dashboard_update = processed
                 
-                # Save current progress
-                # ... save logic ...
-                
-                # Clear Streamlit cache and rerun
-                load_all_calls_cached.clear()
-                st.rerun()
+                # Update dashboard every 500 calls
+                processed = st.session_state.pdf_processing_progress['processed']
+                if processed >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
+                    logger.info(f"🔄 Dashboard update: {processed} calls processed, updating dashboard...")
+                    last_dashboard_update = processed
+                    
+                    # Save current progress
+                    # ... save logic ...
+                    
+                    # Clear Streamlit cache and rerun
+                    load_all_calls_cached.clear()
+                    st.rerun()
         
         elapsed_total = time.time() - processing_start_time
         logger.info(f"✅ Completed processing {total} files in {elapsed_total/60:.1f} minutes. Success: {len(all_calls)}, Errors: {len(errors)}")
@@ -722,19 +733,18 @@ def load_all_calls_cached():
                         # Same size - use Streamlit cache (it's in memory, faster)
                         logger.info(f"✅ Streamlit cache matches disk cache - using in-memory version for speed")
                         use_streamlit_cache = True
-                    else:
-                        # Disk cache has more data - but Streamlit cache might be newer
-                        # Since we can't easily compare timestamps, prefer Streamlit cache if it's substantial
-                        if len(streamlit_call_data) > 1000:
-                            logger.info(f"✅ Using Streamlit cache ({len(streamlit_call_data)} calls) - will update disk cache")
-                            use_streamlit_cache = True
-                        else:
-                            logger.info(f"✅ Disk cache has more data ({len(disk_call_data)} vs {len(streamlit_call_data)}) - using disk cache")
-                            use_disk_cache = True
                 else:
                     # No disk cache - use Streamlit cache
                     use_streamlit_cache = True
             else:
+                # Disk cache has more data - but Streamlit cache might be newer
+                # Since we can't easily compare timestamps, prefer Streamlit cache if it's substantial
+                if len(streamlit_call_data) > 1000:
+                    logger.info(f"✅ Using Streamlit cache ({len(streamlit_call_data)} calls) - will update disk cache")
+                    use_streamlit_cache = True
+                else:
+                    logger.info(f"✅ Disk cache has more data ({len(disk_call_data)} vs {len(streamlit_call_data)}) - using disk cache")
+                    use_disk_cache = True
                 # Slow load = loaded from S3, not from cache
                 # This is new data, use it and ALWAYS save to disk (critical for persistence)
                 logger.info(f"📥 Loaded {len(streamlit_call_data)} calls from S3 (took {load_duration:.1f}s)")
@@ -965,9 +975,9 @@ def load_new_calls_only():
                         if key not in processed_keys_normalized:
                             new_pdf_keys.append({
                                 'key': key,  # Store normalized key
-                                'last_modified': obj.get('LastModified', datetime.min)
-                            })
-            
+                            'last_modified': obj.get('LastModified', datetime.min)
+                        })
+        
             files_per_page.append(page_file_count)
             # Check if pagination is truncated (though paginator should handle this automatically)
             if 'IsTruncated' in page:
@@ -1181,24 +1191,24 @@ def load_new_calls_only():
                     existing_cache_keys = {call.get('_s3_key') or call.get('_id') for call in disk_result_pre[0] if call.get('_s3_key') or call.get('_id')}
             except:
                 pass
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_key = {executor.submit(process_pdf, item): item['key'] for item in batch_keys}
             
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_key = {executor.submit(process_pdf, item): item['key'] for item in batch_keys}
+            for future in as_completed(future_to_key):
+                parsed_data, error = future.result()
+                processed_count += 1
                 
-                for future in as_completed(future_to_key):
-                    parsed_data, error = future.result()
-                    processed_count += 1
+                if parsed_data:
+                    new_calls.append(parsed_data)
+                    batch_calls.append(parsed_data)  # Track for this batch
                     
-                    if parsed_data:
-                        new_calls.append(parsed_data)
-                        batch_calls.append(parsed_data)  # Track for this batch
-                        
-                        # Check if this call is already in cache
-                        call_key = parsed_data.get('_s3_key') or parsed_data.get('_id')
-                        if call_key and call_key in existing_cache_keys:
+                    # Check if this call is already in cache
+                    call_key = parsed_data.get('_s3_key') or parsed_data.get('_id')
+                    if call_key and call_key in existing_cache_keys:
                             # #region agent log
                             import json as json_module
-                            with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                            with open(DEBUG_LOG_FILE, 'a') as f:
                                 f.write(json_module.dumps({
                                     'sessionId': 'debug-session',
                                     'runId': 'pre-fix',
@@ -1213,21 +1223,21 @@ def load_new_calls_only():
                                     'timestamp': int(time.time() * 1000)
                                 }) + '\n')
                             # #endregion
-                    elif error:
-                        errors.append(error)
-                    
-                    # Log progress every 100 files
-                    if processed_count % 100 == 0:
-                        elapsed = time.time() - processing_start_time
-                        rate = processed_count / elapsed if elapsed > 0 else 0
-                        remaining = (total_new - processed_count) / rate if rate > 0 else 0
-                        logger.info(f"📊 Refresh Progress: {processed_count}/{total_new} files processed ({processed_count*100//total_new}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
+                elif error:
+                    errors.append(error)
+                
+                # Log progress every 100 files (unconditionally for each processed file)
+                if processed_count % 100 == 0:
+                    elapsed = time.time() - processing_start_time
+                    rate = processed_count / elapsed if elapsed > 0 else 0
+                    remaining = (total_new - processed_count) / rate if rate > 0 else 0
+                    logger.info(f"📊 Refresh Progress: {processed_count}/{total_new} files processed ({processed_count*100//total_new}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining/60:.1f} min")
             
             # Save incrementally after each batch
             try:
                 # #region agent log
                 import json as json_module
-                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                with open(DEBUG_LOG_FILE, 'a') as f:
                     f.write(json_module.dumps({
                         'sessionId': 'debug-session',
                         'runId': 'pre-fix',
@@ -1248,7 +1258,7 @@ def load_new_calls_only():
                 existing_calls = disk_result[0] if disk_result[0] is not None else []
                 
                 # #region agent log
-                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                with open(DEBUG_LOG_FILE, 'a') as f:
                     f.write(json_module.dumps({
                         'sessionId': 'debug-session',
                         'runId': 'pre-fix',
@@ -1274,7 +1284,7 @@ def load_new_calls_only():
                 overlapping_keys = existing_keys & batch_keys
                 
                 # #region agent log
-                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                with open(DEBUG_LOG_FILE, 'a') as f:
                     f.write(json_module.dumps({
                         'sessionId': 'debug-session',
                         'runId': 'pre-fix',
@@ -1295,7 +1305,7 @@ def load_new_calls_only():
                 calls_to_save = deduplicate_calls(all_calls_merged.copy())
                 
                 # #region agent log
-                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                with open(DEBUG_LOG_FILE, 'a') as f:
                     f.write(json_module.dumps({
                         'sessionId': 'debug-session',
                         'runId': 'pre-fix',
@@ -1334,7 +1344,7 @@ def load_new_calls_only():
             if processed_count >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
                 # #region agent log
                 import json as json_module
-                with open('/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log', 'a') as f:
+                with open(DEBUG_LOG_FILE, 'a') as f:
                     f.write(json_module.dumps({
                         'sessionId': 'debug-session',
                         'runId': 'pre-fix',
@@ -1666,6 +1676,15 @@ if st.session_state.bg_refresh_enabled and time_since_last_check >= st.session_s
         else:
             # Clear notification count since there are no new files
             st.session_state.new_pdfs_notification_count = 0
+else:
+    # Even if not time for background check, verify count is correct
+    # If we have a notification count but haven't checked recently, verify it's still valid
+    if st.session_state.new_pdfs_notification_count > 0:
+        # Quick verification - if we have a notification but haven't checked recently, verify it
+        new_count, _ = check_for_new_pdfs_lightweight()
+        if new_count == 0:
+            # Clear stale notification count
+            st.session_state.new_pdfs_notification_count = 0
 
 # Show notification if new PDFs are available
 if st.session_state.new_pdfs_notification_count > 0:
@@ -1717,74 +1736,71 @@ if is_admin:
                     st.info("ℹ️ No new PDFs found")
                 st.rerun()
 
-# Smart refresh button (available to all users) - only loads new PDFs
+# Smart refresh button (Chloe and Shannon only) - only loads new PDFs
 # Note: files_to_load will be defined later, but we'll use None here to get all cached data
-if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs added since last refresh. Fast and efficient!", type="primary"):
-    if current_username and current_username.lower() in ["chloe", "shannon"]:
+if current_username and current_username.lower() in ["chloe", "shannon"]:
+    if st.sidebar.button("🔄 Refresh New Data", help="Only processes new PDFs added since last refresh. Fast and efficient!", type="primary"):
         log_audit_event(current_username, "refresh_data", "Refreshed new data from S3")
-    with st.spinner("🔄 Checking for new PDFs..."):
-        new_calls, new_errors, new_count = load_new_calls_only()
+        with st.spinner("🔄 Checking for new PDFs..."):
+            new_calls, new_errors, new_count = load_new_calls_only()
         
-        # Check if there was an overall error (returns string instead of list)
-        if isinstance(new_errors, str):
-            # Overall error occurred (e.g., network timeout, S3 access issue)
-            st.error(f"❌ Error refreshing data: {new_errors}")
-            st.info("💡 Try using 'Reload ALL Data' button if the issue persists")
-        elif new_count > 0:
+            # Check if there was an overall error (returns string instead of list)
+            if isinstance(new_errors, str):
+                # Overall error occurred (e.g., network timeout, S3 access issue)
+                st.error(f"❌ Error refreshing data: {new_errors}")
+                st.info("💡 Try using 'Reload ALL Data' button if the issue persists")
+            elif new_count > 0:
             # Successfully found and processed new files
-            # Get existing cached data from disk (incremental saves already merged during refresh)
-            disk_result = load_cached_data_from_disk()
-            existing_calls = disk_result[0] if disk_result[0] is not None else []
-            
-            # Merge new calls with existing, then deduplicate
-            # Note: Incremental saves during refresh already merged, but we merge again here to be safe
-            all_calls_merged = existing_calls + new_calls
-            # Deduplicate based on _s3_key or _id
-            all_calls_merged = deduplicate_calls(all_calls_merged)
-            
-            original_total = len(existing_calls) + len(new_calls)
-            if len(all_calls_merged) < original_total:
-                logger.info(f"🔍 Deduplication: {original_total} calls → {len(all_calls_merged)} unique calls (removed {original_total - len(all_calls_merged)} duplicates)")
-            
-            # Save merged data to disk cache (mark as complete now that refresh is done)
-            # The disk cache already has the merged data from incremental saves during refresh, but update to mark complete
-            import time
-            cache_data = {
-                'call_data': all_calls_merged,
-                'errors': new_errors if new_errors else [],
-                'timestamp': datetime.now().isoformat(),
-                'last_save_time': time.time(),
-                'count': len(all_calls_merged),
-                'partial': False  # Mark as complete
-            }
-            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, default=str, indent=2)
-            logger.info(f"💾 Saved {len(all_calls_merged)} calls to persistent cache (refresh complete)")
+                # Get existing cached data from disk (incremental saves already merged during refresh)
+                disk_result = load_cached_data_from_disk()
+                existing_calls = disk_result[0] if disk_result[0] is not None else []
+                # Merge new calls with existing, then deduplicate
+                # Note: Incremental saves during refresh already merged, but we merge again here to be safe
+                all_calls_merged = existing_calls + new_calls
+                # Deduplicate based on _s3_key or _id
+                all_calls_merged = deduplicate_calls(all_calls_merged)
+                original_total = len(existing_calls) + len(new_calls)
+                if len(all_calls_merged) < original_total:
+                    logger.info(f"🔍 Deduplication: {original_total} calls → {len(all_calls_merged)} unique calls (removed {original_total - len(all_calls_merged)} duplicates)")
+                # Save merged data to disk cache (mark as complete now that refresh is done)
+                # The disk cache already has the merged data from incremental saves during refresh, but update to mark complete
+                import time
+                cache_data = {
+                    'call_data': all_calls_merged,
+                    'errors': new_errors if new_errors else [],
+                    'timestamp': datetime.now().isoformat(),
+                    'last_save_time': time.time(),
+                    'count': len(all_calls_merged),
+                    'partial': False  # Mark as complete
+                }
+                with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(cache_data, f, default=str, indent=2)
+                    logger.info(f"💾 Saved {len(all_calls_merged)} calls to persistent cache (refresh complete)")
             # We need to manually update the cache - store in session state temporarily
-            st.session_state['merged_calls'] = all_calls_merged
-            st.session_state['merged_errors'] = new_errors if new_errors else []
-            
+                st.session_state['merged_calls'] = all_calls_merged
+                st.session_state['merged_errors'] = new_errors if new_errors else []
             # Update processed keys tracking
-            if 'processed_s3_keys' not in st.session_state:
-                st.session_state['processed_s3_keys'] = set()
-            new_keys = {call.get('_s3_key') for call in new_calls if call.get('_s3_key')}
-            st.session_state['processed_s3_keys'].update(new_keys)
-            
-            st.success(f"✅ Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls")
-            if new_errors:
-                st.warning(f"⚠️ {len(new_errors)} file(s) had errors")
+                if 'processed_s3_keys' not in st.session_state:
+                    st.session_state['processed_s3_keys'] = set()
+                new_keys = {call.get('_s3_key') for call in new_calls if call.get('_s3_key')}
+                st.session_state['processed_s3_keys'].update(new_keys)
+                st.success(f"✅ Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls")
+                if new_errors:
+                    st.warning(f"⚠️ {len(new_errors)} file(s) had errors")
             # Clear notification count after successful refresh
-            st.session_state.new_pdfs_notification_count = 0
-            # Clear Streamlit cache to force reload with new data
-            load_all_calls_cached.clear()
-            # Rerun to show updated data
-            st.rerun()
-        else:
+                st.session_state.new_pdfs_notification_count = 0
+                # Reset auto_refresh_checked so startup check runs again to verify 0 new files
+                st.session_state.auto_refresh_checked = False
+                # Clear Streamlit cache to force reload with new data
+                load_all_calls_cached.clear()
+                # Rerun to show updated data
+                st.rerun()
+            else:
             # No new files found and no errors
-            st.info("ℹ️ No new PDFs found. All data is up to date!")
+                st.info("ℹ️ No new PDFs found. All data is up to date!")
 
-# Admin-only: Full reload button
-if is_admin:
+                # Admin-only: Full reload button (Chloe and Shannon only)
+if current_username and current_username.lower() in ["chloe", "shannon"]:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👑 Admin: Full Reload")
     if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take 10-20 minutes.", type="secondary"):
@@ -1961,12 +1977,6 @@ try:
         # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
         logger.info("Loading data - Streamlit cache will handle it automatically")
         
-        # Show prominent loading message
-        loading_container = st.container()
-        with loading_container:
-            st.info("🔄 **Loading data...** Please wait. This may take 1-2 minutes if loading from S3 for the first time.")
-            st.info("💡 **Tip:** If this takes longer than 5 minutes, refresh the page or check your S3 connection.")
-        
         try:
             # Add timeout wrapper
             import signal
@@ -1983,11 +1993,9 @@ try:
             logger.info(f"Data loaded. Got {len(call_data) if call_data else 0} calls")
             
             # Clear loading messages
-            loading_container.empty()
             loading_placeholder.empty()
         except TimeoutError as e:
             logger.exception("Timeout during data loading")
-            loading_container.empty()
             loading_placeholder.empty()
             status_text.empty()
             st.error("⏱️ **Loading Timeout**")
@@ -2003,7 +2011,6 @@ try:
             st.stop()
         except Exception as e:
             logger.exception("Error during data loading")
-            loading_container.empty()
             loading_placeholder.empty()
             status_text.empty()
             st.error("❌ **Error Loading Data**")
@@ -2130,10 +2137,12 @@ try:
                 time_str = f"{last_time/60:.1f} minutes"
             else:
                 time_str = f"{last_time:.1f}s"
-            st.success(f"✅ Loaded {len(call_data)} calls (from cache, originally processed in {time_str})")
+            if current_username and current_username.lower() in ["chloe", "shannon"]:
+                st.success(f"✅ Loaded {len(call_data)} calls (from cache, originally processed in {time_str})")
         else:
             # First time or no processing time tracked - show cache retrieval time
-            st.success(f"✅ Loaded {len(call_data)} calls (from cache)")
+            if current_username and current_username.lower() in ["chloe", "shannon"]:
+                st.success(f"✅ Loaded {len(call_data)} calls (from cache)")
     else:
         st.error("❌ No call data found!")
         st.error("Possible issues:")
