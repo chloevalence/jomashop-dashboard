@@ -14,11 +14,25 @@ from xlsxwriter.utility import xl_rowcol_to_cell
 import time
 import re
 import os
+import sys
 import logging
+import shutil
 from pathlib import Path
 from collections import defaultdict
+from contextlib import contextmanager
 from pdf_parser import parse_pdf_from_bytes
 from utils import log_audit_event, check_session_timeout, load_metrics, track_feature_usage
+
+# File locking imports (platform-specific)
+try:
+    if sys.platform == 'win32':
+        import msvcrt
+        HAS_FILE_LOCKING = True
+    else:
+        import fcntl
+        HAS_FILE_LOCKING = True
+except ImportError:
+    HAS_FILE_LOCKING = False
 
 # --- Project root directory (portable across systems) ---
 PROJECT_ROOT = Path(__file__).parent.resolve()
@@ -301,8 +315,8 @@ def load_all_calls_internal(max_files=None):
         processing_start_time = time.time()
         st.session_state.pdf_processing_progress['processing_start_time'] = processing_start_time
         
-        # Process PDFs in batches of 100, updating dashboard every 500 calls
-        BATCH_SIZE = 100
+        # Process PDFs in smaller batches to reduce lock contention with large cache files
+        BATCH_SIZE = 50  # Reduced from 100 to reduce lock contention
         DASHBOARD_UPDATE_INTERVAL = 500
         
         logger.info(f"📥 Starting to process {total} PDF files in batches of {BATCH_SIZE} (this will take 10-20 minutes)")
@@ -342,11 +356,16 @@ def load_all_calls_internal(max_files=None):
                         # Try to get last save time from disk cache metadata first (survives restarts)
                         last_save_time = 0
                         try:
+                            # Read last_save_time with locking to prevent concurrent access
                             if CACHE_FILE.exists():
-                                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                                    cached_data = json.load(f)
-                                    last_save_time = cached_data.get('last_save_time', 0)
-                        except:
+                                with cache_file_lock(CACHE_FILE, timeout=2):
+                                    with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                                        cached_data = json.load(f)
+                                        last_save_time = cached_data.get('last_save_time', 0)
+                        except LockTimeoutError:
+                            # Lock timeout - skip reading last_save_time, will use session state fallback
+                            pass
+                        except Exception:
                             pass
                         # Fallback to session state if not in cache
                         if not last_save_time:
@@ -361,36 +380,35 @@ def load_all_calls_internal(max_files=None):
                                 if len(calls_to_save) < len(all_calls):
                                     logger.info(f"🔍 Deduplicated before incremental save: {len(all_calls)} → {len(calls_to_save)} unique calls")
                                 
-                                # Save current progress to disk cache incrementally
-                                cache_data = {
-                                    'call_data': calls_to_save,  # Already deduplicated
-                                    'errors': errors.copy(),
-                                    'timestamp': datetime.now().isoformat(),
-                                    'last_save_time': time.time(),  # Track last save time for time-based saves
-                                    'count': len(calls_to_save),
-                                    'partial': True,  # Mark as partial/in-progress
-                                    'processed': processed,
-                                    'total': total
-                                }
-                                with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-                                    json.dump(cache_data, f, default=str, indent=2)
+                                # Use atomic write with locking via save_cached_data_to_disk
+                                save_cached_data_to_disk(
+                                    calls_to_save,
+                                    errors.copy(),
+                                    partial=True,
+                                    processed=processed,
+                                    total=total
+                                )
                                 st.session_state._last_incremental_save_time = time.time()
                                 logger.info(f"💾 Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed}/{total} = {processed*100//total}% complete - progress protected)")
                             except Exception as e:
                                 logger.warning(f"⚠️ Failed incremental save: {e}")
                     
-                    # Update dashboard every 500 calls
+                    # Update dashboard progress in session state (without rerun to avoid cache corruption)
                     processed = st.session_state.pdf_processing_progress['processed']
                     if processed >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
-                        logger.info(f"🔄 Dashboard update: {processed} calls processed, updating dashboard...")
+                        logger.info(f"🔄 Dashboard update: {processed} calls processed, updating progress...")
                         last_dashboard_update = processed
                         
-                        # Save current progress
-                        # ... save logic ...
+                        # Update session state with progress (no rerun to prevent cache corruption)
+                        # Progress will be visible on next natural rerun (user interaction or completion)
+                        st.session_state['last_progress_update'] = {
+                            'processed': processed,
+                            'total': total,
+                            'timestamp': time.time()
+                        }
                         
-                        # Clear Streamlit cache and rerun
-                        load_all_calls_cached.clear()
-                        st.rerun()
+                        # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
+                        # Progress updates will be visible when processing completes or user interacts
         
         elapsed_total = time.time() - processing_start_time
         logger.info(f"✅ Completed processing {total} files in {elapsed_total/60:.1f} minutes. Success: {len(all_calls)}, Errors: {len(errors)}")
@@ -448,6 +466,227 @@ def load_all_calls_internal(max_files=None):
 
 # Persistent cache file that survives app restarts (prevents timeout issues)
 CACHE_FILE = log_dir / "cached_calls_data.json"
+LOCK_FILE = log_dir / "cached_calls_data.json.lock"
+
+class LockTimeoutError(Exception):
+    """Raised when file lock acquisition times out."""
+    pass
+
+@contextmanager
+def cache_file_lock(filepath, timeout=30):
+    """Acquire file lock for cache operations. Prevents concurrent reads/writes.
+    
+    Args:
+        filepath: Path to the file to lock
+        timeout: Maximum time to wait for lock (seconds)
+    
+    Yields:
+        Locked file handle (or None if locking unavailable)
+    
+    Raises:
+        LockTimeoutError: If lock cannot be acquired within timeout period
+    """
+    lock_path = filepath.with_suffix(filepath.suffix + '.lock')
+    lock_file = None
+    lock_acquired = False
+    
+    if not HAS_FILE_LOCKING:
+        # Fallback: no locking available, just yield
+        yield None
+        return
+    
+    try:
+        # Create lock file
+        lock_file = open(lock_path, 'w')
+        start_time = time.time()
+        
+        # Try to acquire lock
+        while time.time() - start_time < timeout:
+            try:
+                if sys.platform == 'win32':
+                    # Windows file locking
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    # Unix file locking
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_acquired = True
+                break
+            except (IOError, OSError):
+                # Lock is held by another process, wait and retry
+                time.sleep(0.1)
+        
+        if not lock_acquired:
+            # Close the file before raising exception
+            try:
+                lock_file.close()
+            except Exception:
+                pass
+            lock_file = None
+            raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
+        
+        yield lock_file
+        
+    except LockTimeoutError:
+        # Re-raise LockTimeoutError - don't catch it, let it propagate to callers
+        raise
+    except Exception as e:
+        # Only catch other unexpected errors, not LockTimeoutError
+        logger.warning(f"⚠️ Error acquiring file lock: {e}, proceeding without lock")
+        yield None
+    finally:
+        # Release lock and close file
+        if lock_file:
+            # Only unlock if lock was actually acquired
+            if lock_acquired:
+                try:
+                    if sys.platform == 'win32':
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+            # Always close the file to prevent resource leak
+            try:
+                lock_file.close()
+            except Exception:
+                pass
+        
+        # Remove lock file
+        try:
+            if lock_path.exists():
+                lock_path.unlink()
+        except Exception:
+            pass
+
+def atomic_write_json(filepath, data, max_retries=3, retry_delay=0.1):
+    """Write JSON atomically using temp file + rename pattern.
+    
+    This prevents partial writes from corrupting the cache file.
+    
+    Args:
+        filepath: Path to the JSON file to write
+        data: Data to serialize to JSON
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries (seconds)
+    
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    temp_path = filepath.with_suffix(filepath.suffix + '.tmp')
+    
+    for attempt in range(max_retries):
+        try:
+            # Write to temporary file first
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, default=str, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())  # Force write to disk
+            
+            # Atomic rename (replaces existing file atomically on most systems)
+            os.replace(temp_path, filepath)
+            return
+            
+        except (IOError, OSError, PermissionError) as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"⚠️ Atomic write attempt {attempt + 1} failed: {e}, retrying...")
+                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+            else:
+                # Clean up temp file on final failure
+                try:
+                    if temp_path.exists():
+                        temp_path.unlink()
+                except Exception:
+                    pass
+                raise
+
+def recover_partial_json(filepath):
+    """Attempt to recover partial data from corrupted JSON file.
+    
+    Tries to extract valid call_data entries even if metadata is corrupted.
+    
+    Args:
+        filepath: Path to the corrupted JSON file
+    
+    Returns:
+        tuple: (recovered_call_data, recovered_errors) or (None, None) if recovery fails
+    """
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Try to find call_data array in the content
+        # Look for patterns like "call_data": [ ... ]
+        
+        # Try to extract call_data array
+        call_data_match = re.search(r'"call_data"\s*:\s*\[(.*?)\]', content, re.DOTALL)
+        if call_data_match:
+            # Try to parse just the array portion
+            array_content = '[' + call_data_match.group(1) + ']'
+            try:
+                # Try to parse as JSON array
+                recovered_calls = json.loads(array_content)
+                if isinstance(recovered_calls, list):
+                    logger.info(f"✅ Recovered {len(recovered_calls)} calls from corrupted cache")
+                    return recovered_calls, []
+            except json.JSONDecodeError:
+                pass
+        
+        # Fallback: try to extract individual call objects with balanced braces
+        # Look for patterns like {"_s3_key": "...", ...} and handle nested structures
+        recovered_calls = []
+        # Find all positions where {"_s3_key": appears
+        pattern = r'\{"_s3_key"\s*:\s*"[^"]+"'
+        for match in re.finditer(pattern, content):
+            start_pos = match.start()
+            # Find the matching closing brace by tracking brace depth
+            brace_depth = 0
+            in_string = False
+            escape_next = False
+            end_pos = start_pos
+            
+            for i in range(start_pos, len(content)):
+                char = content[i]
+                
+                if escape_next:
+                    escape_next = False
+                    continue
+                
+                if char == '\\':
+                    escape_next = True
+                    continue
+                
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                
+                if not in_string:
+                    if char == '{':
+                        brace_depth += 1
+                    elif char == '}':
+                        brace_depth -= 1
+                        if brace_depth == 0:
+                            end_pos = i + 1
+                            break
+            
+            if brace_depth == 0 and end_pos > start_pos:
+                # Extract the complete object
+                try:
+                    obj_str = content[start_pos:end_pos]
+                    call_obj = json.loads(obj_str)
+                    if isinstance(call_obj, dict) and call_obj.get('_s3_key'):
+                        recovered_calls.append(call_obj)
+                except json.JSONDecodeError:
+                    continue
+        
+        if recovered_calls:
+            logger.info(f"✅ Recovered {len(recovered_calls)} calls from corrupted cache (partial recovery)")
+            return recovered_calls, []
+        
+        return None, None
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to recover partial data: {e}")
+        return None, None
 
 def deduplicate_calls(call_data):
     """Remove duplicate calls based on _s3_key or _id. Keeps the first occurrence."""
@@ -472,52 +711,156 @@ def deduplicate_calls(call_data):
     
     return deduplicated
 
-def load_cached_data_from_disk():
-    """Load cached data from disk if it exists. Handles both complete and partial saves."""
-    if CACHE_FILE.exists():
+def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
+    """Load cached data from disk if it exists. Handles both complete and partial saves.
+    
+    Features:
+    - File locking to prevent concurrent access
+    - Retry logic for transient errors
+    - Corruption recovery to extract partial data
+    - Graceful degradation if locking unavailable
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries (seconds)
+    
+    Returns:
+        tuple: (call_data, errors) or (None, None) if load fails
+    """
+    if not CACHE_FILE.exists():
+        return None, None
+    
+    # Retry logic for transient errors
+    for attempt in range(max_retries):
         try:
-            logger.info(f"📂 Checking persistent cache file: {CACHE_FILE}")
-            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                cached_data = json.load(f)
-                call_data = cached_data.get('call_data', [])
-                errors = cached_data.get('errors', [])
-                cache_timestamp = cached_data.get('timestamp', None)
-                original_count = len(call_data)
-                
-                # Deduplicate before returning
-                call_data = deduplicate_calls(call_data)
-                cache_count = len(call_data)
-                
-                is_partial = cached_data.get('partial', False)
-                
-                if original_count != cache_count:
-                    logger.warning(f"⚠️ Cache had {original_count} calls, deduplicated to {cache_count} unique calls")
-                
-                if is_partial:
-                    processed = cached_data.get('processed', 0)
-                    total = cached_data.get('total', 0)
-                    logger.info(f"📦 Found PARTIAL cache with {cache_count} calls ({processed}/{total} = {processed*100//total if total > 0 else 0}% complete, saved at {cache_timestamp})")
-                    logger.info(f"💡 This partial cache will be used if it's more complete than a fresh load")
+            # Use file locking to prevent concurrent reads during writes
+            try:
+                with cache_file_lock(CACHE_FILE, timeout=5):
+                    logger.info(f"📂 Checking persistent cache file: {CACHE_FILE}")
+                    with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                        cached_data = json.load(f)
+                        call_data = cached_data.get('call_data', [])
+                        errors = cached_data.get('errors', [])
+                        cache_timestamp = cached_data.get('timestamp', None)
+                        original_count = len(call_data)
+                        
+                        # Deduplicate before returning
+                        call_data = deduplicate_calls(call_data)
+                        cache_count = len(call_data)
+                        
+                        is_partial = cached_data.get('partial', False)
+                        
+                        if original_count != cache_count:
+                            logger.warning(f"⚠️ Cache had {original_count} calls, deduplicated to {cache_count} unique calls")
+                        
+                        if is_partial:
+                            processed = cached_data.get('processed', 0)
+                            total = cached_data.get('total', 0)
+                            logger.info(f"📦 Found PARTIAL cache with {cache_count} calls ({processed}/{total} = {processed*100//total if total > 0 else 0}% complete, saved at {cache_timestamp})")
+                            logger.info(f"💡 This partial cache will be used if it's more complete than a fresh load")
+                        else:
+                            logger.info(f"✅ Found COMPLETE persistent cache with {cache_count} calls (saved at {cache_timestamp})")
+                        return call_data, errors
+            except LockTimeoutError as e:
+                # Lock timeout - retry with exponential backoff
+                if attempt < max_retries - 1:
+                    logger.warning(f"⚠️ Lock timeout on cache read attempt {attempt + 1}: {e}, retrying...")
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
                 else:
-                    logger.info(f"✅ Found COMPLETE persistent cache with {cache_count} calls (saved at {cache_timestamp})")
-                return call_data, errors
+                    logger.error(f"❌ Failed to acquire lock for cache read after {max_retries} attempts: {e}")
+                    return None, None
+                    
         except json.JSONDecodeError as e:
             logger.warning(f"⚠️ Failed to load persistent cache: Corrupted JSON file - {e}")
-            # Backup corrupted cache and delete it so it can be regenerated
+            
+            # Try to recover partial data before deleting
+            # Note: Recovery operations need lock protection to prevent concurrent access
+            # Read corrupted file with lock protection
+            recovered_calls, recovered_errors = None, None
             try:
-                backup_path = CACHE_FILE.with_suffix('.json.corrupted')
-                import shutil
-                shutil.copy2(CACHE_FILE, backup_path)
-                CACHE_FILE.unlink()
-                logger.info(f"💾 Backed up corrupted cache to {backup_path} and deleted original")
+                with cache_file_lock(CACHE_FILE, timeout=10):
+                    recovered_calls, recovered_errors = recover_partial_json(CACHE_FILE)
+            except LockTimeoutError as e:
+                logger.error(f"❌ Lock timeout while reading corrupted cache for recovery: {e}")
+            except Exception as recovery_read_error:
+                logger.warning(f"⚠️ Failed to read corrupted cache for recovery: {recovery_read_error}")
+            
+            if recovered_calls:
+                # Save recovered data to a new cache file (with lock protection)
+                try:
+                    try:
+                        with cache_file_lock(CACHE_FILE, timeout=10):
+                            backup_path = CACHE_FILE.with_suffix('.json.corrupted')
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            backup_path = CACHE_FILE.parent / f"cached_calls_data.json.corrupted.{timestamp}"
+                            shutil.copy2(CACHE_FILE, backup_path)
+                            logger.info(f"💾 Backed up corrupted cache to {backup_path}")
+                            
+                            # Save recovered data
+                            recovered_data = {
+                                'call_data': recovered_calls,
+                                'errors': recovered_errors,
+                                'timestamp': datetime.now().isoformat(),
+                                'count': len(recovered_calls),
+                                'partial': True,  # Mark as partial since we lost metadata
+                                'recovered_from_corruption': True
+                            }
+                            atomic_write_json(CACHE_FILE, recovered_data)
+                            logger.info(f"✅ Recovered and saved {len(recovered_calls)} calls from corrupted cache")
+                        return recovered_calls, recovered_errors
+                    except LockTimeoutError as e:
+                        logger.error(f"❌ Lock timeout while saving recovered data: {e}")
+                        raise  # Re-raise to trigger outer exception handler
+                    
+                except Exception as recovery_error:
+                    logger.error(f"❌ Failed to save recovered data: {recovery_error}")
+            
+            # If recovery failed, backup and delete corrupted cache (with lock protection)
+            try:
+                try:
+                    with cache_file_lock(CACHE_FILE, timeout=10):
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        backup_path = CACHE_FILE.parent / f"cached_calls_data.json.corrupted.{timestamp}"
+                        shutil.copy2(CACHE_FILE, backup_path)
+                        CACHE_FILE.unlink()
+                        logger.info(f"💾 Backed up corrupted cache to {backup_path} and deleted original")
+                except LockTimeoutError as e:
+                    logger.error(f"❌ Lock timeout while backing up corrupted cache: {e}")
             except Exception as backup_error:
                 logger.error(f"❌ Failed to backup corrupted cache: {backup_error}")
+            
+            # Don't retry on JSON decode errors - file is corrupted
+            return None, None
+            
+        except (IOError, OSError, PermissionError) as e:
+            # Transient errors - retry
+            if attempt < max_retries - 1:
+                logger.warning(f"⚠️ Cache read attempt {attempt + 1} failed: {e}, retrying...")
+                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+            else:
+                logger.error(f"❌ Failed to load persistent cache after {max_retries} attempts: {e}")
+                return None, None
+                
         except Exception as e:
+            # Other errors - log and return None
             logger.warning(f"⚠️ Failed to load persistent cache: {e}")
+            return None, None
+    
     return None, None
 
-def save_cached_data_to_disk(call_data, errors):
-    """Save cached data to disk for persistence across app restarts. Automatically deduplicates before saving."""
+def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, total=0):
+    """Save cached data to disk for persistence across app restarts. Automatically deduplicates before saving.
+    
+    Uses atomic writes and file locking to prevent corruption.
+    
+    Args:
+        call_data: List of call data to save
+        errors: List of errors encountered
+        partial: Whether this is a partial save (in-progress)
+        processed: Number of files processed (for partial saves)
+        total: Total number of files to process (for partial saves)
+    """
     try:
         # Deduplicate before saving to prevent cache bloat
         if call_data:
@@ -532,11 +875,33 @@ def save_cached_data_to_disk(call_data, errors):
             'timestamp': datetime.now().isoformat(),
             'last_save_time': time.time(),  # Track last save time
             'count': len(call_data),
-            'partial': False  # Mark as complete when saving final data
+            'partial': partial  # Mark as partial or complete
         }
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache_data, f, default=str, indent=2)
-        logger.info(f"💾 Saved {len(call_data)} calls to persistent cache: {CACHE_FILE}")
+        
+        # Add progress info for partial saves
+        if partial:
+            cache_data['processed'] = processed
+            cache_data['total'] = total
+        
+        # Use file locking and atomic writes
+        # Retry on lock timeout with exponential backoff
+        max_lock_retries = 3
+        for lock_attempt in range(max_lock_retries):
+            try:
+                with cache_file_lock(CACHE_FILE, timeout=10):
+                    atomic_write_json(CACHE_FILE, cache_data)
+                break  # Success, exit retry loop
+            except LockTimeoutError as e:
+                if lock_attempt < max_lock_retries - 1:
+                    wait_time = 0.5 * (lock_attempt + 1)
+                    logger.warning(f"⚠️ Lock timeout on save attempt {lock_attempt + 1}/{max_lock_retries}: {e}, retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"❌ Failed to acquire lock for cache save after {max_lock_retries} attempts: {e}")
+                    raise  # Re-raise on final failure
+        
+        status = "PARTIAL" if partial else "COMPLETE"
+        logger.info(f"💾 Saved {len(call_data)} calls to persistent cache ({status}): {CACHE_FILE}")
     except Exception as e:
         logger.error(f"❌ Failed to save persistent cache: {e}")
 
@@ -1132,15 +1497,26 @@ def load_new_calls_only():
                 logger.warning(f"⚠️ Failed to download with key '{normalized_key}': {e}")
                 return None, f"{normalized_key}: {str(e)}"
         
-        # Process in batches of 100, updating dashboard every 500 calls
+        # Process in smaller batches to reduce lock contention with large cache files
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import time
         
-        BATCH_SIZE = 100
+        BATCH_SIZE = 50  # Reduced from 100 to reduce lock contention
         DASHBOARD_UPDATE_INTERVAL = 500
+        MAX_FILES_PER_REFRESH = 1000  # Limit to 1000 files per refresh to avoid timeouts
         
+        # Limit the number of files processed per refresh
+        total_new_unlimited = len(new_pdf_keys)
+        new_pdf_keys = new_pdf_keys[:MAX_FILES_PER_REFRESH]
         total_new = len(new_pdf_keys)
-        logger.info(f"🔄 Refresh New Data: Found {total_new} new PDF files to process")
+        
+        if total_new_unlimited > MAX_FILES_PER_REFRESH:
+            remaining = total_new_unlimited - MAX_FILES_PER_REFRESH
+            logger.info(f"🔄 Refresh New Data: Found {total_new_unlimited} new PDF files total")
+            logger.info(f"📊 Processing {total_new} files this refresh (limit: {MAX_FILES_PER_REFRESH}), {remaining} remaining for next refresh")
+        else:
+            logger.info(f"🔄 Refresh New Data: Found {total_new} new PDF files to process")
+        
         logger.info(f"📥 Starting to process {total_new} new PDF files in batches of {BATCH_SIZE} (out of {total_s3_files} total in S3)")
         
         processing_start_time = time.time()
@@ -1312,18 +1688,14 @@ def load_new_calls_only():
                     }) + '\n')
                 # #endregion
                 
-                cache_data = {
-                    'call_data': calls_to_save,
-                    'errors': errors.copy(),
-                    'timestamp': datetime.now().isoformat(),
-                    'last_save_time': time.time(),
-                    'count': len(calls_to_save),
-                    'partial': True,
-                    'processed': processed_count,
-                    'total': total_new
-                }
-                with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(cache_data, f, default=str, indent=2)
+                # Use atomic write with locking via save_cached_data_to_disk
+                save_cached_data_to_disk(
+                    calls_to_save,
+                    errors.copy(),
+                    partial=True,
+                    processed=processed_count,
+                    total=total_new
+                )
                 last_save_time = time.time()
                 st.session_state._last_incremental_save_time = last_save_time
                 logger.info(f"💾 Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count*100//total_new}% complete)")
@@ -1351,14 +1723,19 @@ def load_new_calls_only():
                     }) + '\n')
                 # #endregion
                 
-                logger.info(f"🔄 Dashboard update: {processed_count} calls processed, updating dashboard...")
+                logger.info(f"🔄 Dashboard update: {processed_count} calls processed, updating progress...")
                 last_dashboard_update = processed_count
                 
-                # Clear Streamlit cache to force reload with new data
-                load_all_calls_cached.clear()
+                # Update session state with progress (no rerun to prevent cache corruption)
+                # Progress will be visible on next natural rerun (user interaction or completion)
+                st.session_state['last_refresh_progress_update'] = {
+                    'processed': processed_count,
+                    'total': total_new,
+                    'timestamp': time.time()
+                }
                 
-                # Trigger rerun to update dashboard
-                st.rerun()
+                # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
+                # Progress updates will be visible when refresh completes or user interacts
         
         elapsed_total = time.time() - processing_start_time
         logger.info(f"✅ Refresh completed: Processed {total_new} new files in {elapsed_total/60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}")
@@ -1753,17 +2130,12 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
                     logger.info(f"🔍 Deduplication: {original_total} calls → {len(all_calls_merged)} unique calls (removed {original_total - len(all_calls_merged)} duplicates)")
                 # Save merged data to disk cache (mark as complete now that refresh is done)
                 # The disk cache already has the merged data from incremental saves during refresh, but update to mark complete
-                import time
-                cache_data = {
-                    'call_data': all_calls_merged,
-                    'errors': new_errors if new_errors else [],
-                    'timestamp': datetime.now().isoformat(),
-                    'last_save_time': time.time(),
-                    'count': len(all_calls_merged),
-                    'partial': False  # Mark as complete
-                }
-                with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(cache_data, f, default=str, indent=2)
+                # Use atomic write with locking via save_cached_data_to_disk
+                save_cached_data_to_disk(
+                    all_calls_merged,
+                    new_errors if new_errors else [],
+                    partial=False
+                )
                 logger.info(f"💾 Saved {len(all_calls_merged)} calls to persistent cache (refresh complete)")
             # We need to manually update the cache - store in session state temporarily
                 st.session_state['merged_calls'] = all_calls_merged
