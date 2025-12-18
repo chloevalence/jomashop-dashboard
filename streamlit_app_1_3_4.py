@@ -164,6 +164,54 @@ def cache_file_lock(filepath, timeout=30):
         except Exception:
             pass
 
+def atomic_write_json(filepath, data, max_retries=3, retry_delay=0.1):
+    """Write JSON atomically using temp file + rename pattern.
+    
+    This prevents partial writes from corrupting the cache file.
+    
+    Args:
+        filepath: Path to the JSON file to write
+        data: Data to serialize to JSON
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries (seconds)
+    
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    temp_path = filepath.with_suffix(filepath.suffix + '.tmp')
+    
+    # Clean up any existing temp file from previous failed attempts
+    if temp_path.exists():
+        try:
+            temp_path.unlink()
+        except Exception:
+            pass  # Ignore cleanup errors
+    
+    for attempt in range(max_retries):
+        try:
+            # Write to temporary file first
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, default=str, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())  # Force write to disk
+            
+            # Atomic rename (replaces existing file atomically on most systems)
+            os.replace(temp_path, filepath)
+            return
+            
+        except (IOError, OSError, PermissionError) as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"⚠️ Atomic write attempt {attempt + 1} failed: {e}, retrying...")
+                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+            else:
+                # Clean up temp file on final failure
+                try:
+                    if temp_path.exists():
+                        temp_path.unlink()
+                except Exception:
+                    pass
+                raise
+
 # --- Usage Metrics Tracking ---
 metrics_file = log_dir / "usage_metrics.json"
 
@@ -626,54 +674,6 @@ def load_all_calls_internal(max_files=None):
 # Persistent cache file that survives app restarts (prevents timeout issues)
 CACHE_FILE = log_dir / "cached_calls_data.json"
 LOCK_FILE = log_dir / "cached_calls_data.json.lock"
-
-def atomic_write_json(filepath, data, max_retries=3, retry_delay=0.1):
-    """Write JSON atomically using temp file + rename pattern.
-    
-    This prevents partial writes from corrupting the cache file.
-    
-    Args:
-        filepath: Path to the JSON file to write
-        data: Data to serialize to JSON
-        max_retries: Maximum number of retry attempts
-        retry_delay: Delay between retries (seconds)
-    
-    Raises:
-        Exception: If all retry attempts fail
-    """
-    temp_path = filepath.with_suffix(filepath.suffix + '.tmp')
-    
-    # Clean up any existing temp file from previous failed attempts
-    if temp_path.exists():
-        try:
-            temp_path.unlink()
-        except Exception:
-            pass  # Ignore cleanup errors
-    
-    for attempt in range(max_retries):
-        try:
-            # Write to temporary file first
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, default=str, indent=2, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())  # Force write to disk
-            
-            # Atomic rename (replaces existing file atomically on most systems)
-            os.replace(temp_path, filepath)
-            return
-            
-        except (IOError, OSError, PermissionError) as e:
-            if attempt < max_retries - 1:
-                logger.warning(f"⚠️ Atomic write attempt {attempt + 1} failed: {e}, retrying...")
-                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-            else:
-                # Clean up temp file on final failure
-                try:
-                    if temp_path.exists():
-                        temp_path.unlink()
-                except Exception:
-                    pass
-                raise
 
 def recover_partial_json(filepath):
     """Attempt to recover partial data from corrupted JSON file.
@@ -1283,19 +1283,18 @@ def load_all_calls_cached():
                 logger.info(f"⚡ Detected Streamlit in-memory cache ({len(streamlit_call_data)} calls loaded in {load_duration:.2f}s)")
                 
                 if disk_call_data and len(disk_call_data) > 0:
-                    # Compare: use whichever has more data (more complete) or is newer
+                    # CRITICAL: Always prefer disk cache if it has more data, regardless of load speed
+                    # This ensures we never show stale Streamlit cache when disk cache is more complete
                     if len(disk_call_data) > len(streamlit_call_data):
-                        # CRITICAL FIX: Disk cache has more data - use it to avoid showing stale data
-                        # This fixes the issue where disk cache has 8577 calls but only 6527 are displayed
-                        logger.info(f"✅ Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - using disk cache to show latest data")
+                        logger.info(f"✅ Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - ALWAYS using disk cache")
                         use_disk_cache = True
                     elif len(streamlit_call_data) > len(disk_call_data):
                         logger.info(f"✅ Streamlit cache is more complete ({len(streamlit_call_data)} vs {len(disk_call_data)} calls) - using it")
                         use_streamlit_cache = True
                     elif len(streamlit_call_data) == len(disk_call_data):
-                        # Same size - use Streamlit cache (it's in memory, faster)
-                        logger.info(f"✅ Streamlit cache matches disk cache - using in-memory version for speed")
-                        use_streamlit_cache = True
+                        # Same size - prefer disk cache as source of truth (it persists across restarts)
+                        logger.info(f"✅ Caches match - using disk cache as source of truth (persists across restarts)")
+                        use_disk_cache = True
                 else:
                     # No disk cache - use Streamlit cache
                     use_streamlit_cache = True
