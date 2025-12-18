@@ -1050,6 +1050,29 @@ def load_all_calls_cached():
     # Check if user explicitly requested full reload
     reload_all_triggered = st.session_state.get('reload_all_triggered', False)
     
+    # CRITICAL FIX: Always check disk cache FIRST to ensure we use latest data
+    # This prevents showing stale Streamlit cache when disk cache has more recent data
+    # Example: Disk cache has 8577 calls but Streamlit cache has 6527 - we should use disk cache
+    disk_result_early = load_cached_data_from_disk()
+    disk_call_data_early = None
+    disk_cache_count_early = 0
+    if disk_result_early and disk_result_early[0] is not None and len(disk_result_early[0]) > 0:
+        disk_call_data_early = disk_result_early[0]
+        disk_cache_count_early = len(disk_call_data_early)
+        # Check if this is a complete cache (not partial)
+        is_complete_early = True
+        if CACHE_FILE.exists():
+            try:
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                    is_complete_early = not cached_data.get('partial', False)
+            except Exception:
+                pass
+        
+        # If disk cache is complete and has substantial data, we'll prefer it later
+        # Store for comparison after we check Streamlit cache
+        logger.info(f"📊 Early disk cache check: Found {disk_cache_count_early} calls (complete={is_complete_early})")
+    
     # CRITICAL FIX: If refresh is in progress, always check disk cache first
     # This ensures we show the latest incrementally-saved data during refresh
     # SAFETY: This is READ-ONLY - no cache deletion, uses existing file locking
@@ -1057,14 +1080,12 @@ def load_all_calls_cached():
     if refresh_in_progress:
         logger.info("🔄 Refresh in progress - reading latest disk cache (read-only, safe)")
         try:
-            disk_result = load_cached_data_from_disk()
-            if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
-                disk_call_data, disk_errors = disk_result
-                cache_count = len(disk_call_data)
+            if disk_call_data_early:
+                cache_count = len(disk_call_data_early)
                 logger.info(f"✅ Refresh in progress: Using disk cache with {cache_count} calls (latest incremental save)")
                 # Return disk cache - Streamlit will cache this value (updates cache, doesn't delete)
                 # This ensures UI shows latest data during refresh without waiting for completion
-                return disk_call_data, disk_errors if disk_errors else []
+                return disk_call_data_early, disk_result_early[1] if disk_result_early[1] else []
             else:
                 logger.info("⚠️ Refresh in progress but no disk cache found - continuing with normal load")
         except Exception as e:
@@ -1231,7 +1252,14 @@ def load_all_calls_cached():
         
         # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
         streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
-        disk_cache_count = len(disk_call_data) if disk_call_data else 0
+        # Use early disk cache check if available, otherwise use the one loaded later
+        if disk_call_data_early and len(disk_call_data_early) > 0:
+            disk_call_data = disk_call_data_early
+            disk_errors = disk_result_early[1] if disk_result_early[1] else []
+            disk_cache_count = len(disk_call_data_early)
+            logger.info(f"📊 Using early disk cache check: {disk_cache_count} calls")
+        else:
+            disk_cache_count = len(disk_call_data) if disk_call_data else 0
         logger.info(f"📊 Cache Comparison (after load): Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files")
         
         # Determine which cache is better (more recent or more complete)
@@ -1246,7 +1274,12 @@ def load_all_calls_cached():
                 
                 if disk_call_data and len(disk_call_data) > 0:
                     # Compare: use whichever has more data (more complete) or is newer
-                    if len(streamlit_call_data) > len(disk_call_data):
+                    if len(disk_call_data) > len(streamlit_call_data):
+                        # CRITICAL FIX: Disk cache has more data - use it to avoid showing stale data
+                        # This fixes the issue where disk cache has 8577 calls but only 6527 are displayed
+                        logger.info(f"✅ Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - using disk cache to show latest data")
+                        use_disk_cache = True
+                    elif len(streamlit_call_data) > len(disk_call_data):
                         logger.info(f"✅ Streamlit cache is more complete ({len(streamlit_call_data)} vs {len(disk_call_data)} calls) - using it")
                         use_streamlit_cache = True
                     elif len(streamlit_call_data) == len(disk_call_data):
