@@ -1242,7 +1242,13 @@ def load_all_calls_cached():
                 use_streamlit_cache = True
                 # Force save to disk immediately for slow loads (they're fresh data from S3)
                 if streamlit_call_data:
-                    save_cached_data_to_disk(streamlit_call_data, streamlit_errors)
+                    # CRITICAL FIX: Wrap save in try/except so save failures don't cause function to return empty data
+                    try:
+                        save_cached_data_to_disk(streamlit_call_data, streamlit_errors)
+                    except Exception as save_error:
+                        logger.error(f"❌ Failed to save S3-loaded data to disk: {save_error}")
+                        logger.warning(f"⚠️ Data was successfully loaded but not saved - will be lost on restart")
+                        # Continue anyway - return the successfully loaded data
                 elif disk_call_data and len(disk_call_data) > 0:
                     # Only disk cache has data
                     logger.info(f"✅ Using disk cache ({len(disk_call_data)} calls)")
@@ -1266,8 +1272,14 @@ def load_all_calls_cached():
                     logger.info(f"💾 Streamlit cache data already saved to disk (from S3 load)")
                 else:
                     # Fast load = from Streamlit cache, save it to disk now
-                    save_cached_data_to_disk(final_call_data, final_errors)
-                    logger.info(f"💾 Saved Streamlit cache to disk cache ({len(final_call_data)} calls) - preserved for future restarts")
+                    # CRITICAL FIX: Wrap save in try/except so save failures don't cause function to return empty data
+                    try:
+                        save_cached_data_to_disk(final_call_data, final_errors)
+                        logger.info(f"💾 Saved Streamlit cache to disk cache ({len(final_call_data)} calls) - preserved for future restarts")
+                    except Exception as save_error:
+                        logger.error(f"❌ Failed to save Streamlit cache to disk: {save_error}")
+                        logger.warning(f"⚠️ Data is available but not saved - will be lost on restart")
+                        # Continue anyway - return the successfully loaded data
         elif use_disk_cache:
             final_call_data, final_errors = disk_call_data, disk_errors
             # Deduplicate disk cache data (should already be deduplicated, but double-check)
@@ -1286,7 +1298,13 @@ def load_all_calls_cached():
                 final_call_data = deduplicate_calls(final_call_data)
                 if len(final_call_data) < original_count:
                     logger.info(f"🔍 Deduplicated fresh load: {original_count} → {len(final_call_data)} unique calls")
-                save_cached_data_to_disk(final_call_data, final_errors)
+                # CRITICAL FIX: Wrap save in try/except so save failures don't cause function to return empty data
+                try:
+                    save_cached_data_to_disk(final_call_data, final_errors)
+                except Exception as save_error:
+                    logger.error(f"❌ Failed to save fresh load to disk: {save_error}")
+                    logger.warning(f"⚠️ Data was successfully loaded but not saved - will be lost on restart")
+                    # Continue anyway - return the successfully loaded data
         
         logger.info(f"⏱️ Total time: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
         
@@ -1732,23 +1750,8 @@ def load_new_calls_only():
                         # Check if this call is already in cache
                         call_key = parsed_data.get('_s3_key') or parsed_data.get('_id')
                         if call_key and call_key in existing_cache_keys:
-                                # #region agent log
-                                import json as json_module
-                                with open(DEBUG_LOG_FILE, 'a') as f:
-                                    f.write(json_module.dumps({
-                                        'sessionId': 'debug-session',
-                                        'runId': 'pre-fix',
-                                        'hypothesisId': 'C',
-                                        'location': 'streamlit_app_1_3_4.py:1127',
-                                        'message': 'WARNING: Processing file already in cache',
-                                        'data': {
-                                            'call_key': call_key,
-                                            'batch_num': batch_num,
-                                            'processed_count': processed_count
-                                        },
-                                        'timestamp': int(time.time() * 1000)
-                                    }) + '\n')
-                                # #endregion
+                            # Already in cache - skip (already added to new_calls above)
+                            pass
                     elif error:
                         errors.append(error)
                     
@@ -1774,47 +1777,9 @@ def load_new_calls_only():
             # OPTIMIZATION: Save incrementally every 3 batches or 2 minutes (instead of every batch)
             if should_save:
                 try:
-                    # #region agent log
-                    import json as json_module
-                    with open(DEBUG_LOG_FILE, 'a') as f:
-                        f.write(json_module.dumps({
-                            'sessionId': 'debug-session',
-                            'runId': 'pre-fix',
-                            'hypothesisId': 'A',
-                            'location': 'streamlit_app_1_3_4.py:1137',
-                            'message': 'Before incremental save - checking counts',
-                            'data': {
-                                'batch_num': batch_num,
-                                'new_calls_count': len(new_calls),
-                                'batch_calls_count': len(batch_calls),
-                                'processed_count': processed_count,
-                                'batches_since_save': batches_since_save,
-                                'time_since_save': time_since_save
-                            },
-                            'timestamp': int(time.time() * 1000)
-                        }) + '\n')
-                    # #endregion
-                    
                     # existing_calls already contains all calls including current batch (updated above)
                     # Deduplication will happen in save_cached_data_to_disk() - no need to do it here
                     calls_to_save = existing_calls
-                    
-                    # #region agent log
-                    with open(DEBUG_LOG_FILE, 'a') as f:
-                        f.write(json_module.dumps({
-                            'sessionId': 'debug-session',
-                            'runId': 'pre-fix',
-                            'hypothesisId': 'A',
-                            'location': 'streamlit_app_1_3_4.py:1200',
-                            'message': 'Saving incremental cache',
-                            'data': {
-                                'calls_to_save_count': len(calls_to_save),
-                                'processed_count': processed_count,
-                                'total_new': total_new
-                            },
-                            'timestamp': int(time.time() * 1000)
-                        }) + '\n')
-                    # #endregion
                     
                     # CRITICAL FIX: Add retry logic for save failures to prevent silent data loss
                     # Retry up to 3 times with exponential backoff
@@ -1861,25 +1826,6 @@ def load_new_calls_only():
             
             # Update dashboard every 500 calls
             if processed_count >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
-                # #region agent log
-                import json as json_module
-                with open(DEBUG_LOG_FILE, 'a') as f:
-                    f.write(json_module.dumps({
-                        'sessionId': 'debug-session',
-                        'runId': 'pre-fix',
-                        'hypothesisId': 'B',
-                        'location': 'streamlit_app_1_3_4.py:1161',
-                        'message': 'About to trigger st.rerun() for dashboard update',
-                        'data': {
-                            'processed_count': processed_count,
-                            'last_dashboard_update': last_dashboard_update,
-                            'new_calls_count': len(new_calls),
-                            'will_rerun': True
-                        },
-                        'timestamp': int(time.time() * 1000)
-                    }) + '\n')
-                # #endregion
-                
                 logger.info(f"🔄 Dashboard update: {processed_count} calls processed, updating progress...")
                 last_dashboard_update = processed_count
                 
@@ -2336,8 +2282,10 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
             elif not disk_cached_calls and new_calls:
                 # Disk cache is empty but we have new calls - merge as fallback
                 logger.warning(f"⚠️ Disk cache is empty but {len(new_calls)} new calls were processed - merging as fallback")
-                all_calls_merged = new_calls
-                logger.info(f"🔍 Fallback merge: Using {len(new_calls)} new calls (disk cache was empty)")
+                # CRITICAL FIX: Deduplicate before assignment to match what save_cached_data_to_disk() will do
+                # This ensures verification check compares post-dedup counts correctly
+                all_calls_merged = deduplicate_calls(new_calls)
+                logger.info(f"🔍 Fallback merge: Using {len(all_calls_merged)} unique calls from {len(new_calls)} new calls (disk cache was empty)")
             else:
                 # Use disk cache directly (already merged from incremental saves)
                 all_calls_merged = disk_cached_calls
@@ -2476,6 +2424,18 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
                 load_all_calls_cached.clear()
             else:
                 logger.warning(f"⚠️ Disk cache verification failed: expected {len(all_calls_merged)} calls, found {disk_cache_count} - NOT clearing Streamlit cache")
+                # CRITICAL FIX: When verification fails, use verified disk cache data if available
+                # Don't store unverified all_calls_merged that may not have been persisted to disk
+                if not verification_failed and disk_result_verify and disk_result_verify[0] is not None:
+                    logger.info(f"⚠️ Using verified disk cache data ({disk_cache_count} calls) instead of unverified merged data ({len(all_calls_merged)} calls)")
+                    all_calls_merged = disk_result_verify[0]
+                    # Use verified errors if available
+                    if disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None:
+                        new_errors = disk_result_verify[1]
+                else:
+                    logger.error(f"❌ CRITICAL: Verification failed and no valid disk cache available - data may not be persisted")
+                    # Still use all_calls_merged as last resort, but log the risk
+                    logger.warning(f"⚠️ Using unverified all_calls_merged as fallback - data may be lost on restart")
             
             # We need to manually update the cache - store in session state temporarily
             st.session_state['merged_calls'] = all_calls_merged
