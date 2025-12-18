@@ -943,6 +943,17 @@ def load_all_calls_cached():
     partial_processed = 0
     partial_total = 0
     
+    # Check if there's merged cache data from refresh operation (preserves Streamlit cache data)
+    if '_merged_cache_data' in st.session_state:
+        merged_data = st.session_state['_merged_cache_data']
+        merged_errors = st.session_state.get('_merged_cache_errors', [])
+        logger.info(f"✅ Using merged cache data from refresh: {len(merged_data)} calls")
+        # Clear the session state flag
+        del st.session_state['_merged_cache_data']
+        if '_merged_cache_errors' in st.session_state:
+            del st.session_state['_merged_cache_errors']
+        return merged_data, merged_errors
+    
     # Load disk cache regardless of reload_all_triggered - we'll check that flag later
     disk_result = load_cached_data_from_disk()
     if disk_result[0] is not None and len(disk_result[0]) > 0:
@@ -1001,7 +1012,8 @@ def load_all_calls_cached():
                         
                         st.session_state.auto_refresh_checked = True
                     
-                    # Return disk cache immediately - NO S3 load needed for complete cache
+                    # Return disk cache (will update Streamlit cache with this value)
+                    logger.info(f"✅ USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss")
                     return disk_call_data, disk_errors if disk_errors else []
             else:
                 logger.info(f"⚠️ Cache has only {cache_count} calls (< 100), will load from S3")
@@ -2107,6 +2119,20 @@ if is_admin:
 if current_username and current_username.lower() in ['chloe', 'shannon']:
     if st.sidebar.button('🔄 Refresh New Data', help='Only processes new PDFs added since last refresh. Fast and efficient!', type='primary'):
         log_audit_event(current_username, 'refresh_data', 'Refreshed new data from S3')
+        
+        # IMPORTANT: Preserve Streamlit cache BEFORE refresh to avoid calling load_all_calls_cached() during refresh
+        # This prevents crashes from triggering a full S3 reload during the refresh operation
+        previous_streamlit_cache = None
+        previous_streamlit_errors = []
+        try:
+            # Get Streamlit cache BEFORE refresh (safe to call here, won't trigger reload)
+            streamlit_result = load_all_calls_cached()
+            previous_streamlit_cache = streamlit_result[0] if streamlit_result[0] else []
+            previous_streamlit_errors = streamlit_result[1] if streamlit_result[1] else []
+            logger.info(f"💾 Preserved Streamlit cache: {len(previous_streamlit_cache)} calls before refresh")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not preserve Streamlit cache: {e} - will use disk cache only")
+        
         with st.spinner('🔄 Checking for new PDFs...'):
             new_calls, new_errors, new_count = load_new_calls_only()
         
@@ -2137,6 +2163,44 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
                     partial=False
                 )
                 logger.info(f"💾 Saved {len(all_calls_merged)} calls to persistent cache (refresh complete)")
+                
+                # Verify disk cache was saved correctly
+                disk_result_verify = load_cached_data_from_disk()
+                disk_cache_count = len(disk_result_verify[0]) if disk_result_verify[0] else 0
+                
+                if disk_cache_count >= len(all_calls_merged):
+                    # Disk cache was saved successfully
+                    # Merge preserved Streamlit cache with disk cache (preserving all data)
+                    if previous_streamlit_cache and len(previous_streamlit_cache) > 0:
+                        # Merge preserved Streamlit cache with disk cache
+                        merged_data = previous_streamlit_cache + disk_result_verify[0]
+                        merged_data = deduplicate_calls(merged_data)
+                        merged_count = len(merged_data)
+                        
+                        logger.info(f"🔄 Merging preserved Streamlit cache ({len(previous_streamlit_cache)} calls) with disk cache ({disk_cache_count} calls) = {merged_count} unique calls")
+                        
+                        # Save merged result to disk
+                        save_cached_data_to_disk(
+                            merged_data,
+                            previous_streamlit_errors if previous_streamlit_errors else disk_result_verify[1]
+                        )
+                        logger.info(f"✅ Saved merged cache to disk: {merged_count} calls")
+                        
+                        # Store merged data in session state so it's used after cache clear
+                        st.session_state['_merged_cache_data'] = merged_data
+                        st.session_state['_merged_cache_errors'] = previous_streamlit_errors if previous_streamlit_errors else disk_result_verify[1]
+                    else:
+                        # No previous Streamlit cache - just use disk cache
+                        logger.info(f"ℹ️ No previous Streamlit cache to merge - using disk cache ({disk_cache_count} calls)")
+                        st.session_state['_merged_cache_data'] = disk_result_verify[0]
+                        st.session_state['_merged_cache_errors'] = disk_result_verify[1] if disk_result_verify[1] else []
+                    
+                    # Clear Streamlit cache so it reloads from (potentially merged) disk cache
+                    logger.info(f"🔄 Clearing Streamlit cache to reload from disk cache")
+                    load_all_calls_cached.clear()
+                else:
+                    logger.warning(f"⚠️ Disk cache verification failed: expected {len(all_calls_merged)} calls, found {disk_cache_count} - NOT clearing Streamlit cache")
+                
             # We need to manually update the cache - store in session state temporarily
                 st.session_state['merged_calls'] = all_calls_merged
                 st.session_state['merged_errors'] = new_errors if new_errors else []
@@ -2152,9 +2216,7 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
                 st.session_state.new_pdfs_notification_count = 0
                 # Reset auto_refresh_checked so startup check runs again to verify 0 new files
                 st.session_state.auto_refresh_checked = False
-                # Clear Streamlit cache to force reload with new data
-                load_all_calls_cached.clear()
-                # Rerun to show updated data
+                # Rerun to show updated data (Streamlit cache will reload from disk if cleared above)
                 st.rerun()
         else:
             # No new files found and no errors
