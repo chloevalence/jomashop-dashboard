@@ -1050,6 +1050,28 @@ def load_all_calls_cached():
     # Check if user explicitly requested full reload
     reload_all_triggered = st.session_state.get('reload_all_triggered', False)
     
+    # CRITICAL FIX: If refresh is in progress, always check disk cache first
+    # This ensures we show the latest incrementally-saved data during refresh
+    # SAFETY: This is READ-ONLY - no cache deletion, uses existing file locking
+    refresh_in_progress = st.session_state.get('refresh_in_progress', False)
+    if refresh_in_progress:
+        logger.info("🔄 Refresh in progress - reading latest disk cache (read-only, safe)")
+        try:
+            disk_result = load_cached_data_from_disk()
+            if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
+                disk_call_data, disk_errors = disk_result
+                cache_count = len(disk_call_data)
+                logger.info(f"✅ Refresh in progress: Using disk cache with {cache_count} calls (latest incremental save)")
+                # Return disk cache - Streamlit will cache this value (updates cache, doesn't delete)
+                # This ensures UI shows latest data during refresh without waiting for completion
+                return disk_call_data, disk_errors if disk_errors else []
+            else:
+                logger.info("⚠️ Refresh in progress but no disk cache found - continuing with normal load")
+        except Exception as e:
+            # If disk read fails during refresh, log but continue with normal flow
+            # This prevents refresh from breaking the entire app
+            logger.warning(f"⚠️ Failed to read disk cache during refresh: {e} - continuing with normal load")
+    
     # Strategy: Always use the most up-to-date cache
     # 1. Check disk cache first (if not reloading)
     # 2. Try to load (will use Streamlit cache if available, or load from S3)
