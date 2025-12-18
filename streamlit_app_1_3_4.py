@@ -84,13 +84,13 @@ def cache_file_lock(filepath, timeout=30):
     
     Args:
         filepath: Path to the file to lock
-        timeout: Maximum time to wait for lock (seconds)
+        timeout: Maximum time to wait for lock (seconds). None = wait indefinitely.
     
     Yields:
         Locked file handle (or None if locking unavailable)
     
     Raises:
-        LockTimeoutError: If lock cannot be acquired within timeout period
+        LockTimeoutError: If lock cannot be acquired within timeout period (only if timeout is not None)
     """
     lock_path = filepath.with_suffix(filepath.suffix + '.lock')
     lock_file = None
@@ -106,8 +106,8 @@ def cache_file_lock(filepath, timeout=30):
         lock_file = open(lock_path, 'w')
         start_time = time.time()
         
-        # Try to acquire lock
-        while time.time() - start_time < timeout:
+        # Try to acquire lock - wait indefinitely if timeout is None
+        while timeout is None or (time.time() - start_time < timeout):
             try:
                 if sys.platform == 'win32':
                     # Windows file locking
@@ -128,7 +128,11 @@ def cache_file_lock(filepath, timeout=30):
             except Exception:
                 pass
             lock_file = None
-            raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
+            if timeout is None:
+                # This should never happen, but handle it gracefully
+                raise LockTimeoutError(f"Could not acquire lock for {filepath} (waiting indefinitely)")
+            else:
+                raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
         
         yield lock_file
         
@@ -826,9 +830,11 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     for attempt in range(max_retries):
         try:
             # Use file locking to prevent concurrent reads during writes
-            # OPTIMIZATION: Reduced timeout from 5s to 2s to prevent cascading timeouts
+            # CRITICAL FIX: Remove timeout - wait indefinitely for lock
+            # In single-process Streamlit app, locks are released when operations complete
+            # No risk of permanent deadlock, so we can wait as long as needed
             try:
-                with cache_file_lock(CACHE_FILE, timeout=2):
+                with cache_file_lock(CACHE_FILE, timeout=None):
                     logger.debug(f"📂 Checking persistent cache file: {CACHE_FILE}")
                     with open(CACHE_FILE, 'r', encoding='utf-8') as f:
                         cached_data = json.load(f)
