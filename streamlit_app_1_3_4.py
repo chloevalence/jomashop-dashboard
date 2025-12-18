@@ -2484,9 +2484,16 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
                         st.session_state['_merged_cache_data'] = all_calls_merged
                         st.session_state['_merged_cache_errors'] = new_errors if new_errors else []
                 
-                # Clear Streamlit cache so it reloads from (potentially merged) disk cache
-                logger.info(f"🔄 Clearing Streamlit cache to reload from disk cache")
-                load_all_calls_cached.clear()
+                # CRITICAL FIX: Don't clear Streamlit cache - let it update naturally
+                # The merged data is stored in session state (_merged_cache_data)
+                # When load_all_calls_cached() is called next, it will return that data
+                # and Streamlit's @st.cache_data will automatically cache it
+                # This ensures disk cache is backed up in Streamlit cache without risk of data loss
+                # Clearing cache here could cause data loss if something goes wrong before next call
+                logger.info(f"✅ Disk cache saved ({disk_cache_count} calls) - Streamlit cache will update with latest data on next access")
+                logger.info(f"💾 Merged data stored in session state - will be cached automatically when load_all_calls_cached() is called")
+                # DON'T clear - let Streamlit cache update naturally to avoid data loss
+                # load_all_calls_cached.clear()  # REMOVED - too risky, can cause data loss
             else:
                 logger.warning(f"⚠️ Disk cache verification failed: expected {len(all_calls_merged)} calls, found {disk_cache_count} - NOT clearing Streamlit cache")
                 # CRITICAL FIX: When verification fails, use verified disk cache data if available
