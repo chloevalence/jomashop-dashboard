@@ -110,32 +110,46 @@ def cache_file_lock(filepath, timeout=30):
         start_time = time.time()
         
         # Try to acquire lock - wait indefinitely if timeout is None
-        while timeout is None or (time.time() - start_time < timeout):
-            try:
-                if sys.platform == 'win32':
-                    # Windows file locking
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    # Unix file locking
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                lock_acquired = True
-                break
-            except (IOError, OSError):
-                # Lock is held by another process, wait and retry
-                time.sleep(0.1)
+        if timeout is None:
+            # Wait indefinitely until lock is acquired
+            while True:
+                try:
+                    if sys.platform == 'win32':
+                        # Windows file locking
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        # Unix file locking
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_acquired = True
+                    break
+                except (IOError, OSError):
+                    # Lock is held by another process, wait and retry
+                    time.sleep(0.1)
+        else:
+            # Wait with timeout
+            while time.time() - start_time < timeout:
+                try:
+                    if sys.platform == 'win32':
+                        # Windows file locking
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        # Unix file locking
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_acquired = True
+                    break
+                except (IOError, OSError):
+                    # Lock is held by another process, wait and retry
+                    time.sleep(0.1)
         
         if not lock_acquired:
             # Close the file before raising exception
+            # This can only happen if timeout is not None and timeout expired
             try:
                 lock_file.close()
             except Exception:
                 pass
             lock_file = None
-            if timeout is None:
-                # This should never happen, but handle it gracefully
-                raise LockTimeoutError(f"Could not acquire lock for {filepath} (waiting indefinitely)")
-            else:
-                raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
+            raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
         
         yield lock_file
         
@@ -2638,6 +2652,9 @@ def is_regular_admin():
             # No agent_id means admin
             if not agent_id_value:
                 return True
+            else:
+                # User has agent_id - they are an agent, not an admin
+                return False
         elif current_username.lower() in ["chloe", "shannon", "jerson"]:
             # Super admins are also regular admins
             return True
