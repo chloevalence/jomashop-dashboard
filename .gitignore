@@ -6,3 +6,5 @@ __pycache__/
 logs/
 .cursor/debug.log
 .vscode/
+# PDF files (may contain sensitive data in filenames)
+*.pdf
