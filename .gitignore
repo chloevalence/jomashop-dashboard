@@ -3,21 +3,6 @@
 skipped_files.txt
 __pycache__/
 .DS_Store
-**/.DS_Store
 logs/
 .cursor/debug.log
 .vscode/
-
-# Sample/test data files (PDFs)
-*.pdf
-
-# Python cache
-*.pyc
-*.pyo
-*.pyd
-__pycache__/
-*.so
-
-# Test files (if any remain)
-test_*.py
-*_test.py
