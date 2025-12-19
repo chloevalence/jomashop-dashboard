@@ -76,6 +76,20 @@ warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib.categ
 # Suppress matplotlib.category INFO level logging messages (categorical units warnings)
 logging.getLogger('matplotlib.category').setLevel(logging.WARNING)
 
+# Configure matplotlib to automatically close figures and suppress memory warnings
+import matplotlib
+matplotlib.rcParams['figure.max_open_warning'] = 0  # Suppress the "More than 20 figures" warning
+# Set backend to non-interactive to reduce memory usage
+try:
+    matplotlib.use('Agg')  # Use non-interactive backend
+except Exception:
+    pass  # Backend may already be set, ignore
+
+# Suppress inotify errors (file watcher limit reached) - these are non-critical
+import warnings
+warnings.filterwarnings('ignore', message='.*inotify.*')
+warnings.filterwarnings('ignore', message='.*fileWatcherType.*')
+
 # --- File Locking (must be defined before load_metrics/save_metrics) ---
 class LockTimeoutError(Exception):
     """Raised when file lock acquisition times out."""
@@ -341,6 +355,14 @@ def st_pyplot_safe(fig, **kwargs):
         st.pyplot(fig, **kwargs)
     finally:
         plt.close(fig)
+        # Close all remaining open figures to prevent accumulation
+        plt.close('all')
+        # Force garbage collection of figure to free memory immediately
+        import gc
+        gc.collect()
+        # Force garbage collection of figure to free memory immediately
+        import gc
+        gc.collect()
 
 # Show immediate feedback - app is loading
 initial_status = st.empty()
