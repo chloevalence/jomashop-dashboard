@@ -101,7 +101,7 @@ def cache_file_lock(filepath, timeout=30):
     
     Args:
         filepath: Path to the file to lock
-        timeout: Maximum time to wait for lock (seconds). None = wait indefinitely.
+        timeout: Maximum time to wait for lock (seconds). None = wait indefinitely (with max iteration limit).
     
     Yields:
         Locked file handle (or None if locking unavailable)
@@ -123,37 +123,32 @@ def cache_file_lock(filepath, timeout=30):
         lock_file = open(lock_path, 'w')
         start_time = time.time()
         
-        # Try to acquire lock - wait indefinitely if timeout is None
-        if timeout is None:
-            # Wait indefinitely until lock is acquired
-            while True:
-                try:
-                    if sys.platform == 'win32':
-                        # Windows file locking
-                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                    else:
-                        # Unix file locking
-                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    lock_acquired = True
+        # BUG FIX: Handle timeout=None with maximum iteration limit to prevent infinite hang
+        # Maximum iterations = 5 minutes worth of retries (3000 iterations at 0.1s each)
+        MAX_ITERATIONS = 3000 if timeout is None else None
+        
+        # Try to acquire lock
+        iteration_count = 0
+        while timeout is None or (time.time() - start_time < timeout):
+            # BUG FIX: Add iteration limit for timeout=None to prevent infinite hang
+            if timeout is None and MAX_ITERATIONS is not None:
+                iteration_count += 1
+                if iteration_count >= MAX_ITERATIONS:
+                    # Reached maximum iterations - break to raise timeout error
                     break
-                except (IOError, OSError):
-                    # Lock is held by another process, wait and retry
-                    time.sleep(0.1)
-        else:
-            # Wait with timeout
-            while time.time() - start_time < timeout:
-                try:
-                    if sys.platform == 'win32':
-                        # Windows file locking
-                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                    else:
-                        # Unix file locking
-                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    lock_acquired = True
-                    break
-                except (IOError, OSError):
-                    # Lock is held by another process, wait and retry
-                    time.sleep(0.1)
+            
+            try:
+                if sys.platform == 'win32':
+                    # Windows file locking
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    # Unix file locking
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_acquired = True
+                break
+            except (IOError, OSError):
+                # Lock is held by another process, wait and retry
+                time.sleep(0.1)
         
         if not lock_acquired:
             # Close the file before raising exception
@@ -163,7 +158,10 @@ def cache_file_lock(filepath, timeout=30):
             except Exception:
                 pass
             lock_file = None
-            raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
+            if timeout is None:
+                raise LockTimeoutError(f"Could not acquire lock for {filepath} after {MAX_ITERATIONS * 0.1:.0f}s (max wait time). Another process may be holding the lock indefinitely.")
+            else:
+                raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
         
         yield lock_file
         
