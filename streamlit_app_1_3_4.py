@@ -330,6 +330,18 @@ if 'session_started' not in st.session_state:
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
 logger.debug("Page config set, starting app initialization...")
 
+def st_pyplot_safe(fig, **kwargs):
+    """Display matplotlib figure in Streamlit and automatically close it to prevent memory leaks.
+    
+    Args:
+        fig: matplotlib figure object
+        **kwargs: Additional arguments passed to st.pyplot()
+    """
+    try:
+        st.pyplot(fig, **kwargs)
+    finally:
+        plt.close(fig)
+
 # Show immediate feedback - app is loading
 initial_status = st.empty()
 initial_status.info("🔄 **Initializing dashboard...** Please wait.")
@@ -1684,48 +1696,7 @@ def create_filter_cache_key(date_range, agent_filter, score_filter, label_filter
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_cached_chart_with_filters(chart_id: str, cache_key: str, chart_func, *args, **kwargs):
     """Cache matplotlib chart figures with filter-based cache keys.
-    
-    Args:
-        chart_id: Unique identifier for the chart type
-        cache_key: Cache key based on filter parameters
-        chart_func: Function that generates the chart
-        *args, **kwargs: Arguments to pass to chart_func
-        
-    Returns:
-        matplotlib figure object
-    """
-    return chart_func(*args, **kwargs)
-    return hashlib.md5(data_str.encode()).hexdigest()
-
-def create_filter_cache_key(date_range, agent_filter, score_filter, label_filter, search_text=None):
-    """Create a cache key based on filter parameters for chart caching.
-    
-    Args:
-        date_range: Tuple of (start_date, end_date)
-        agent_filter: List of selected agents
-        score_filter: Tuple of (min_score, max_score)
-        label_filter: List of selected labels
-        search_text: Optional search text
-        
-    Returns:
-        Cache key string
-    """
-    import hashlib
-    key_parts = [
-        str(date_range),
-        str(sorted(agent_filter)) if agent_filter else "all",
-        str(score_filter),
-        str(sorted(label_filter)) if label_filter else "all",
-        str(search_text) if search_text else ""
-    ]
-    key_str = "|".join(key_parts)
-    return hashlib.md5(key_str.encode()).hexdigest()
-
-# Enhanced chart caching with filter-based cache keys
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_cached_chart_with_filters(chart_id: str, cache_key: str, chart_func, *args, **kwargs):
-    """Cache matplotlib chart figures with filter-based cache keys.
-    
+     
     Args:
         chart_id: Unique identifier for the chart type
         cache_key: Cache key based on filter parameters
@@ -3371,12 +3342,12 @@ if is_super_admin():
             # No new files found and no errors
             st.session_state['refresh_in_progress'] = False  # Clear flag
             st.info("ℹ️ No new PDFs found. All data is up to date!")
-# Admin-only: Full reload button (Chloe and Shannon only)
-if current_username and current_username.lower() in ["chloe", "shannon"]:
+# Admin-only: Full reload button (Super admins only)
+if is_super_admin():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👑 Admin: Full Reload")
     if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take 10-20 minutes.", type="secondary"):
-        if current_username and current_username.lower() in ["chloe", "shannon"]:
+        if is_super_admin():
             log_audit_event(current_username, "reload_all_data", "Cleared cache and reloaded all data from S3")
         st.cache_data.clear()
         # Clear persistent disk cache
@@ -4596,7 +4567,7 @@ if show_comparison and user_agent_id:
         ax_comp.legend()
         plt.xticks(rotation=0)
         plt.tight_layout()
-        st.pyplot(fig_comp)
+        st_pyplot_safe(fig_comp)
     
     with comp_col2:
         st.write("**Pass Rate Comparison**")
@@ -4610,7 +4581,7 @@ if show_comparison and user_agent_id:
         ax_pass.set_title("My Pass Rate vs Team Average")
         plt.xticks(rotation=0)
         plt.tight_layout()
-        st.pyplot(fig_pass)
+        st_pyplot_safe(fig_pass)
     
 else:
     # Admin/All data view
@@ -4720,7 +4691,7 @@ with st.expander("📊 Historical Baseline Comparisons", expanded=False):
             ax_bench.legend()
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
-            st.pyplot(fig_bench)
+            st_pyplot_safe(fig_bench)
 
 # --- Agent Leaderboard ---
 if not user_agent_id:
@@ -4874,7 +4845,7 @@ with col_trend1:
         ax_trend.legend()
         plt.xticks(rotation=45)
         plt.tight_layout()
-        st.pyplot(fig_trend)
+        st_pyplot_safe(fig_trend)
 
 with col_trend2:
     # Pass/Fail Rate Trends
@@ -4899,7 +4870,7 @@ with col_trend2:
         ax_pf.legend()
         plt.xticks(rotation=45)
         plt.tight_layout()
-        st.pyplot(fig_pf)
+        st_pyplot_safe(fig_pf)
 
 # --- Trend Forecasting (Predictive Analytics) ---
 with st.expander("🔮 Trend Forecasting", expanded=False):
@@ -4946,7 +4917,7 @@ with st.expander("🔮 Trend Forecasting", expanded=False):
             ax_forecast.legend()
             plt.xticks(rotation=45)
             plt.tight_layout()
-            st.pyplot(fig_forecast)
+            st_pyplot_safe(fig_forecast)
             
             # Show forecast summary
             avg_forecast = forecast_df['Forecast'].mean()
@@ -5014,7 +4985,7 @@ if "Rubric Details" in filtered_df.columns:
                 ax_fail.set_ylabel("Rubric Code")
                 ax_fail.set_title("Top 10 Failing Rubric Codes")
                 plt.tight_layout()
-                st.pyplot(fig_fail)
+                st_pyplot_safe(fig_fail)
         
         with col_rub2:
             # Rubric Code Heatmap (simplified - showing pass/fail rates)
@@ -5035,7 +5006,7 @@ if "Rubric Details" in filtered_df.columns:
             ax_heat.set_title("Fail Rate by Rubric Category")
             plt.xticks(rotation=0)
             plt.tight_layout()
-            st.pyplot(fig_heat)
+            st_pyplot_safe(fig_heat)
 
 # --- Agent-Specific Trends ---
 if user_agent_id:
@@ -5110,7 +5081,7 @@ if user_agent_id:
             ax_agent.legend()
             plt.xticks(rotation=45)
             plt.tight_layout()
-            st.pyplot(fig_agent)
+            st_pyplot_safe(fig_agent)
     
     with agent_trends_col2:
         st.write("**My Pass Rate Trend vs Team**")
@@ -5146,7 +5117,7 @@ if user_agent_id:
             ax_pass_trend.legend()
             plt.xticks(rotation=45)
             plt.tight_layout()
-            st.pyplot(fig_pass_trend)
+            st_pyplot_safe(fig_pass_trend)
 
 else:
     # Admin view - agent selection and comparison
@@ -5175,7 +5146,7 @@ else:
                 ax_agent.legend()
                 plt.xticks(rotation=45)
                 plt.tight_layout()
-                st.pyplot(fig_agent)
+                st_pyplot_safe(fig_agent)
         
         with agent_trends_col2:
             # Agent Comparison
@@ -5206,7 +5177,7 @@ else:
                 plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
                 
                 plt.tight_layout()
-                st.pyplot(fig_compare)
+                st_pyplot_safe(fig_compare)
 
 # --- QA Score Distribution and Label Distribution ---
 col_left, col_right = st.columns(2)
@@ -5222,7 +5193,7 @@ with col_left:
         ax_dist.axvline(x=alert_threshold, color='r', linestyle='--', alpha=0.5, label=f'Threshold ({alert_threshold}%)')
         ax_dist.legend()
         plt.tight_layout()
-        st.pyplot(fig_dist)
+        st_pyplot_safe(fig_dist)
 
 with col_right:
     st.subheader("🏷️ Label Distribution")
@@ -5235,7 +5206,7 @@ with col_right:
         ax_label.set_title("Call Labels Distribution")
         plt.xticks(rotation=45)
         plt.tight_layout()
-        st.pyplot(fig_label)
+        st_pyplot_safe(fig_label)
 
 # --- Coaching Insights Aggregation ---
 st.subheader("💡 Coaching Insights")
@@ -5267,7 +5238,7 @@ if "Coaching Suggestions" in filtered_df.columns:
             ax_coach.set_xlabel("Frequency")
             ax_coach.set_title("Top 10 Coaching Suggestions")
             plt.tight_layout()
-            st.pyplot(fig_coach)
+            st_pyplot_safe(fig_coach)
     else:
         st.info("No coaching suggestions found in the filtered data.")
 
@@ -5586,7 +5557,7 @@ if len(filtered_df) > 0:
         ax_vol.set_title("Call Volume by Agent")
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        st.pyplot(fig_vol)
+        st_pyplot_safe(fig_vol)
     
     with vol_col2:
         st.write("**Call Volume Over Time**")
@@ -5601,7 +5572,7 @@ if len(filtered_df) > 0:
         ax_vol_time.grid(True, alpha=0.3)
         plt.xticks(rotation=45)
         plt.tight_layout()
-        st.pyplot(fig_vol_time)
+        st_pyplot_safe(fig_vol_time)
 
 # --- Time of Day Analysis ---
 st.subheader("⏰ Time of Day Analysis")
@@ -5624,7 +5595,7 @@ if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
             ax_time.grid(True, alpha=0.3)
             ax_time.set_xticks(range(0, 24, 2))
             plt.tight_layout()
-            st.pyplot(fig_time)
+            st_pyplot_safe(fig_time)
     
     with time_col2:
         st.write("**Call Volume by Time of Day**")
@@ -5640,7 +5611,7 @@ if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
             ax_time_vol.set_title("Call Volume by Time of Day")
             ax_time_vol.set_xticks(range(0, 24, 2))
             plt.tight_layout()
-            st.pyplot(fig_time_vol)
+            st_pyplot_safe(fig_time_vol)
 
 # --- Reason and Outcome Analysis ---
 st.subheader("🎯 Call Reason & Outcome Analysis")
@@ -5657,7 +5628,7 @@ if "Reason" in filtered_df.columns or "Outcome" in filtered_df.columns:
                 ax_reason.set_xlabel("Number of Calls")
                 ax_reason.set_title("Top 10 Call Reasons")
                 plt.tight_layout()
-                st.pyplot(fig_reason)
+                st_pyplot_safe(fig_reason)
     
     with reason_col2:
         if "Outcome" in filtered_df.columns:
@@ -5669,7 +5640,7 @@ if "Reason" in filtered_df.columns or "Outcome" in filtered_df.columns:
                 ax_outcome.set_xlabel("Number of Calls")
                 ax_outcome.set_title("Top 10 Outcomes")
                 plt.tight_layout()
-                st.pyplot(fig_outcome)
+                st_pyplot_safe(fig_outcome)
 
 # --- Anomaly Detection ---
 st.markdown("---")
@@ -5727,7 +5698,7 @@ if "QA Score" in filtered_df.columns and "Call Date" in filtered_df.columns and 
         ax_anomaly.grid(True, alpha=0.3)
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        st.pyplot(fig_anomaly)
+        st_pyplot_safe(fig_anomaly)
     else:
         st.success("✅ No anomalies detected in the filtered data")
 else:
@@ -5774,7 +5745,7 @@ with analytics_tab1:
                 ax_wow_score.legend()
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                st.pyplot(fig_wow_score)
+                st_pyplot_safe(fig_wow_score)
                 
                 # Show WoW changes
                 st.write("**Week-over-Week Changes**")
@@ -5795,7 +5766,7 @@ with analytics_tab1:
                 ax_wow_pass.legend()
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                st.pyplot(fig_wow_pass)
+                st_pyplot_safe(fig_wow_pass)
         else:
             st.info("ℹ️ Need at least 2 weeks of data for week-over-week comparison")
 
@@ -5852,7 +5823,7 @@ with analytics_tab2:
                 ax_agent_trend.grid(True, alpha=0.3)
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                st.pyplot(fig_agent_trend)
+                st_pyplot_safe(fig_agent_trend)
         else:
             st.info("ℹ️ Need multiple weeks of data per agent to show improvement trends")
     else:
@@ -5914,7 +5885,7 @@ with analytics_tab3:
                 ax_fail.set_xlabel("Failure Count")
                 ax_fail.set_title("Top 10 Failure Reasons")
                 plt.tight_layout()
-                st.pyplot(fig_fail)
+                st_pyplot_safe(fig_fail)
             
             # Show detailed view for selected failure code
             selected_failure_code = st.selectbox(
