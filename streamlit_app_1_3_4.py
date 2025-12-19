@@ -2217,6 +2217,15 @@ except Exception as e:
     # If mapping doesn't exist, default to admin view
     is_admin = True
 
+# Helper function to check if user has access to refresh controls and admin features
+# Only Chloe, Shannon, and Jerson have access
+def has_admin_access():
+    """Check if current user has access to refresh controls, background refresh, system monitoring, and data quality validation."""
+    if not current_username:
+        return False
+    allowed_users = ['chloe', 'shannon', 'jerson']
+    return current_username.lower() in allowed_users
+
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
 # Show view mode
@@ -2439,8 +2448,8 @@ st.sidebar.markdown("### 🔄 Refresh Data")
 st.sidebar.info("💡 **When to refresh:** Click 'Refresh New Data' after new PDFs are added to S3")
 st.sidebar.caption("ℹ️ **Cache never expires** - Data stays cached until you manually refresh")
 
-# Background refresh settings (admin only)
-if is_admin:
+# Background refresh settings (Chloe, Shannon, and Jerson only)
+if has_admin_access():
     with st.sidebar.expander("⚙️ Background Refresh Settings"):
         bg_enabled = st.checkbox("Enable background refresh", value=st.session_state.bg_refresh_enabled)
         if bg_enabled != st.session_state.bg_refresh_enabled:
@@ -2472,9 +2481,9 @@ if is_admin:
                     st.info("ℹ️ No new PDFs found")
                 st.rerun()
 
-# Smart refresh button (Chloe and Shannon only) - only loads new PDFs
+# Smart refresh button (Chloe, Shannon, and Jerson only) - only loads new PDFs
 # Note: files_to_load will be defined later, but we'll use None here to get all cached data
-if current_username and current_username.lower() in ['chloe', 'shannon']:
+if has_admin_access():
     if st.sidebar.button('🔄 Refresh New Data', help='Only processes new PDFs added since last refresh. Fast and efficient!', type='primary'):
         log_audit_event(current_username, 'refresh_data', 'Refreshed new data from S3')
         
@@ -3825,9 +3834,9 @@ if user_agent_id:
 else:
     st.title("📋 QA Rubric Dashboard")
 
-# Monitoring Dashboard (Admin Only)
-if is_admin:
-    with st.expander("📊 System Monitoring & Metrics (Admin Only)", expanded=False):
+# Monitoring Dashboard (Chloe, Shannon, and Jerson only)
+if has_admin_access():
+    with st.expander("📊 System Monitoring & Metrics (Chloe, Shannon, and Jerson only)", expanded=False):
         st.markdown("### Usage Metrics")
         metrics = load_metrics()
         
@@ -3906,9 +3915,9 @@ if is_admin:
             else:
                 st.info("Audit log file not found. Audit entries will be created as you use the system.")
 
-# Data Validation Dashboard (Admin Only)
-if is_admin:
-    with st.expander("🔍 Data Quality Validation (Admin Only)", expanded=False):
+# Data Validation Dashboard (Chloe, Shannon, and Jerson only)
+if has_admin_access():
+    with st.expander("🔍 Data Quality Validation (Chloe, Shannon, and Jerson only)", expanded=False):
         st.markdown("### Data Quality Metrics")
         
         validation_issues = []
