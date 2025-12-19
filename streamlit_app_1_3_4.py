@@ -679,6 +679,26 @@ def load_all_calls_internal(max_files=None):
 CACHE_FILE = log_dir / "cached_calls_data.json"
 LOCK_FILE = log_dir / "cached_calls_data.json.lock"
 
+# S3 cache key for storing cache in S3 (survives deployments and app restarts)
+S3_CACHE_KEY = "cache/cached_calls_data.json"
+
+def get_s3_client_and_bucket():
+    """Get S3 client and bucket name. Returns (client, bucket_name) or (None, None) if unavailable."""
+    try:
+        if "s3" not in st.secrets:
+            return None, None
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+            region_name=st.secrets["s3"].get("region_name", "us-east-1")
+        )
+        s3_bucket_name = st.secrets["s3"]["bucket_name"]
+        return s3_client, s3_bucket_name
+    except Exception as e:
+        logger.debug(f"Could not get S3 client: {e}")
+        return None, None
+
 def recover_partial_json(filepath):
     """Attempt to recover partial data from corrupted JSON file.
     
@@ -808,9 +828,11 @@ def deduplicate_calls(call_data):
     return deduplicated
 
 def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
-    """Load cached data from disk if it exists. Handles both complete and partial saves.
+    """Load cached data from S3 first, then fall back to local disk if S3 unavailable.
     
     Features:
+    - Tries S3 first (survives deployments)
+    - Falls back to local disk if S3 unavailable
     - File locking to prevent concurrent access
     - Retry logic for transient errors
     - Corruption recovery to extract partial data
@@ -823,6 +845,53 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     Returns:
         tuple: (call_data, errors) or (None, None) if load fails
     """
+    # Try loading from S3 first (survives deployments and app restarts)
+    s3_client, s3_bucket = get_s3_client_and_bucket()
+    if s3_client and s3_bucket:
+        try:
+            response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+            cached_data = json.loads(response['Body'].read().decode('utf-8'))
+            if not isinstance(cached_data, dict):
+                logger.warning(f"⚠️ S3 cache contains invalid data structure: {type(cached_data).__name__}, expected dict")
+            else:
+                call_data = cached_data.get('call_data', [])
+                errors = cached_data.get('errors', [])
+                cache_timestamp = cached_data.get('timestamp', None)
+                cache_count = len(call_data)
+                is_partial = cached_data.get('partial', False)
+                
+                if is_partial:
+                    processed = cached_data.get('processed', 0)
+                    total = cached_data.get('total', 0)
+                    logger.info(
+                        f"☁️ Found PARTIAL cache in S3 with {cache_count} calls "
+                        f"({processed}/{total} = {processed*100//total if total > 0 else 0}% complete, "
+                        f"saved at {cache_timestamp})"
+                    )
+                else:
+                    logger.info(
+                        f"☁️ Found COMPLETE cache in S3 with {cache_count} calls (saved at {cache_timestamp})"
+                    )
+                
+                # Also sync to local disk for faster subsequent loads
+                try:
+                    with cache_file_lock(CACHE_FILE, timeout=5):
+                        atomic_write_json(CACHE_FILE, cached_data)
+                        logger.debug(f"💾 Synced S3 cache to local disk: {CACHE_FILE}")
+                except Exception as sync_error:
+                    logger.debug(f"Could not sync S3 cache to local disk: {sync_error}")
+                
+                return call_data, errors
+        except ClientError as s3_error:
+            error_code = s3_error.response.get('Error', {}).get('Code', '')
+            if error_code == 'NoSuchKey':
+                logger.debug(f"📂 No cache found in S3: s3://{s3_bucket}/{S3_CACHE_KEY}")
+            else:
+                logger.warning(f"⚠️ Failed to load cache from S3 (will try local disk): {s3_error}")
+        except Exception as s3_error:
+            logger.warning(f"⚠️ Failed to load cache from S3 (will try local disk): {s3_error}")
+    
+    # Fall back to local disk if S3 unavailable or not found
     if not CACHE_FILE.exists():
         return None, None
     
@@ -1022,6 +1091,22 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
         
         status = "PARTIAL" if partial else "COMPLETE"
         logger.info(f"💾 Successfully saved {len(call_data)} calls to persistent cache ({status}): {CACHE_FILE}")
+        
+        # Also save to S3 for persistence across deployments
+        s3_client, s3_bucket = get_s3_client_and_bucket()
+        if s3_client and s3_bucket:
+            try:
+                cache_json = json.dumps(cache_data, default=str, ensure_ascii=False)
+                s3_client.put_object(
+                    Bucket=s3_bucket,
+                    Key=S3_CACHE_KEY,
+                    Body=cache_json.encode('utf-8'),
+                    ContentType='application/json'
+                )
+                logger.info(f"☁️ Successfully saved {len(call_data)} calls to S3 cache ({status}): s3://{s3_bucket}/{S3_CACHE_KEY}")
+            except Exception as s3_error:
+                # Don't fail the entire save if S3 upload fails - local cache is still saved
+                logger.warning(f"⚠️ Failed to save cache to S3 (local cache saved successfully): {s3_error}")
     except LockTimeoutError:
         # Re-raise LockTimeoutError - callers need to know about this
         raise
@@ -2497,8 +2582,11 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
                 # Clearing cache here could cause data loss if something goes wrong before next call
                 logger.info(f"✅ Disk cache saved ({disk_cache_count} calls) - Streamlit cache will update with latest data on next access")
                 logger.info(f"💾 Merged data stored in session state - will be cached automatically when load_all_calls_cached() is called")
-                # DON'T clear - let Streamlit cache update naturally to avoid data loss
-                # load_all_calls_cached.clear()  # REMOVED - too risky, can cause data loss
+                
+                # REMOVED: load_all_calls_cached.clear() - causes crashes during refresh/rerun
+                # Instead, rely on _merged_cache_data in session state which load_all_calls_cached() 
+                # will use on next call (line 1118-1126), and Streamlit will cache that result automatically.
+                # The disk cache is already persisted to logs/cached_calls_data.json, so data is safe.
             else:
                 logger.warning(f"⚠️ Disk cache verification failed: expected {len(all_calls_merged)} calls, found {disk_cache_count} - NOT clearing Streamlit cache")
                 # CRITICAL FIX: When verification fails, use verified disk cache data if available
