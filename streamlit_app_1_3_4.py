@@ -1993,13 +1993,32 @@ def calculate_trend_slope(dates, scores):
     """
     import numpy as np
     from datetime import timedelta
+    from numpy.linalg import LinAlgError
     
     if len(dates) < 2:
         return 0
     
-    date_nums = [(d - dates.min()).days for d in dates]
-    coeffs = np.polyfit(date_nums, scores, 1)
-    return coeffs[0]
+    # Check if all dates are the same (would cause date_nums to all be 0)
+    if dates.nunique() == 1:
+        return 0  # No trend if all dates are the same
+    
+    # Check if all scores are the same (no variation)
+    if scores.nunique() == 1:
+        return 0  # No trend if all scores are the same
+    
+    try:
+        date_nums = [(d - dates.min()).days for d in dates]
+        
+        # Check if date_nums are all the same (shouldn't happen after above check, but defensive)
+        if len(set(date_nums)) == 1:
+            return 0
+        
+        coeffs = np.polyfit(date_nums, scores, 1)
+        return coeffs[0]
+    except (LinAlgError, ValueError, np.linalg.LinAlgError) as e:
+        # Handle numerical errors gracefully (SVD convergence issues, etc.)
+        logger.debug(f"Could not calculate trend slope: {e}, returning 0")
+        return 0
 
 def classify_trajectory(df, agent=None):
     """Classify agent trajectory as improving, declining, stable, or volatile.
