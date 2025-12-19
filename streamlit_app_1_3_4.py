@@ -1274,13 +1274,27 @@ def load_all_calls_cached(cache_version=0):
             # S3 cache has been updated - clear Streamlit cache AND session state cache
             logger.info(f"🔄 S3 cache updated ({s3_cache_timestamp} != {streamlit_cache_timestamp}) - invalidating caches")
             try:
-                load_all_calls_cached.clear()
-                # Clear session state cache so we reload from S3
-                if s3_cache_key in st.session_state:
-                    del st.session_state[s3_cache_key]
-                logger.info("✅ Cleared stale Streamlit cache and session state cache - will reload from S3")
-            except Exception:
-                pass  # Ignore clear errors
+                # CRITICAL FIX: Only clear cache if we're not already in a cache-clearing operation
+                # This prevents recursive cache clearing that can cause crashes
+                if not st.session_state.get('_cache_clearing_in_progress', False):
+                    st.session_state['_cache_clearing_in_progress'] = True
+                    try:
+                        load_all_calls_cached.clear()
+                        # Clear session state cache so we reload from S3
+                        if s3_cache_key in st.session_state:
+                            del st.session_state[s3_cache_key]
+                        logger.info("✅ Cleared stale Streamlit cache and session state cache - will reload from S3")
+                    finally:
+                        # Always clear the flag, even if clearing failed
+                        if '_cache_clearing_in_progress' in st.session_state:
+                            del st.session_state['_cache_clearing_in_progress']
+                else:
+                    logger.debug("⏸️ Cache clearing already in progress, skipping to prevent recursion")
+            except Exception as clear_error:
+                logger.warning(f"⚠️ Could not clear Streamlit cache: {clear_error}")
+                # Clear the flag even on error
+                if '_cache_clearing_in_progress' in st.session_state:
+                    del st.session_state['_cache_clearing_in_progress']
         # Store S3 cache timestamp for future comparison
         st.session_state['_s3_cache_timestamp'] = s3_cache_timestamp
     
@@ -1401,7 +1415,11 @@ def load_all_calls_cached(cache_version=0):
                                 # Clear notification count since there are no new files
                                 st.session_state.new_pdfs_notification_count = 0
                         except Exception as e:
+                            # CRITICAL FIX: Log full exception details to help diagnose crashes
                             logger.warning(f"⚠️ Failed to check for new files: {e}")
+                            import traceback
+                            logger.debug(f"⚠️ Background check traceback: {traceback.format_exc()}")
+                            # Don't crash the app - just mark as checked so we don't retry immediately
                         
                         st.session_state.auto_refresh_checked = True
                     
@@ -1879,35 +1897,83 @@ def predict_future_scores_simple(df, days_ahead=7):
     # Simple linear regression
     from datetime import timedelta
     import numpy as np
+    from numpy.linalg import LinAlgError
     
     dates = daily_scores["Call Date"]
     scores = daily_scores["QA Score"]
     
+    # Check if all dates are the same
+    if dates.nunique() == 1:
+        # All dates are the same - return flat forecast
+        avg_score = scores.mean()
+        return {
+            'dates': [(dates.max() + timedelta(days=i+1)).date() for i in range(days_ahead)],
+            'forecast': [avg_score] * days_ahead,
+            'lower_bound': [avg_score - 5] * days_ahead,  # Simple confidence interval
+            'upper_bound': [avg_score + 5] * days_ahead,
+            'method': 'flat'
+        }
+    
+    # Check if all scores are the same
+    if scores.nunique() == 1:
+        # All scores are the same - return flat forecast
+        avg_score = scores.iloc[0]
+        return {
+            'dates': [(dates.max() + timedelta(days=i+1)).date() for i in range(days_ahead)],
+            'forecast': [avg_score] * days_ahead,
+            'lower_bound': [avg_score - 5] * days_ahead,
+            'upper_bound': [avg_score + 5] * days_ahead,
+            'method': 'flat'
+        }
+    
     # Convert dates to numeric for regression
     date_nums = [(d - dates.min()).days for d in dates]
     
-    # Linear regression
-    coeffs = np.polyfit(date_nums, scores, 1)
-    slope = coeffs[0]
-    intercept = coeffs[1]
+    # Check if date_nums are all the same (defensive)
+    if len(set(date_nums)) == 1:
+        avg_score = scores.mean()
+        return {
+            'dates': [(dates.max() + timedelta(days=i+1)).date() for i in range(days_ahead)],
+            'forecast': [avg_score] * days_ahead,
+            'lower_bound': [avg_score - 5] * days_ahead,
+            'upper_bound': [avg_score + 5] * days_ahead,
+            'method': 'flat'
+        }
     
-    # Predict future dates
-    last_date = dates.max()
-    forecast_dates = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
-    forecast_nums = [(d - dates.min()).days for d in forecast_dates]
-    forecast_scores = [slope * n + intercept for n in forecast_nums]
-    
-    # Calculate confidence interval (simple std-based)
-    residuals = scores - (slope * np.array(date_nums) + intercept)
-    std_error = np.std(residuals)
-    
-    return {
-        'dates': [d.date() for d in forecast_dates],
-        'forecast': forecast_scores,
-        'lower_bound': [f - 1.96 * std_error for f in forecast_scores],
-        'upper_bound': [f + 1.96 * std_error for f in forecast_scores],
-        'method': 'linear'
-    }
+    try:
+        # Linear regression
+        coeffs = np.polyfit(date_nums, scores, 1)
+        slope = coeffs[0]
+        intercept = coeffs[1]
+        
+        # Predict future dates
+        last_date = dates.max()
+        forecast_dates = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
+        forecast_nums = [(d - dates.min()).days for d in forecast_dates]
+        forecast_scores = [slope * n + intercept for n in forecast_nums]
+        
+        # Calculate confidence interval (simple std-based)
+        residuals = scores - (slope * np.array(date_nums) + intercept)
+        std_error = np.std(residuals)
+        
+        return {
+            'dates': [d.date() for d in forecast_dates],
+            'forecast': forecast_scores,
+            'lower_bound': [f - 1.96 * std_error for f in forecast_scores],
+            'upper_bound': [f + 1.96 * std_error for f in forecast_scores],
+            'method': 'linear'
+        }
+    except (LinAlgError, ValueError, np.linalg.LinAlgError) as e:
+        # Handle numerical errors gracefully (SVD convergence issues, etc.)
+        logger.warning(f"Could not calculate forecast: {e}, returning flat forecast")
+        avg_score = scores.mean()
+        return {
+            'dates': [(dates.max() + timedelta(days=i+1)).date() for i in range(days_ahead)],
+            'forecast': [avg_score] * days_ahead,
+            'lower_bound': [avg_score - 5] * days_ahead,
+            'upper_bound': [avg_score + 5] * days_ahead,
+            'method': 'flat_fallback'
+        }
 
 def identify_at_risk_agents(df, threshold=70, lookback_days=14):
     """Identify agents at risk of dropping below threshold.
@@ -1946,27 +2012,38 @@ def identify_at_risk_agents(df, threshold=70, lookback_days=14):
         proximity_to_threshold = threshold - recent_avg
         
         # Calculate risk score (0-100)
+        # Made less sensitive: requires stronger signals or multiple risk factors
         risk_score = 0
         
-        # Trend component (0-40 points)
-        if trend_slope < -1:  # Declining trend
+        # Trend component (0-40 points) - stricter thresholds
+        if trend_slope < -2:  # Strong declining trend (>2 points/day)
             risk_score += 40
-        elif trend_slope < -0.5:
-            risk_score += 20
-        
-        # Volatility component (0-30 points)
-        if volatility > 15:
-            risk_score += 30
-        elif volatility > 10:
+        elif trend_slope < -1.5:  # Moderate-strong decline
+            risk_score += 25
+        elif trend_slope < -1:  # Moderate decline
             risk_score += 15
         
-        # Proximity component (0-30 points)
-        if proximity_to_threshold <= 5:  # Very close to threshold
+        # Volatility component (0-30 points) - higher thresholds
+        if volatility > 20:  # Very high volatility
             risk_score += 30
-        elif proximity_to_threshold <= 10:
-            risk_score += 15
+        elif volatility > 15:  # High volatility
+            risk_score += 18
         
-        if risk_score >= 50:  # High risk threshold
+        # Proximity component (0-30 points) - stricter thresholds
+        if proximity_to_threshold <= 3:  # Very close to threshold (<3 points away)
+            risk_score += 30
+        elif proximity_to_threshold <= 5:  # Close to threshold
+            risk_score += 18
+        elif proximity_to_threshold <= 8:  # Moderately close
+            risk_score += 10
+        
+        # Require higher risk score AND at least one strong signal
+        # This prevents flagging agents with only moderate risk factors
+        has_strong_trend = trend_slope < -1.5
+        has_high_volatility = volatility > 15
+        is_very_close = proximity_to_threshold <= 5
+        
+        if risk_score >= 65 and (has_strong_trend or has_high_volatility or is_very_close):  # Higher threshold + requires strong signal
             at_risk.append({
                 'agent': agent,
                 'risk_score': risk_score,
