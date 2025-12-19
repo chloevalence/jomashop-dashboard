@@ -73,6 +73,9 @@ logger.debug(f"Logging initialized. Log file: {log_file}")
 # Suppress noisy matplotlib categorical-unit warnings about string data that look like numbers/dates
 warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib.category')
 
+# Suppress matplotlib.category INFO level logging messages (categorical units warnings)
+logging.getLogger('matplotlib.category').setLevel(logging.WARNING)
+
 # --- File Locking (must be defined before load_metrics/save_metrics) ---
 class LockTimeoutError(Exception):
     """Raised when file lock acquisition times out."""
@@ -84,13 +87,13 @@ def cache_file_lock(filepath, timeout=30):
     
     Args:
         filepath: Path to the file to lock
-        timeout: Maximum time to wait for lock (seconds)
+        timeout: Maximum time to wait for lock (seconds). None = wait indefinitely.
     
     Yields:
         Locked file handle (or None if locking unavailable)
     
     Raises:
-        LockTimeoutError: If lock cannot be acquired within timeout period
+        LockTimeoutError: If lock cannot be acquired within timeout period (only if timeout is not None)
     """
     lock_path = filepath.with_suffix(filepath.suffix + '.lock')
     lock_file = None
@@ -106,23 +109,41 @@ def cache_file_lock(filepath, timeout=30):
         lock_file = open(lock_path, 'w')
         start_time = time.time()
         
-        # Try to acquire lock
-        while time.time() - start_time < timeout:
-            try:
-                if sys.platform == 'win32':
-                    # Windows file locking
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    # Unix file locking
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                lock_acquired = True
-                break
-            except (IOError, OSError):
-                # Lock is held by another process, wait and retry
-                time.sleep(0.1)
+        # Try to acquire lock - wait indefinitely if timeout is None
+        if timeout is None:
+            # Wait indefinitely until lock is acquired
+            while True:
+                try:
+                    if sys.platform == 'win32':
+                        # Windows file locking
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        # Unix file locking
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_acquired = True
+                    break
+                except (IOError, OSError):
+                    # Lock is held by another process, wait and retry
+                    time.sleep(0.1)
+        else:
+            # Wait with timeout
+            while time.time() - start_time < timeout:
+                try:
+                    if sys.platform == 'win32':
+                        # Windows file locking
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        # Unix file locking
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_acquired = True
+                    break
+                except (IOError, OSError):
+                    # Lock is held by another process, wait and retry
+                    time.sleep(0.1)
         
         if not lock_acquired:
             # Close the file before raising exception
+            # This can only happen if timeout is not None and timeout expired
             try:
                 lock_file.close()
             except Exception:
@@ -163,6 +184,57 @@ def cache_file_lock(filepath, timeout=30):
                 lock_path.unlink()
         except Exception:
             pass
+
+def atomic_write_json(filepath, data, max_retries=3, retry_delay=0.1):
+    """Write JSON atomically using temp file + rename pattern.
+    
+    This prevents partial writes from corrupting the cache file.
+    
+    Args:
+        filepath: Path to the JSON file to write
+        data: Data to serialize to JSON
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries (seconds)
+    
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    # Ensure parent directory exists before writing
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    
+    temp_path = filepath.with_suffix(filepath.suffix + '.tmp')
+    
+    # Clean up any existing temp file from previous failed attempts
+    if temp_path.exists():
+        try:
+            temp_path.unlink()
+        except Exception:
+            pass  # Ignore cleanup errors
+    
+    for attempt in range(max_retries):
+        try:
+            # Write to temporary file first
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, default=str, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())  # Force write to disk
+            
+            # Atomic rename (replaces existing file atomically on most systems)
+            os.replace(temp_path, filepath)
+            return
+            
+        except (IOError, OSError, PermissionError) as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"⚠️ Atomic write attempt {attempt + 1} failed: {e}, retrying...")
+                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+            else:
+                # Clean up temp file on final failure
+                try:
+                    if temp_path.exists():
+                        temp_path.unlink()
+                except Exception:
+                    pass
+                raise
 
 # --- Usage Metrics Tracking ---
 metrics_file = log_dir / "usage_metrics.json"
@@ -257,6 +329,18 @@ if 'session_started' not in st.session_state:
 
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
 logger.debug("Page config set, starting app initialization...")
+
+def st_pyplot_safe(fig, **kwargs):
+    """Display matplotlib figure in Streamlit and automatically close it to prevent memory leaks.
+    
+    Args:
+        fig: matplotlib figure object
+        **kwargs: Additional arguments passed to st.pyplot()
+    """
+    try:
+        st.pyplot(fig, **kwargs)
+    finally:
+        plt.close(fig)
 
 # Show immediate feedback - app is loading
 initial_status = st.empty()
@@ -627,53 +711,25 @@ def load_all_calls_internal(max_files=None):
 CACHE_FILE = log_dir / "cached_calls_data.json"
 LOCK_FILE = log_dir / "cached_calls_data.json.lock"
 
-def atomic_write_json(filepath, data, max_retries=3, retry_delay=0.1):
-    """Write JSON atomically using temp file + rename pattern.
-    
-    This prevents partial writes from corrupting the cache file.
-    
-    Args:
-        filepath: Path to the JSON file to write
-        data: Data to serialize to JSON
-        max_retries: Maximum number of retry attempts
-        retry_delay: Delay between retries (seconds)
-    
-    Raises:
-        Exception: If all retry attempts fail
-    """
-    temp_path = filepath.with_suffix(filepath.suffix + '.tmp')
-    
-    # Clean up any existing temp file from previous failed attempts
-    if temp_path.exists():
-        try:
-            temp_path.unlink()
-        except Exception:
-            pass  # Ignore cleanup errors
-    
-    for attempt in range(max_retries):
-        try:
-            # Write to temporary file first
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, default=str, indent=2, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())  # Force write to disk
-            
-            # Atomic rename (replaces existing file atomically on most systems)
-            os.replace(temp_path, filepath)
-            return
-            
-        except (IOError, OSError, PermissionError) as e:
-            if attempt < max_retries - 1:
-                logger.warning(f"⚠️ Atomic write attempt {attempt + 1} failed: {e}, retrying...")
-                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-            else:
-                # Clean up temp file on final failure
-                try:
-                    if temp_path.exists():
-                        temp_path.unlink()
-                except Exception:
-                    pass
-                raise
+# S3 cache key for storing cache in S3 (survives deployments and app restarts)
+S3_CACHE_KEY = "cache/cached_calls_data.json"
+
+def get_s3_client_and_bucket():
+    """Get S3 client and bucket name. Returns (client, bucket_name) or (None, None) if unavailable."""
+    try:
+        if "s3" not in st.secrets:
+            return None, None
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+            region_name=st.secrets["s3"].get("region_name", "us-east-1")
+        )
+        s3_bucket_name = st.secrets["s3"]["bucket_name"]
+        return s3_client, s3_bucket_name
+    except Exception as e:
+        logger.debug(f"Could not get S3 client: {e}")
+        return None, None
 
 def recover_partial_json(filepath):
     """Attempt to recover partial data from corrupted JSON file.
@@ -804,13 +860,16 @@ def deduplicate_calls(call_data):
     return deduplicated
 
 def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
-    """Load cached data from disk if it exists. Handles both complete and partial saves.
+    """Load cached data from S3 first, then fall back to local disk if S3 unavailable.
     
     Features:
+    - Tries S3 first (survives deployments)
+    - Falls back to local disk if S3 unavailable
     - File locking to prevent concurrent access
     - Retry logic for transient errors
     - Corruption recovery to extract partial data
     - Graceful degradation if locking unavailable
+    - Session state memoization during refresh (5 second cache)
     
     Args:
         max_retries: Maximum number of retry attempts
@@ -819,6 +878,91 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     Returns:
         tuple: (call_data, errors) or (None, None) if load fails
     """
+    import time
+    
+    # Check session state cache first during refresh (optimization to reduce S3 calls)
+    refresh_in_progress = st.session_state.get('refresh_in_progress', False)
+    if refresh_in_progress:
+        cache_key = '_disk_cache_during_refresh'
+        if cache_key in st.session_state:
+            cached_result, cached_timestamp = st.session_state[cache_key]
+            # Use cached result if less than 5 seconds old (refresh updates frequently)
+            if time.time() - cached_timestamp < 5:
+                logger.debug("📦 Using session-cached disk cache result during refresh")
+                return cached_result
+    
+    # CRITICAL: Check session state for S3 cache first (to avoid duplicate S3 loads)
+    # If load_all_calls_cached() already loaded from S3, reuse that result
+    s3_cache_key = '_s3_cache_result'
+    if s3_cache_key in st.session_state:
+        cached_result = st.session_state[s3_cache_key]
+        logger.debug("📦 Using session-cached S3 result in load_cached_data_from_disk() - avoiding duplicate S3 load")
+        
+        # Try to sync to local disk if file doesn't exist or is older (non-blocking, don't reload from S3)
+        # Just check if disk cache exists and is recent, if not, we'll sync on next S3 load
+        # This avoids another S3 load just for syncing
+        
+        # Cache result in session state during refresh
+        result = cached_result
+        if refresh_in_progress:
+            cache_key = '_disk_cache_during_refresh'
+            st.session_state[cache_key] = (result, time.time())
+        
+        return result
+    
+    # Try loading from S3 first (only if not already in session state)
+    s3_client, s3_bucket = get_s3_client_and_bucket()
+    if s3_client and s3_bucket:
+        try:
+            response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+            cached_data = json.loads(response['Body'].read().decode('utf-8'))
+            if not isinstance(cached_data, dict):
+                logger.warning(f"⚠️ S3 cache contains invalid data structure: {type(cached_data).__name__}, expected dict")
+            else:
+                call_data = cached_data.get('call_data', [])
+                errors = cached_data.get('errors', [])
+                cache_timestamp = cached_data.get('timestamp', None)
+                cache_count = len(call_data)
+                is_partial = cached_data.get('partial', False)
+                
+                if is_partial:
+                    processed = cached_data.get('processed', 0)
+                    total = cached_data.get('total', 0)
+                    logger.info(
+                        f"☁️ Found PARTIAL cache in S3 with {cache_count} calls "
+                        f"({processed}/{total} = {processed*100//total if total > 0 else 0}% complete, "
+                        f"saved at {cache_timestamp})"
+                    )
+                else:
+                    logger.info(
+                        f"☁️ Found COMPLETE cache in S3 with {cache_count} calls (saved at {cache_timestamp})"
+                    )
+                
+                # Also sync to local disk for faster subsequent loads
+                try:
+                    with cache_file_lock(CACHE_FILE, timeout=5):
+                        atomic_write_json(CACHE_FILE, cached_data)
+                        logger.debug(f"💾 Synced S3 cache to local disk: {CACHE_FILE}")
+                except Exception as sync_error:
+                    logger.debug(f"Could not sync S3 cache to local disk: {sync_error}")
+                
+                # Cache result in session state during refresh to reduce repeated S3 loads
+                result = (call_data, errors)
+                if refresh_in_progress:
+                    cache_key = '_disk_cache_during_refresh'
+                    st.session_state[cache_key] = (result, time.time())
+                
+                return result
+        except ClientError as s3_error:
+            error_code = s3_error.response.get('Error', {}).get('Code', '')
+            if error_code == 'NoSuchKey':
+                logger.debug(f"📂 No cache found in S3: s3://{s3_bucket}/{S3_CACHE_KEY}")
+            else:
+                logger.warning(f"⚠️ Failed to load cache from S3 (will try local disk): {s3_error}")
+        except Exception as s3_error:
+            logger.warning(f"⚠️ Failed to load cache from S3 (will try local disk): {s3_error}")
+    
+    # Fall back to local disk if S3 unavailable or not found
     if not CACHE_FILE.exists():
         return None, None
     
@@ -826,9 +970,11 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     for attempt in range(max_retries):
         try:
             # Use file locking to prevent concurrent reads during writes
-            # OPTIMIZATION: Reduced timeout from 5s to 2s to prevent cascading timeouts
+            # CRITICAL FIX: Remove timeout - wait indefinitely for lock
+            # In single-process Streamlit app, locks are released when operations complete
+            # No risk of permanent deadlock, so we can wait as long as needed
             try:
-                with cache_file_lock(CACHE_FILE, timeout=2):
+                with cache_file_lock(CACHE_FILE, timeout=None):
                     logger.debug(f"📂 Checking persistent cache file: {CACHE_FILE}")
                     with open(CACHE_FILE, 'r', encoding='utf-8') as f:
                         cached_data = json.load(f)
@@ -860,7 +1006,14 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                             logger.info(
                                 f"✅ Found COMPLETE persistent cache with {cache_count} calls (saved at {cache_timestamp})"
                             )
-                        return call_data, errors
+                        
+                        # Cache result in session state during refresh to reduce repeated disk loads
+                        result = (call_data, errors)
+                        if refresh_in_progress:
+                            cache_key = '_disk_cache_during_refresh'
+                            st.session_state[cache_key] = (result, time.time())
+                        
+                        return result
             except LockTimeoutError as e:
                 # Lock timeout - retry with exponential backoff
                 if attempt < max_retries - 1:
@@ -950,7 +1103,14 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
         except Exception as e:
             # Other errors - log and return None
             logger.warning(f"⚠️ Failed to load persistent cache: {e}")
-    return None, None
+    
+    # Cache result in session state during refresh to reduce repeated S3/disk loads
+    result = None, None
+    if refresh_in_progress:
+        cache_key = '_disk_cache_during_refresh'
+        st.session_state[cache_key] = (result, time.time())
+    
+    return result
 
 def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, total=0):
     """Save cached data to disk for persistence across app restarts. Automatically deduplicates before saving.
@@ -1016,6 +1176,22 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
         
         status = "PARTIAL" if partial else "COMPLETE"
         logger.info(f"💾 Successfully saved {len(call_data)} calls to persistent cache ({status}): {CACHE_FILE}")
+        
+        # Also save to S3 for persistence across deployments
+        s3_client, s3_bucket = get_s3_client_and_bucket()
+        if s3_client and s3_bucket:
+            try:
+                cache_json = json.dumps(cache_data, default=str, ensure_ascii=False)
+                s3_client.put_object(
+                    Bucket=s3_bucket,
+                    Key=S3_CACHE_KEY,
+                    Body=cache_json.encode('utf-8'),
+                    ContentType='application/json'
+                )
+                logger.info(f"☁️ Successfully saved {len(call_data)} calls to S3 cache ({status}): s3://{s3_bucket}/{S3_CACHE_KEY}")
+            except Exception as s3_error:
+                # Don't fail the entire save if S3 upload fails - local cache is still saved
+                logger.warning(f"⚠️ Failed to save cache to S3 (local cache saved successfully): {s3_error}")
     except LockTimeoutError:
         # Re-raise LockTimeoutError - callers need to know about this
         raise
@@ -1032,66 +1208,139 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
 # Use "Refresh New Data" button when new PDFs are added to S3 - it only loads new files
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
 @st.cache_data(ttl=None, max_entries=1, show_spinner=True)
-def load_all_calls_cached():
+def load_all_calls_cached(cache_version=0):
     """Cached wrapper - loads ALL data once, then serves from cache indefinitely until manually refreshed.
     
-    Strategy to prevent timeouts:
-        1. Check disk cache first (survives restarts)
-    2. If disk cache exists and has data, use it instantly
-    3. If "Reload ALL Data" was triggered, load ALL files (10-20 min, but user requested it)
-    4. If no disk cache and no reload trigger, load initial batch (2000 files) for fast startup
-    5. Save to disk cache so it survives restarts
+    cache_version parameter forces cache refresh when incremented (used after refresh completes).
+    
+    Strategy:
+        1. Always check S3 cache first (source of truth, shared across all users)
+        2. Invalidate Streamlit cache if S3 cache is newer
+        3. Use Streamlit cache only if it matches S3 cache timestamp
+        4. Fall back to disk cache only if S3 unavailable (backup only)
     
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
     import time
+    from datetime import datetime
     start_time = time.time()
     
     # Check if user explicitly requested full reload
     reload_all_triggered = st.session_state.get('reload_all_triggered', False)
     
-    # CRITICAL FIX: Always check disk cache FIRST to ensure we use latest data
-    # This prevents showing stale Streamlit cache when disk cache has more recent data
-    # Example: Disk cache has 8577 calls but Streamlit cache has 6527 - we should use disk cache
-    disk_result_early = load_cached_data_from_disk()
-    disk_call_data_early = None
-    disk_cache_count_early = 0
-    if disk_result_early and disk_result_early[0] is not None and len(disk_result_early[0]) > 0:
-        disk_call_data_early = disk_result_early[0]
-        disk_cache_count_early = len(disk_call_data_early)
-        # Check if this is a complete cache (not partial)
-        is_complete_early = True
-        if CACHE_FILE.exists():
-            try:
-                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                    cached_data = json.load(f)
-                    is_complete_early = not cached_data.get('partial', False)
-            except Exception:
-                pass
-        
-        # If disk cache is complete and has substantial data, we'll prefer it later
-        # Store for comparison after we check Streamlit cache
-        logger.info(f"📊 Early disk cache check: Found {disk_cache_count_early} calls (complete={is_complete_early})")
+    # CRITICAL: Always check S3 cache first (source of truth, shared across all users)
+    # This ensures all users get the same up-to-date data
+    # Use session state caching to prevent duplicate S3 loads
+    s3_cache_result = None
+    s3_cache_timestamp = None
     
-    # CRITICAL FIX: If refresh is in progress, always check disk cache first
-    # This ensures we show the latest incrementally-saved data during refresh
-    # SAFETY: This is READ-ONLY - no cache deletion, uses existing file locking
+    # Check session state first to avoid duplicate S3 loads
+    s3_cache_key = '_s3_cache_result'
+    s3_timestamp_key = '_s3_cache_timestamp'
+    if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
+        cached_timestamp = st.session_state[s3_timestamp_key]
+        # Use cached result if timestamp matches (cache is still valid)
+        # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
+        cached_result = st.session_state[s3_cache_key]
+        if cached_result is not None and isinstance(cached_result, tuple) and len(cached_result) >= 1 and cached_result[0] is not None:
+            s3_cache_result = cached_result
+            s3_cache_timestamp = cached_timestamp
+            logger.debug(f"📦 Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})")
+        else:
+            # Session state contains invalid data - clear it and reload from S3
+            logger.warning(f"⚠️ Session state contains invalid S3 cache data, clearing and reloading from S3")
+            if s3_cache_key in st.session_state:
+                del st.session_state[s3_cache_key]
+            if s3_timestamp_key in st.session_state:
+                del st.session_state[s3_timestamp_key]
+            s3_cache_result = None
+            s3_cache_timestamp = None
+    else:
+        # Load from S3 (only if not in session state)
+        s3_client, s3_bucket = get_s3_client_and_bucket()
+        if s3_client and s3_bucket:
+            try:
+                response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                s3_cached_data = json.loads(response['Body'].read().decode('utf-8'))
+                if isinstance(s3_cached_data, dict):
+                    s3_cache_result = (s3_cached_data.get('call_data', []), s3_cached_data.get('errors', []))
+                    s3_cache_timestamp = s3_cached_data.get('timestamp', None)
+                    logger.info(f"☁️ Loaded from S3 cache (source of truth): {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})")
+                    
+                    # Cache in session state to avoid duplicate loads
+                    st.session_state[s3_cache_key] = s3_cache_result
+                    if s3_cache_timestamp:
+                        st.session_state[s3_timestamp_key] = s3_cache_timestamp
+            except ClientError as s3_error:
+                error_code = s3_error.response.get('Error', {}).get('Code', '')
+                if error_code != 'NoSuchKey':
+                    logger.warning(f"⚠️ Failed to load from S3 cache: {s3_error}")
+            except Exception as s3_error:
+                logger.warning(f"⚠️ Failed to load from S3 cache: {s3_error}")
+    
+    # CRITICAL: If S3 cache exists, check if Streamlit cache is stale
+    # Invalidate Streamlit cache if S3 cache is newer
+    if s3_cache_timestamp:
+        streamlit_cache_timestamp = st.session_state.get('_s3_cache_timestamp', None)
+        if streamlit_cache_timestamp and streamlit_cache_timestamp != s3_cache_timestamp:
+            # S3 cache has been updated - clear Streamlit cache AND session state cache
+            logger.info(f"🔄 S3 cache updated ({s3_cache_timestamp} != {streamlit_cache_timestamp}) - invalidating caches")
+            try:
+                # CRITICAL FIX: Only clear cache if we're not already in a cache-clearing operation
+                # This prevents recursive cache clearing that can cause crashes
+                if not st.session_state.get('_cache_clearing_in_progress', False):
+                    st.session_state['_cache_clearing_in_progress'] = True
+                    try:
+                        load_all_calls_cached.clear()
+                        # Clear session state cache so we reload from S3
+                        if s3_cache_key in st.session_state:
+                            del st.session_state[s3_cache_key]
+                        logger.info("✅ Cleared stale Streamlit cache and session state cache - will reload from S3")
+                    finally:
+                        # Always clear the flag, even if clearing failed
+                        if '_cache_clearing_in_progress' in st.session_state:
+                            del st.session_state['_cache_clearing_in_progress']
+                else:
+                    logger.debug("⏸️ Cache clearing already in progress, skipping to prevent recursion")
+            except Exception as clear_error:
+                logger.warning(f"⚠️ Could not clear Streamlit cache: {clear_error}")
+                # Clear the flag even on error
+                if '_cache_clearing_in_progress' in st.session_state:
+                    del st.session_state['_cache_clearing_in_progress']
+        # Store S3 cache timestamp for future comparison
+        st.session_state['_s3_cache_timestamp'] = s3_cache_timestamp
+    
+    # CRITICAL: If refresh is in progress, use S3 cache directly (most up-to-date)
     refresh_in_progress = st.session_state.get('refresh_in_progress', False)
     if refresh_in_progress:
-        logger.info("🔄 Refresh in progress - reading latest disk cache (read-only, safe)")
-        try:
-            if disk_call_data_early:
-                cache_count = len(disk_call_data_early)
-                logger.info(f"✅ Refresh in progress: Using disk cache with {cache_count} calls (latest incremental save)")
-                # Return disk cache - Streamlit will cache this value (updates cache, doesn't delete)
-                # This ensures UI shows latest data during refresh without waiting for completion
-                return disk_call_data_early, disk_result_early[1] if disk_result_early[1] else []
-            else:
-                logger.info("⚠️ Refresh in progress but no disk cache found - continuing with normal load")
-        except Exception as e:
-            # If disk read fails during refresh, log but continue with normal flow
-            # This prevents refresh from breaking the entire app
-            logger.warning(f"⚠️ Failed to read disk cache during refresh: {e} - continuing with normal load")
+        if s3_cache_result and s3_cache_result[0]:
+            logger.info(f"🔄 Refresh in progress - using S3 cache directly: {len(s3_cache_result[0])} calls")
+            return s3_cache_result
+        else:
+            logger.info("⚠️ Refresh in progress but no S3 cache found - continuing with normal load")
+    
+    # Check if there's merged cache data from refresh operation
+    if '_merged_cache_data' in st.session_state:
+        merged_data = st.session_state['_merged_cache_data']
+        merged_errors = st.session_state.get('_merged_cache_errors', [])
+        logger.info(f"✅ Using merged cache data from refresh: {len(merged_data)} calls")
+        # Store S3 timestamp if available
+        if s3_cache_timestamp:
+            st.session_state['_s3_cache_timestamp'] = s3_cache_timestamp
+        return merged_data, merged_errors
+    
+    # CRITICAL: Use S3 cache if available (source of truth)
+    if s3_cache_result and s3_cache_result[0]:
+        logger.info(f"✅ Using S3 cache (source of truth): {len(s3_cache_result[0])} calls")
+        # Store timestamp for future comparison
+        if s3_cache_timestamp:
+            st.session_state['_s3_cache_timestamp'] = s3_cache_timestamp
+        return s3_cache_result
+    
+    # Fall back to disk cache only if S3 unavailable (backup only)
+    # NOTE: We don't call load_cached_data_from_disk() here because it also loads from S3
+    # We'll call it later only if needed, and it will check session state first
+    # Disk cache is just a local backup, not the source of truth
     
     # Strategy: Always use the most up-to-date cache
     # 1. Check disk cache first (if not reloading)
@@ -1108,16 +1357,8 @@ def load_all_calls_cached():
     partial_processed = 0
     partial_total = 0
     
-    # Check if there's merged cache data from refresh operation (preserves Streamlit cache data)
-    if '_merged_cache_data' in st.session_state:
-        merged_data = st.session_state['_merged_cache_data']
-        merged_errors = st.session_state.get('_merged_cache_errors', [])
-        logger.info(f"✅ Using merged cache data from refresh: {len(merged_data)} calls")
-        # Clear the session state flag
-        del st.session_state['_merged_cache_data']
-        if '_merged_cache_errors' in st.session_state:
-            del st.session_state['_merged_cache_errors']
-        return merged_data, merged_errors
+    # NOTE: Removed duplicate check for _merged_cache_data - it's already checked earlier at line 1271
+    # and returns immediately, making this check unreachable dead code
     
     # Load disk cache regardless of reload_all_triggered - we'll check that flag later
     disk_result = load_cached_data_from_disk()
@@ -1152,6 +1393,18 @@ def load_all_calls_cached():
                     # Don't return early - continue to load remaining files
                 else:
                     logger.info(f"✅ USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss")
+                    
+                    # CRITICAL FIX: Clean up _merged_cache_data if Streamlit cache has correct count
+                    # This prevents keeping stale _merged_cache_data when Streamlit cache is already updated
+                    if '_merged_cache_data' in st.session_state:
+                        expected_count = len(st.session_state['_merged_cache_data'])
+                        if cache_count >= expected_count:
+                            # Streamlit cache has correct data (or more), safe to delete _merged_cache_data
+                            logger.info(f"✅ Streamlit cache confirmed updated ({cache_count} >= {expected_count} calls), cleaning up _merged_cache_data")
+                            del st.session_state['_merged_cache_data']
+                            if '_merged_cache_errors' in st.session_state:
+                                del st.session_state['_merged_cache_errors']
+                    
                     # After loading from cache, check for new files in background
                     # Set flag to trigger background refresh check
                     if 'auto_refresh_checked' not in st.session_state:
@@ -1174,7 +1427,11 @@ def load_all_calls_cached():
                                 # Clear notification count since there are no new files
                                 st.session_state.new_pdfs_notification_count = 0
                         except Exception as e:
+                            # CRITICAL FIX: Log full exception details to help diagnose crashes
                             logger.warning(f"⚠️ Failed to check for new files: {e}")
+                            import traceback
+                            logger.debug(f"⚠️ Background check traceback: {traceback.format_exc()}")
+                            # Don't crash the app - just mark as checked so we don't retry immediately
                         
                         st.session_state.auto_refresh_checked = True
                     
@@ -1262,14 +1519,7 @@ def load_all_calls_cached():
         
         # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
         streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
-        # Use early disk cache check if available, otherwise use the one loaded later
-        if disk_call_data_early and len(disk_call_data_early) > 0:
-            disk_call_data = disk_call_data_early
-            disk_errors = disk_result_early[1] if disk_result_early[1] else []
-            disk_cache_count = len(disk_call_data_early)
-            logger.info(f"📊 Using early disk cache check: {disk_cache_count} calls")
-        else:
-            disk_cache_count = len(disk_call_data) if disk_call_data else 0
+        disk_cache_count = len(disk_call_data) if disk_call_data else 0
         logger.info(f"📊 Cache Comparison (after load): Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files")
         
         # Determine which cache is better (more recent or more complete)
@@ -1283,19 +1533,18 @@ def load_all_calls_cached():
                 logger.info(f"⚡ Detected Streamlit in-memory cache ({len(streamlit_call_data)} calls loaded in {load_duration:.2f}s)")
                 
                 if disk_call_data and len(disk_call_data) > 0:
-                    # Compare: use whichever has more data (more complete) or is newer
+                    # CRITICAL: Always prefer disk cache if it has more data, regardless of load speed
+                    # This ensures we never show stale Streamlit cache when disk cache is more complete
                     if len(disk_call_data) > len(streamlit_call_data):
-                        # CRITICAL FIX: Disk cache has more data - use it to avoid showing stale data
-                        # This fixes the issue where disk cache has 8577 calls but only 6527 are displayed
-                        logger.info(f"✅ Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - using disk cache to show latest data")
+                        logger.info(f"✅ Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - ALWAYS using disk cache")
                         use_disk_cache = True
                     elif len(streamlit_call_data) > len(disk_call_data):
                         logger.info(f"✅ Streamlit cache is more complete ({len(streamlit_call_data)} vs {len(disk_call_data)} calls) - using it")
                         use_streamlit_cache = True
                     elif len(streamlit_call_data) == len(disk_call_data):
-                        # Same size - use Streamlit cache (it's in memory, faster)
-                        logger.info(f"✅ Streamlit cache matches disk cache - using in-memory version for speed")
-                        use_streamlit_cache = True
+                        # Same size - prefer disk cache as source of truth (it persists across restarts)
+                        logger.info(f"✅ Caches match - using disk cache as source of truth (persists across restarts)")
+                        use_disk_cache = True
                 else:
                     # No disk cache - use Streamlit cache
                     use_streamlit_cache = True
@@ -1418,6 +1667,451 @@ def create_data_hash(df: pd.DataFrame, additional_params: dict = None) -> str:
     if additional_params:
         data_str += str(additional_params)
     return hashlib.md5(data_str.encode()).hexdigest()
+
+def create_filter_cache_key(date_range, agent_filter, score_filter, label_filter, search_text=None):
+    """Create a cache key based on filter parameters for chart caching.
+    
+    Args:
+        date_range: Tuple of (start_date, end_date)
+        agent_filter: List of selected agents
+        score_filter: Tuple of (min_score, max_score)
+        label_filter: List of selected labels
+        search_text: Optional search text
+        
+    Returns:
+        Cache key string
+    """
+    import hashlib
+    key_parts = [
+        str(date_range),
+        str(sorted(agent_filter)) if agent_filter else "all",
+        str(score_filter),
+        str(sorted(label_filter)) if label_filter else "all",
+        str(search_text) if search_text else ""
+    ]
+    key_str = "|".join(key_parts)
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+# Enhanced chart caching with filter-based cache keys
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_cached_chart_with_filters(chart_id: str, cache_key: str, chart_func, *args, **kwargs):
+    """Cache matplotlib chart figures with filter-based cache keys.
+     
+    Args:
+        chart_id: Unique identifier for the chart type
+        cache_key: Cache key based on filter parameters
+        chart_func: Function that generates the chart
+        *args, **kwargs: Arguments to pass to chart_func
+        
+    Returns:
+        matplotlib figure object
+    """
+    return chart_func(*args, **kwargs)
+
+# --- Benchmarking Functions ---
+def calculate_historical_baselines(df, current_start_date, current_end_date):
+    """Calculate historical baselines for comparison.
+    
+    Args:
+        df: DataFrame with call data
+        current_start_date: Start date of current period (date or datetime)
+        current_end_date: End date of current period (date or datetime)
+        
+    Returns:
+        Dictionary with baseline metrics
+    """
+    from datetime import timedelta
+    import pandas as pd
+    
+    # Convert to pandas Timestamp for consistent comparison
+    if not isinstance(current_start_date, pd.Timestamp):
+        current_start_date = pd.Timestamp(current_start_date)
+    if not isinstance(current_end_date, pd.Timestamp):
+        current_end_date = pd.Timestamp(current_end_date)
+    
+    baselines = {}
+    
+    # Last 30 days baseline
+    last_30_start = current_end_date - timedelta(days=30)
+    last_30_data = df[(df["Call Date"] >= last_30_start) & (df["Call Date"] < current_start_date)]
+    if not last_30_data.empty:
+        baselines['last_30_days'] = {
+            'avg_score': last_30_data["QA Score"].mean() if "QA Score" in last_30_data.columns else None,
+            'pass_rate': calculate_pass_rate(last_30_data),
+            'total_calls': len(last_30_data),
+            'period': (last_30_start, current_start_date)
+        }
+    
+    # Last 90 days baseline
+    last_90_start = current_end_date - timedelta(days=90)
+    last_90_data = df[(df["Call Date"] >= last_90_start) & (df["Call Date"] < current_start_date)]
+    if not last_90_data.empty:
+        baselines['last_90_days'] = {
+            'avg_score': last_90_data["QA Score"].mean() if "QA Score" in last_90_data.columns else None,
+            'pass_rate': calculate_pass_rate(last_90_data),
+            'total_calls': len(last_90_data),
+            'period': (last_90_start, current_start_date)
+        }
+    
+    # Year-over-year (if data available)
+    if current_start_date.year > df["Call Date"].min().year:
+        yoy_start = current_start_date - timedelta(days=365)
+        yoy_end = current_end_date - timedelta(days=365)
+        yoy_data = df[(df["Call Date"] >= yoy_start) & (df["Call Date"] <= yoy_end)]
+        if not yoy_data.empty:
+            baselines['year_over_year'] = {
+                'avg_score': yoy_data["QA Score"].mean() if "QA Score" in yoy_data.columns else None,
+                'pass_rate': calculate_pass_rate(yoy_data),
+                'total_calls': len(yoy_data),
+                'period': (yoy_start, yoy_end)
+            }
+    
+    return baselines
+
+def calculate_pass_rate(df):
+    """Calculate pass rate from dataframe."""
+    if "Rubric Pass Count" in df.columns and "Rubric Fail Count" in df.columns:
+        total_pass = df["Rubric Pass Count"].sum()
+        total_fail = df["Rubric Fail Count"].sum()
+        if (total_pass + total_fail) > 0:
+            return (total_pass / (total_pass + total_fail)) * 100
+    return None
+
+def calculate_percentile_rankings(df, metric_col="QA Score"):
+    """Calculate percentile rankings for agents.
+    
+    Args:
+        df: DataFrame with agent performance data
+        metric_col: Column name for the metric to rank
+        
+    Returns:
+        DataFrame with percentile rankings
+    """
+    if metric_col not in df.columns:
+        return pd.DataFrame()
+    
+    agent_perf = df.groupby("Agent")[metric_col].mean().reset_index()
+    agent_perf['percentile'] = agent_perf[metric_col].rank(pct=True) * 100
+    agent_perf = agent_perf.sort_values('percentile', ascending=False)
+    
+    return agent_perf
+
+# --- Predictive Analytics Functions ---
+def predict_future_scores(df, days_ahead=7):
+    """Predict future QA scores using time series forecasting.
+    
+    Args:
+        df: DataFrame with historical QA scores and dates
+        days_ahead: Number of days to forecast
+        
+    Returns:
+        Dictionary with forecast data and confidence intervals
+    """
+    try:
+        from prophet import Prophet
+    except ImportError:
+        # Fallback to simple linear trend if Prophet not available
+        return predict_future_scores_simple(df, days_ahead)
+    
+    if "Call Date" not in df.columns or "QA Score" not in df.columns:
+        return None
+    
+    # Prepare data for Prophet
+    daily_scores = df.groupby("Call Date")["QA Score"].mean().reset_index()
+    daily_scores.columns = ['ds', 'y']
+    daily_scores = daily_scores.sort_values('ds')
+    
+    if len(daily_scores) < 7:  # Need at least 7 days of data
+        return predict_future_scores_simple(df, days_ahead)
+    
+    try:
+        model = Prophet(interval_width=0.95, daily_seasonality=False, weekly_seasonality=True)
+        model.fit(daily_scores)
+        
+        # Create future dataframe
+        future = model.make_future_dataframe(periods=days_ahead)
+        forecast = model.predict(future)
+        
+        # Extract forecast for future dates only
+        forecast_dates = forecast.tail(days_ahead)
+        
+        return {
+            'dates': forecast_dates['ds'].dt.date.tolist(),
+            'forecast': forecast_dates['yhat'].tolist(),
+            'lower_bound': forecast_dates['yhat_lower'].tolist(),
+            'upper_bound': forecast_dates['yhat_upper'].tolist(),
+            'method': 'prophet'
+        }
+    except Exception as e:
+        logger.warning(f"Prophet forecasting failed: {e}, using simple method")
+        return predict_future_scores_simple(df, days_ahead)
+
+def predict_future_scores_simple(df, days_ahead=7):
+    """Simple linear trend forecasting as fallback.
+    
+    Args:
+        df: DataFrame with historical QA scores and dates
+        days_ahead: Number of days to forecast
+        
+    Returns:
+        Dictionary with forecast data
+    """
+    if "Call Date" not in df.columns or "QA Score" not in df.columns:
+        return None
+    
+    daily_scores = df.groupby("Call Date")["QA Score"].mean().reset_index()
+    daily_scores = daily_scores.sort_values('Call Date')
+    
+    if len(daily_scores) < 2:
+        return None
+    
+    # Simple linear regression
+    from datetime import timedelta
+    import numpy as np
+    from numpy.linalg import LinAlgError
+    
+    dates = daily_scores["Call Date"]
+    scores = daily_scores["QA Score"]
+    
+    # Check if all dates are the same
+    if dates.nunique() == 1:
+        # All dates are the same - return flat forecast
+        avg_score = scores.mean()
+        return {
+            'dates': [(dates.max() + timedelta(days=i+1)).date() for i in range(days_ahead)],
+            'forecast': [avg_score] * days_ahead,
+            'lower_bound': [avg_score - 5] * days_ahead,  # Simple confidence interval
+            'upper_bound': [avg_score + 5] * days_ahead,
+            'method': 'flat'
+        }
+    
+    # Check if all scores are the same
+    if scores.nunique() == 1:
+        # All scores are the same - return flat forecast
+        avg_score = scores.iloc[0]
+        return {
+            'dates': [(dates.max() + timedelta(days=i+1)).date() for i in range(days_ahead)],
+            'forecast': [avg_score] * days_ahead,
+            'lower_bound': [avg_score - 5] * days_ahead,
+            'upper_bound': [avg_score + 5] * days_ahead,
+            'method': 'flat'
+        }
+    
+    # Convert dates to numeric for regression
+    date_nums = [(d - dates.min()).days for d in dates]
+    
+    # Check if date_nums are all the same (defensive)
+    if len(set(date_nums)) == 1:
+        avg_score = scores.mean()
+        return {
+            'dates': [(dates.max() + timedelta(days=i+1)).date() for i in range(days_ahead)],
+            'forecast': [avg_score] * days_ahead,
+            'lower_bound': [avg_score - 5] * days_ahead,
+            'upper_bound': [avg_score + 5] * days_ahead,
+            'method': 'flat'
+        }
+    
+    try:
+        # Linear regression
+        coeffs = np.polyfit(date_nums, scores, 1)
+        slope = coeffs[0]
+        intercept = coeffs[1]
+        
+        # Predict future dates
+        last_date = dates.max()
+        forecast_dates = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
+        forecast_nums = [(d - dates.min()).days for d in forecast_dates]
+        forecast_scores = [slope * n + intercept for n in forecast_nums]
+        
+        # Calculate confidence interval (simple std-based)
+        residuals = scores - (slope * np.array(date_nums) + intercept)
+        std_error = np.std(residuals)
+        
+        return {
+            'dates': [d.date() for d in forecast_dates],
+            'forecast': forecast_scores,
+            'lower_bound': [f - 1.96 * std_error for f in forecast_scores],
+            'upper_bound': [f + 1.96 * std_error for f in forecast_scores],
+            'method': 'linear'
+        }
+    except (LinAlgError, ValueError, np.linalg.LinAlgError) as e:
+        # Handle numerical errors gracefully (SVD convergence issues, etc.)
+        logger.warning(f"Could not calculate forecast: {e}, returning flat forecast")
+        avg_score = scores.mean()
+        return {
+            'dates': [(dates.max() + timedelta(days=i+1)).date() for i in range(days_ahead)],
+            'forecast': [avg_score] * days_ahead,
+            'lower_bound': [avg_score - 5] * days_ahead,
+            'upper_bound': [avg_score + 5] * days_ahead,
+            'method': 'flat_fallback'
+        }
+
+def identify_at_risk_agents(df, threshold=70, lookback_days=14):
+    """Identify agents at risk of dropping below threshold.
+    
+    Args:
+        df: DataFrame with agent performance data
+        threshold: QA score threshold
+        lookback_days: Number of days to analyze for trend
+        
+    Returns:
+        List of dictionaries with at-risk agent information
+    """
+    from datetime import timedelta
+    
+    if "Call Date" not in df.columns or "Agent" not in df.columns or "QA Score" not in df.columns:
+        return []
+    
+    cutoff_date = df["Call Date"].max() - timedelta(days=lookback_days)
+    recent_data = df[df["Call Date"] >= cutoff_date]
+    
+    if recent_data.empty:
+        return []
+    
+    at_risk = []
+    
+    for agent in recent_data["Agent"].unique():
+        agent_data = recent_data[recent_data["Agent"] == agent].sort_values("Call Date")
+        
+        if len(agent_data) < 3:  # Need at least 3 data points
+            continue
+        
+        # Calculate metrics
+        recent_avg = agent_data["QA Score"].mean()
+        trend_slope = calculate_trend_slope(agent_data["Call Date"], agent_data["QA Score"])
+        volatility = agent_data["QA Score"].std()
+        proximity_to_threshold = threshold - recent_avg
+        
+        # Calculate risk score (0-100)
+        # Made less sensitive: requires stronger signals or multiple risk factors
+        risk_score = 0
+        
+        # Trend component (0-40 points) - stricter thresholds
+        if trend_slope < -2:  # Strong declining trend (>2 points/day)
+            risk_score += 40
+        elif trend_slope < -1.5:  # Moderate-strong decline
+            risk_score += 25
+        elif trend_slope < -1:  # Moderate decline
+            risk_score += 15
+        
+        # Volatility component (0-30 points) - higher thresholds
+        if volatility > 20:  # Very high volatility
+            risk_score += 30
+        elif volatility > 15:  # High volatility
+            risk_score += 18
+        
+        # Proximity component (0-30 points) - stricter thresholds
+        if proximity_to_threshold <= 3:  # Very close to threshold (<3 points away)
+            risk_score += 30
+        elif proximity_to_threshold <= 5:  # Close to threshold
+            risk_score += 18
+        elif proximity_to_threshold <= 8:  # Moderately close
+            risk_score += 10
+        
+        # Require higher risk score AND at least one strong signal
+        # This prevents flagging agents with only moderate risk factors
+        has_strong_trend = trend_slope < -1.5
+        has_high_volatility = volatility > 15
+        is_very_close = proximity_to_threshold <= 5
+        
+        if risk_score >= 65 and (has_strong_trend or has_high_volatility or is_very_close):  # Higher threshold + requires strong signal
+            at_risk.append({
+                'agent': agent,
+                'risk_score': risk_score,
+                'recent_avg': recent_avg,
+                'trend_slope': trend_slope,
+                'volatility': volatility,
+                'proximity_to_threshold': proximity_to_threshold,
+                'recent_calls': len(agent_data)
+            })
+    
+    # Sort by risk score
+    at_risk.sort(key=lambda x: x['risk_score'], reverse=True)
+    return at_risk
+
+def calculate_trend_slope(dates, scores):
+    """Calculate linear trend slope.
+    
+    Args:
+        dates: Series of dates
+        scores: Series of scores
+        
+    Returns:
+        Slope value (positive = improving, negative = declining)
+    """
+    import numpy as np
+    from datetime import timedelta
+    from numpy.linalg import LinAlgError
+    
+    if len(dates) < 2:
+        return 0
+    
+    # Check if all dates are the same (would cause date_nums to all be 0)
+    if dates.nunique() == 1:
+        return 0  # No trend if all dates are the same
+    
+    # Check if all scores are the same (no variation)
+    if scores.nunique() == 1:
+        return 0  # No trend if all scores are the same
+    
+    try:
+        date_nums = [(d - dates.min()).days for d in dates]
+        
+        # Check if date_nums are all the same (shouldn't happen after above check, but defensive)
+        if len(set(date_nums)) == 1:
+            return 0
+        
+        coeffs = np.polyfit(date_nums, scores, 1)
+        return coeffs[0]
+    except (LinAlgError, ValueError, np.linalg.LinAlgError) as e:
+        # Handle numerical errors gracefully (SVD convergence issues, etc.)
+        logger.debug(f"Could not calculate trend slope: {e}, returning 0")
+        return 0
+
+def classify_trajectory(df, agent=None):
+    """Classify agent trajectory as improving, declining, stable, or volatile.
+    
+    Args:
+        df: DataFrame with performance data
+        agent: Optional agent ID to filter
+        
+    Returns:
+        Dictionary with trajectory classification
+    """
+    if agent:
+        df = df[df["Agent"] == agent]
+    
+    if "Call Date" not in df.columns or "QA Score" not in df.columns or len(df) < 3:
+        return {'trajectory': 'insufficient_data', 'slope': 0, 'volatility': 0}
+    
+    df_sorted = df.sort_values("Call Date")
+    dates = df_sorted["Call Date"]
+    scores = df_sorted["QA Score"]
+    
+    slope = calculate_trend_slope(dates, scores)
+    volatility = scores.std()
+    
+    # Classify trajectory
+    if volatility > 15:
+        trajectory = 'volatile'
+    elif slope > 0.5:
+        trajectory = 'improving'
+    elif slope < -0.5:
+        trajectory = 'declining'
+    else:
+        trajectory = 'stable'
+    
+    # Projected score if trend continues
+    last_score = scores.iloc[-1]
+    projected_score = last_score + (slope * 7)  # Project 7 days ahead
+    
+    return {
+        'trajectory': trajectory,
+        'slope': slope,
+        'volatility': volatility,
+        'current_score': last_score,
+        'projected_score': projected_score
+    }
 
 def load_new_calls_only():
     """
@@ -1998,27 +2692,76 @@ if current_username and current_username.lower() in ["chloe", "shannon"]:
 
 # Check if user is an agent (has agent_id mapping) or admin
 user_agent_id = None
-is_admin = False
 
-# Try to get agent_id from secrets - add this mapping to secrets.toml
+# Helper functions for clear admin distinction
+def is_regular_admin():
+    """Check if current user is a regular admin (can view all agent data, but not super admin features).
+    
+    Regular admins can:
+    - View all agent data and analytics
+    - Access dark mode
+    - See all charts and reports
+    
+    Regular admins cannot:
+    - Access refresh controls
+    - Access background refresh settings
+    - Access system monitoring
+    - Access data quality validation
+    """
+    if not current_username:
+        return False
+    
+    # Try to get agent_id from secrets
+    try:
+        user_mapping = st.secrets.get("user_mapping", {})
+        if current_username in user_mapping:
+            agent_id_value = user_mapping[current_username].get("agent_id", "")
+            # No agent_id means admin
+            if not agent_id_value:
+                return True
+            else:
+                # User has agent_id - they are an agent, not an admin
+                return False
+        elif current_username.lower() in ["chloe", "shannon", "jerson"]:
+            # Super admins are also regular admins
+            return True
+        else:
+            # No mapping found - default to admin view for now
+            # You can add mappings in secrets.toml to restrict access
+            return True
+    except Exception:
+        # If mapping doesn't exist, default to admin view
+        return True
+
+def is_super_admin():
+    """Check if current user is a super admin (has access to refresh controls and monitoring features).
+    
+    Super admins can:
+    - Everything regular admins can do, PLUS:
+    - Refresh Data controls
+    - Background Refresh Settings
+    - System Monitoring & Metrics
+    - Data Quality Validation
+    
+    Currently only: Chloe, Shannon, and Jerson
+    """
+    if not current_username:
+        return False
+    allowed_users = ['chloe', 'shannon', 'jerson']
+    return current_username.lower() in allowed_users
+
+# Set user_agent_id and is_admin for backward compatibility
 try:
     user_mapping = st.secrets.get("user_mapping", {})
     if current_username and current_username in user_mapping:
         agent_id_value = user_mapping[current_username].get("agent_id", "")
         if agent_id_value:
             user_agent_id = agent_id_value
-        else:
-            # No agent_id means admin
-            is_admin = True
-    elif current_username in ["chloe", "shannon"]:  # Default admins
-        is_admin = True
-    else:
-        # No mapping found - default to admin view for now
-        # You can add mappings in secrets.toml to restrict access
-        is_admin = True
-except Exception as e:
-    # If mapping doesn't exist, default to admin view
-    is_admin = True
+except Exception:
+    pass
+
+# Set is_admin for backward compatibility (but prefer using is_regular_admin() function)
+is_admin = is_regular_admin()
 
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
@@ -2027,7 +2770,7 @@ if is_anonymous_user:
     st.sidebar.info("🔒 Anonymous View: De-identified Data")
 elif user_agent_id:
     st.sidebar.info(f"👤 Agent View: {user_agent_id}")
-elif is_admin:
+elif is_regular_admin():
     st.sidebar.info("👑 Admin View: All Data")
 else:
     st.sidebar.info("👤 User View: All Data")
@@ -2046,9 +2789,11 @@ if st.sidebar.button("🚪 Logout", help="Log out of your account", type="second
         st.sidebar.error("Error logging out. Please refresh the page.")
 
 # --- Background Refresh: Check for new PDFs periodically ---
+@st.cache_data(ttl=60, max_entries=1, show_spinner=False)
 def check_for_new_pdfs_lightweight():
     """
     Lightweight check: Just counts new PDFs without downloading.
+    Cached for 60 seconds to prevent excessive S3 pagination calls.
     Returns: (new_count, error_message)
     """
     try:
@@ -2234,14 +2979,15 @@ if st.session_state.bg_check_error:
     st.sidebar.markdown("---")
     st.sidebar.warning(f"⚠️ Background check: {st.session_state.bg_check_error}")
 
-# Prominent refresh button for when new data is added
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔄 Refresh Data")
-st.sidebar.info("💡 **When to refresh:** Click 'Refresh New Data' after new PDFs are added to S3")
-st.sidebar.caption("ℹ️ **Cache never expires** - Data stays cached until you manually refresh")
+# Prominent refresh button for when new data is added (Chloe, Shannon, and Jerson only)
+if is_super_admin():
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔄 Refresh Data")
+    st.sidebar.info("💡 **When to refresh:** Click 'Refresh New Data' after new PDFs are added to S3")
+    st.sidebar.caption("ℹ️ **Cache never expires** - Data stays cached until you manually refresh")
 
-# Background refresh settings (admin only)
-if is_admin:
+# Background refresh settings (Chloe, Shannon, and Jerson only)
+if is_super_admin():
     with st.sidebar.expander("⚙️ Background Refresh Settings"):
         bg_enabled = st.checkbox("Enable background refresh", value=st.session_state.bg_refresh_enabled)
         if bg_enabled != st.session_state.bg_refresh_enabled:
@@ -2273,9 +3019,9 @@ if is_admin:
                     st.info("ℹ️ No new PDFs found")
                 st.rerun()
 
-# Smart refresh button (Chloe and Shannon only) - only loads new PDFs
+# Smart refresh button (Chloe, Shannon, and Jerson only) - only loads new PDFs
 # Note: files_to_load will be defined later, but we'll use None here to get all cached data
-if current_username and current_username.lower() in ['chloe', 'shannon']:
+if is_super_admin():
     if st.sidebar.button('🔄 Refresh New Data', help='Only processes new PDFs added since last refresh. Fast and efficient!', type='primary'):
         log_audit_event(current_username, 'refresh_data', 'Refreshed new data from S3')
         
@@ -2288,7 +3034,9 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
         previous_streamlit_errors = []
         try:
             # Get Streamlit cache BEFORE refresh (safe to call here, won't trigger reload)
-            streamlit_result = load_all_calls_cached()
+            # Use cache_version when preserving Streamlit cache
+            cache_version = st.session_state.get('_cache_version', 0)
+            streamlit_result = load_all_calls_cached(cache_version=cache_version)
             previous_streamlit_cache = streamlit_result[0] if streamlit_result[0] else []
             previous_streamlit_errors = streamlit_result[1] if streamlit_result[1] else []
             logger.info(f"💾 Preserved Streamlit cache: {len(previous_streamlit_cache)} calls before refresh")
@@ -2423,47 +3171,78 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
                     # CRITICAL FIX: Only merge if disk_result_verify[0] is not None
                     # Defensive check: ensure disk_result_verify is not None before accessing [0]
                     if disk_result_verify and disk_result_verify[0] is not None:
-                        # Merge preserved Streamlit cache with disk cache
-                        merged_data = previous_streamlit_cache + disk_result_verify[0]
-                        merged_data = deduplicate_calls(merged_data)
-                        merged_count = len(merged_data)
+                        # CRITICAL FIX: Check if caches are identical before merging
+                        # If they have the same keys, skip merge to avoid crash (no need to merge identical data)
+                        # Extract keys from both caches for comparison
+                        previous_keys = set()
+                        for call in previous_streamlit_cache:
+                            key = call.get('_s3_key') or call.get('_id') or call.get('Call ID')
+                            if key:
+                                previous_keys.add(key)
                         
-                        logger.info(f"🔄 Merging preserved Streamlit cache ({len(previous_streamlit_cache)} calls) with disk cache ({disk_cache_count} calls) = {merged_count} unique calls")
+                        disk_keys = set()
+                        for call in disk_result_verify[0]:
+                            key = call.get('_s3_key') or call.get('_id') or call.get('Call ID')
+                            if key:
+                                disk_keys.add(key)
                         
-                        # Save merged result to disk
-                        merge_save_succeeded = False
-                        try:
-                            # CRITICAL FIX: Check if disk_result_verify[1] exists before using
+                        if previous_keys == disk_keys:
+                            # Caches are identical - no merge needed, use all_calls_merged directly
+                            logger.info(f"✅ Streamlit cache and disk cache have identical keys ({len(previous_keys)} calls) - skipping merge to avoid crash")
+                            logger.info(f"✅ Using all_calls_merged ({len(all_calls_merged)} calls) directly - no data loss")
+                            st.session_state['_merged_cache_data'] = all_calls_merged
                             verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
-                            save_cached_data_to_disk(
-                                merged_data,
-                                previous_streamlit_errors if previous_streamlit_errors else verify_errors
-                            )
-                            logger.info(f"✅ Saved merged cache to disk: {merged_count} calls")
-                            merge_save_succeeded = True
-                        except Exception as merge_save_error:
-                            logger.error(f"❌ CRITICAL: Failed to save merged cache: {merge_save_error}")
-                            logger.error(f"❌ Using disk cache without Streamlit cache merge - some data may be lost")
-                        
-                        # CRITICAL FIX: Only store merged_data in session state if save succeeded
-                        # If save failed, use disk cache (fallback) to prevent data loss
-                        if merge_save_succeeded:
-                            # Store merged data in session state so it's used after cache clear
-                            st.session_state['_merged_cache_data'] = merged_data
-                            verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
-                            st.session_state['_merged_cache_errors'] = previous_streamlit_errors if previous_streamlit_errors else verify_errors
+                            st.session_state['_merged_cache_errors'] = new_errors if new_errors else verify_errors
                         else:
-                            # Fallback: use disk cache without merge (save failed, merged_data not on disk)
-                            # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
-                            # Don't use potentially corrupted cache data when verification fails
-                            if not verification_failed and disk_result_verify and disk_result_verify[0] is not None:
-                                st.session_state['_merged_cache_data'] = disk_result_verify[0]
+                            # Caches are different - merge to preserve all data
+                            # Calculate difference for logging
+                            only_in_streamlit = previous_keys - disk_keys
+                            only_in_disk = disk_keys - previous_keys
+                            
+                            logger.info(f"🔄 Caches differ: {len(only_in_streamlit)} calls only in Streamlit, {len(only_in_disk)} calls only in disk")
+                            logger.info(f"🔄 Merging preserved Streamlit cache ({len(previous_streamlit_cache)} calls) with disk cache ({disk_cache_count} calls)")
+                            
+                            # Merge preserved Streamlit cache with disk cache
+                            merged_data = previous_streamlit_cache + disk_result_verify[0]
+                            merged_data = deduplicate_calls(merged_data)
+                            merged_count = len(merged_data)
+                            
+                            logger.info(f"✅ Merged result: {merged_count} unique calls (removed {len(previous_streamlit_cache) + len(disk_result_verify[0]) - merged_count} duplicates)")
+                            
+                            # Save merged result to disk
+                            merge_save_succeeded = False
+                            try:
+                                # CRITICAL FIX: Check if disk_result_verify[1] exists before using
                                 verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
-                                st.session_state['_merged_cache_errors'] = verify_errors
+                                save_cached_data_to_disk(
+                                    merged_data,
+                                    previous_streamlit_errors if previous_streamlit_errors else verify_errors
+                                )
+                                logger.info(f"✅ Saved merged cache to disk: {merged_count} calls")
+                                merge_save_succeeded = True
+                            except Exception as merge_save_error:
+                                logger.error(f"❌ CRITICAL: Failed to save merged cache: {merge_save_error}")
+                                logger.error(f"❌ Using disk cache without Streamlit cache merge - some data may be lost")
+                            
+                            # CRITICAL FIX: Only store merged_data in session state if save succeeded
+                            # If save failed, use disk cache (fallback) to prevent data loss
+                            if merge_save_succeeded:
+                                # Store merged data in session state so it's used after cache clear
+                                st.session_state['_merged_cache_data'] = merged_data
+                                verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
+                                st.session_state['_merged_cache_errors'] = previous_streamlit_errors if previous_streamlit_errors else verify_errors
                             else:
-                                logger.error(f"❌ CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback")
-                                st.session_state['_merged_cache_data'] = all_calls_merged
-                                st.session_state['_merged_cache_errors'] = new_errors if new_errors else []
+                                # Fallback: use disk cache without merge (save failed, merged_data not on disk)
+                                # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
+                                # Don't use potentially corrupted cache data when verification fails
+                                if not verification_failed and disk_result_verify and disk_result_verify[0] is not None:
+                                    st.session_state['_merged_cache_data'] = disk_result_verify[0]
+                                    verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
+                                    st.session_state['_merged_cache_errors'] = verify_errors
+                                else:
+                                    logger.error(f"❌ CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback")
+                                    st.session_state['_merged_cache_data'] = all_calls_merged
+                                    st.session_state['_merged_cache_errors'] = new_errors if new_errors else []
                     else:
                         # disk_result_verify[0] is None - use previous_streamlit_cache only
                         logger.warning(f"⚠️ disk_result_verify[0] is None - using previous_streamlit_cache only")
@@ -2484,9 +3263,19 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
                         st.session_state['_merged_cache_data'] = all_calls_merged
                         st.session_state['_merged_cache_errors'] = new_errors if new_errors else []
                 
-                # Clear Streamlit cache so it reloads from (potentially merged) disk cache
-                logger.info(f"🔄 Clearing Streamlit cache to reload from disk cache")
-                load_all_calls_cached.clear()
+                # CRITICAL FIX: Don't clear Streamlit cache - let it update naturally
+                # The merged data is stored in session state (_merged_cache_data)
+                # When load_all_calls_cached() is called next, it will return that data
+                # and Streamlit's @st.cache_data will automatically cache it
+                # This ensures disk cache is backed up in Streamlit cache without risk of data loss
+                # Clearing cache here could cause data loss if something goes wrong before next call
+                logger.info(f"✅ Disk cache saved ({disk_cache_count} calls) - Streamlit cache will update with latest data on next access")
+                logger.info(f"💾 Merged data stored in session state - will be cached automatically when load_all_calls_cached() is called")
+                
+                # REMOVED: load_all_calls_cached.clear() - causes crashes during refresh/rerun
+                # Instead, rely on _merged_cache_data in session state which load_all_calls_cached() 
+                # will use on next call (line 1118-1126), and Streamlit will cache that result automatically.
+                # The disk cache is already persisted to logs/cached_calls_data.json, so data is safe.
             else:
                 logger.warning(f"⚠️ Disk cache verification failed: expected {len(all_calls_merged)} calls, found {disk_cache_count} - NOT clearing Streamlit cache")
                 # CRITICAL FIX: When verification fails, use verified disk cache data if available
@@ -2517,20 +3306,48 @@ if current_username and current_username.lower() in ['chloe', 'shannon']:
             st.session_state.new_pdfs_notification_count = 0
             # Reset auto_refresh_checked so startup check runs again to verify 0 new files
             st.session_state.auto_refresh_checked = False
+            
+            # CRITICAL FIX: Increment cache version and clear Streamlit cache before rerun
+            # This forces Streamlit cache to reload from S3 cache (source of truth) on next call
+            try:
+                # Increment cache version to force cache refresh
+                current_version = st.session_state.get('_cache_version', 0)
+                st.session_state['_cache_version'] = current_version + 1
+                
+                # Store S3 cache timestamp after saving (so we can detect when it's updated)
+                s3_client, s3_bucket = get_s3_client_and_bucket()
+                if s3_client and s3_bucket:
+                    try:
+                        response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                        s3_data = json.loads(response['Body'].read().decode('utf-8'))
+                        s3_timestamp = s3_data.get('timestamp', None)
+                        if s3_timestamp:
+                            st.session_state['_s3_cache_timestamp'] = s3_timestamp
+                            logger.info(f"✅ Stored S3 cache timestamp: {s3_timestamp}")
+                    except Exception as s3_read_error:
+                        logger.debug(f"Could not read S3 cache timestamp: {s3_read_error}")
+                
+                # Clear Streamlit cache to force reload from S3 cache
+                load_all_calls_cached.clear()
+                logger.info(f"✅ Cleared Streamlit cache - will reload {len(all_calls_merged)} calls from S3 cache (source of truth)")
+            except Exception as clear_error:
+                logger.warning(f"⚠️ Could not clear Streamlit cache: {clear_error} - will rely on cache_version parameter")
+                # Continue anyway - cache_version parameter will force refresh
+            
             # Clear refresh flag before rerun
             st.session_state['refresh_in_progress'] = False
-            # Rerun to show updated data (Streamlit cache will reload from disk if cleared above)
+            # Rerun to show updated data (Streamlit cache will reload from _merged_cache_data)
             st.rerun()
         else:
             # No new files found and no errors
             st.session_state['refresh_in_progress'] = False  # Clear flag
             st.info("ℹ️ No new PDFs found. All data is up to date!")
-# Admin-only: Full reload button (Chloe and Shannon only)
-if current_username and current_username.lower() in ["chloe", "shannon"]:
+# Admin-only: Full reload button (Super admins only)
+if is_super_admin():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👑 Admin: Full Reload")
     if st.sidebar.button("🔄 Reload ALL Data (Admin Only)", help="⚠️ Clears cache and reloads ALL PDFs from S3. This may take 10-20 minutes.", type="secondary"):
-        if current_username and current_username.lower() in ["chloe", "shannon"]:
+        if is_super_admin():
             log_audit_event(current_username, "reload_all_data", "Cleared cache and reloaded all data from S3")
         st.cache_data.clear()
         # Clear persistent disk cache
@@ -2738,7 +3555,9 @@ try:
             with loading_placeholder.container():
                 st.spinner("Loading PDFs from S3... This may take a few minutes for large datasets.")
             
-            call_data, errors = load_all_calls_cached()
+            # Use cache_version to force cache refresh when refresh completes
+            cache_version = st.session_state.get('_cache_version', 0)
+            call_data, errors = load_all_calls_cached(cache_version=cache_version)
             logger.info(f"Data loaded. Got {len(call_data) if call_data else 0} calls")
             
             # Clear loading messages
@@ -3173,7 +3992,7 @@ if 'rubric_filter_type' not in st.session_state:
     st.session_state.rubric_filter_type = "Any Status"
 
 # Dark mode toggle (admin only)
-if is_admin:
+if is_regular_admin():
     st.sidebar.markdown("---")
     dark_mode = st.sidebar.toggle("🌙 Dark Mode", value=False, help="Toggle dark mode (requires page refresh)")
     if dark_mode:
@@ -3553,9 +4372,9 @@ if user_agent_id:
 else:
     st.title("📋 QA Rubric Dashboard")
 
-# Monitoring Dashboard (Admin Only)
-if is_admin:
-    with st.expander("📊 System Monitoring & Metrics (Admin Only)", expanded=False):
+# Monitoring Dashboard (Chloe, Shannon, and Jerson only)
+if is_super_admin():
+    with st.expander("📊 System Monitoring & Metrics (Chloe, Shannon, and Jerson only)", expanded=False):
         st.markdown("### Usage Metrics")
         metrics = load_metrics()
         
@@ -3634,9 +4453,9 @@ if is_admin:
             else:
                 st.info("Audit log file not found. Audit entries will be created as you use the system.")
 
-# Data Validation Dashboard (Admin Only)
-if is_admin:
-    with st.expander("🔍 Data Quality Validation (Admin Only)", expanded=False):
+# Data Validation Dashboard (Chloe, Shannon, and Jerson only)
+if is_super_admin():
+    with st.expander("🔍 Data Quality Validation (Chloe, Shannon, and Jerson only)", expanded=False):
         st.markdown("### Data Quality Metrics")
         
         validation_issues = []
@@ -3748,7 +4567,7 @@ if show_comparison and user_agent_id:
         ax_comp.legend()
         plt.xticks(rotation=0)
         plt.tight_layout()
-        st.pyplot(fig_comp)
+        st_pyplot_safe(fig_comp)
     
     with comp_col2:
         st.write("**Pass Rate Comparison**")
@@ -3762,7 +4581,7 @@ if show_comparison and user_agent_id:
         ax_pass.set_title("My Pass Rate vs Team Average")
         plt.xticks(rotation=0)
         plt.tight_layout()
-        st.pyplot(fig_pass)
+        st_pyplot_safe(fig_pass)
     
 else:
     # Admin/All data view
@@ -3780,6 +4599,100 @@ else:
     with col4:
         st.metric("Unique Agents", filtered_df["Agent"].nunique())
 
+# --- Historical Baseline Comparisons (Benchmarking) ---
+with st.expander("📊 Historical Baseline Comparisons", expanded=False):
+    st.markdown("### Compare Current Performance to Historical Baselines")
+    
+    # Calculate baselines - convert date objects to pandas Timestamp for consistent comparison
+    start_date_dt = pd.Timestamp(start_date) if not isinstance(start_date, pd.Timestamp) else start_date
+    end_date_dt = pd.Timestamp(end_date) if not isinstance(end_date, pd.Timestamp) else end_date
+    
+    # Calculate baselines
+    baselines = calculate_historical_baselines(meta_df, start_date_dt, end_date_dt)
+    
+    if baselines:
+        current_avg_score = filtered_df["QA Score"].mean() if "QA Score" in filtered_df.columns else None
+        current_pass_rate = calculate_pass_rate(filtered_df)
+        
+        baseline_col1, baseline_col2, baseline_col3 = st.columns(3)
+        
+        # Last 30 days comparison
+        if 'last_30_days' in baselines:
+            with baseline_col1:
+                baseline_30 = baselines['last_30_days']
+                if current_avg_score and baseline_30['avg_score']:
+                    score_change_30 = current_avg_score - baseline_30['avg_score']
+                    st.metric(
+                        "vs Last 30 Days",
+                        f"{current_avg_score:.1f}%",
+                        delta=f"{score_change_30:+.1f}%",
+                        delta_color="normal" if score_change_30 >= 0 else "inverse",
+                        help=f"Baseline: {baseline_30['avg_score']:.1f}%"
+                    )
+        
+        # Last 90 days comparison
+        if 'last_90_days' in baselines:
+            with baseline_col2:
+                baseline_90 = baselines['last_90_days']
+                if current_avg_score and baseline_90['avg_score']:
+                    score_change_90 = current_avg_score - baseline_90['avg_score']
+                    st.metric(
+                        "vs Last 90 Days",
+                        f"{current_avg_score:.1f}%",
+                        delta=f"{score_change_90:+.1f}%",
+                        delta_color="normal" if score_change_90 >= 0 else "inverse",
+                        help=f"Baseline: {baseline_90['avg_score']:.1f}%"
+                    )
+        
+        # Year-over-year comparison
+        if 'year_over_year' in baselines:
+            with baseline_col3:
+                baseline_yoy = baselines['year_over_year']
+                if current_avg_score and baseline_yoy['avg_score']:
+                    score_change_yoy = current_avg_score - baseline_yoy['avg_score']
+                    st.metric(
+                        "vs Same Period Last Year",
+                        f"{current_avg_score:.1f}%",
+                        delta=f"{score_change_yoy:+.1f}%",
+                        delta_color="normal" if score_change_yoy >= 0 else "inverse",
+                        help=f"Baseline: {baseline_yoy['avg_score']:.1f}%"
+                    )
+    else:
+        st.info("ℹ️ Insufficient historical data for baseline comparisons")
+    
+    # Benchmark visualization chart
+    if baselines and current_avg_score:
+        st.markdown("### Benchmark Comparison Chart")
+        baseline_names = []
+        baseline_scores = []
+        
+        if 'last_30_days' in baselines and baselines['last_30_days']['avg_score']:
+            baseline_names.append('Last 30 Days')
+            baseline_scores.append(baselines['last_30_days']['avg_score'])
+        
+        if 'last_90_days' in baselines and baselines['last_90_days']['avg_score']:
+            baseline_names.append('Last 90 Days')
+            baseline_scores.append(baselines['last_90_days']['avg_score'])
+        
+        if 'year_over_year' in baselines and baselines['year_over_year']['avg_score']:
+            baseline_names.append('Same Period Last Year')
+            baseline_scores.append(baselines['year_over_year']['avg_score'])
+        
+        if baseline_names:
+            baseline_names.append('Current Period')
+            baseline_scores.append(current_avg_score)
+            
+            fig_bench, ax_bench = plt.subplots(figsize=(10, 6))
+            colors = ['steelblue' if i < len(baseline_names) - 1 else 'orange' for i in range(len(baseline_names))]
+            bars = ax_bench.bar(baseline_names, baseline_scores, color=colors)
+            ax_bench.set_ylabel("Average QA Score (%)")
+            ax_bench.set_title("Current Performance vs Historical Baselines")
+            ax_bench.axhline(y=alert_threshold, color='r', linestyle='--', alpha=0.5, label=f'Threshold ({alert_threshold}%)')
+            ax_bench.legend()
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            st_pyplot_safe(fig_bench)
+
 # --- Agent Leaderboard ---
 if not user_agent_id:
     # Admin view - show all agents
@@ -3794,9 +4707,35 @@ if not user_agent_id:
 
     # Calculate pass rate
     agent_performance["Pass_Rate"] = (agent_performance["Total_Pass"] / (agent_performance["Total_Pass"] + agent_performance["Total_Fail"]) * 100).fillna(0)
-    agent_performance = agent_performance.sort_values("Avg_QA_Score", ascending=False)
-
-    st.dataframe(agent_performance.round(1))
+    
+    # Add percentile rankings
+    percentile_rankings = calculate_percentile_rankings(filtered_df, "QA Score")
+    if not percentile_rankings.empty:
+        agent_performance = agent_performance.merge(percentile_rankings[['Agent', 'percentile']], on='Agent', how='left')
+        agent_performance['percentile'] = agent_performance['percentile'].fillna(0)
+        
+        # Add percentile badges
+        def get_percentile_badge(pct):
+            if pct >= 90:
+                return "🏆 Top 10%"
+            elif pct >= 75:
+                return "🥇 Top 25%"
+            elif pct >= 50:
+                return "🥈 Top 50%"
+            elif pct >= 25:
+                return "🥉 Bottom 50%"
+            else:
+                return "📉 Bottom 25%"
+        
+        agent_performance['Percentile_Rank'] = agent_performance['percentile'].apply(get_percentile_badge)
+        agent_performance = agent_performance.sort_values("Avg_QA_Score", ascending=False)
+        
+        # Display with percentile column
+        display_cols = ['Agent', 'Total_Calls', 'Avg_QA_Score', 'Pass_Rate', 'Percentile_Rank', 'Avg_Call_Duration']
+        st.dataframe(agent_performance[display_cols].round(1), hide_index=True)
+    else:
+        agent_performance = agent_performance.sort_values("Avg_QA_Score", ascending=False)
+        st.dataframe(agent_performance.round(1), hide_index=True)
 else:
     # Agent view - show only their performance summary
     st.subheader("📊 My Performance Summary")
@@ -3842,6 +4781,50 @@ if len(alerts_df) > 0:
 else:
     st.success(f"✅ All calls meet the threshold ({alert_threshold}%)")
 
+# --- At-Risk Agent Detection (Predictive Analytics) ---
+if not user_agent_id:  # Admin view only
+    with st.expander("🔮 At-Risk Agent Detection", expanded=False):
+        st.markdown("### Early Warning System for Agents at Risk")
+        st.caption("Identifies agents who may drop below threshold based on recent trends, volatility, and proximity to threshold")
+        
+        at_risk_agents = identify_at_risk_agents(filtered_df, threshold=alert_threshold)
+        
+        if at_risk_agents:
+            st.warning(f"⚠️ Found {len(at_risk_agents)} agent(s) at risk")
+            
+            risk_data = []
+            for agent_info in at_risk_agents:
+                risk_data.append({
+                    'Agent': agent_info['agent'],
+                    'Risk Score': f"{agent_info['risk_score']:.0f}/100",
+                    'Recent Avg Score': f"{agent_info['recent_avg']:.1f}%",
+                    'Trend': "📉 Declining" if agent_info['trend_slope'] < 0 else "📈 Improving",
+                    'Volatility': f"{agent_info['volatility']:.1f}",
+                    'Distance to Threshold': f"{agent_info['proximity_to_threshold']:.1f}%",
+                    'Recent Calls': agent_info['recent_calls']
+                })
+            
+            risk_df = pd.DataFrame(risk_data)
+            st.dataframe(risk_df, hide_index=True)
+            
+            # Show risk factors for top at-risk agent
+            if at_risk_agents:
+                top_risk = at_risk_agents[0]
+                st.markdown(f"**Why is {top_risk['agent']} at risk?**")
+                risk_factors = []
+                if top_risk['trend_slope'] < -0.5:
+                    risk_factors.append(f"📉 Declining trend (slope: {top_risk['trend_slope']:.2f})")
+                if top_risk['volatility'] > 10:
+                    risk_factors.append(f"📊 High volatility ({top_risk['volatility']:.1f})")
+                if top_risk['proximity_to_threshold'] <= 10:
+                    risk_factors.append(f"⚠️ Close to threshold ({top_risk['proximity_to_threshold']:.1f}% away)")
+                
+                if risk_factors:
+                    for factor in risk_factors:
+                        st.write(f"- {factor}")
+        else:
+            st.success("✅ No agents currently identified as at risk")
+
 # --- QA Score Trends Over Time ---
 st.subheader("📈 QA Score Trends Over Time")
 col_trend1, col_trend2 = st.columns(2)
@@ -3862,7 +4845,7 @@ with col_trend1:
         ax_trend.legend()
         plt.xticks(rotation=45)
         plt.tight_layout()
-        st.pyplot(fig_trend)
+        st_pyplot_safe(fig_trend)
 
 with col_trend2:
     # Pass/Fail Rate Trends
@@ -3887,7 +4870,65 @@ with col_trend2:
         ax_pf.legend()
         plt.xticks(rotation=45)
         plt.tight_layout()
-        st.pyplot(fig_pf)
+        st_pyplot_safe(fig_pf)
+
+# --- Trend Forecasting (Predictive Analytics) ---
+with st.expander("🔮 Trend Forecasting", expanded=False):
+    st.markdown("### Predict Future QA Scores")
+    st.caption("Forecasts future QA scores based on historical trends using time series analysis")
+    
+    forecast_days = st.selectbox("Forecast Period", [7, 14, 30], index=0, help="Number of days to forecast ahead")
+    
+    if len(filtered_df) > 0 and "QA Score" in filtered_df.columns and "Call Date" in filtered_df.columns:
+        with st.spinner("Calculating forecast..."):
+            forecast_result = predict_future_scores(filtered_df, days_ahead=forecast_days)
+        
+        if forecast_result:
+            # Display forecast
+            forecast_df = pd.DataFrame({
+                'Date': forecast_result['dates'],
+                'Forecast': forecast_result['forecast'],
+                'Lower Bound': forecast_result['lower_bound'],
+                'Upper Bound': forecast_result['upper_bound']
+            })
+            
+            # Create forecast chart
+            fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
+            
+            # Plot historical data
+            daily_scores = filtered_df.groupby(filtered_df["Call Date"].dt.date)["QA Score"].mean().reset_index()
+            daily_scores.columns = ["Date", "Avg QA Score"]
+            ax_forecast.plot(daily_scores["Date"], daily_scores["Avg QA Score"], 
+                           marker="o", linewidth=2, color="steelblue", label="Historical")
+            
+            # Plot forecast
+            forecast_dates = pd.to_datetime(forecast_df['Date'])
+            ax_forecast.plot(forecast_dates, forecast_df['Forecast'], 
+                           marker="s", linewidth=2, color="orange", label="Forecast")
+            ax_forecast.fill_between(forecast_dates, forecast_df['Lower Bound'], forecast_df['Upper Bound'],
+                                   alpha=0.3, color="orange", label="95% Confidence Interval")
+            
+            ax_forecast.axhline(y=alert_threshold, color='r', linestyle='--', alpha=0.5, 
+                              label=f'Threshold ({alert_threshold}%)')
+            ax_forecast.set_xlabel("Date")
+            ax_forecast.set_ylabel("Average QA Score (%)")
+            ax_forecast.set_title(f"QA Score Forecast ({forecast_days} days ahead) - {forecast_result['method'].title()} Method")
+            ax_forecast.grid(True, alpha=0.3)
+            ax_forecast.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st_pyplot_safe(fig_forecast)
+            
+            # Show forecast summary
+            avg_forecast = forecast_df['Forecast'].mean()
+            st.metric("Average Forecasted Score", f"{avg_forecast:.1f}%", 
+                     delta=f"{avg_forecast - daily_scores['Avg QA Score'].iloc[-1]:+.1f}%",
+                     delta_color="normal" if avg_forecast >= daily_scores['Avg QA Score'].iloc[-1] else "inverse",
+                     help="Average of forecasted scores vs most recent historical score")
+        else:
+            st.warning("⚠️ Insufficient data for forecasting (need at least 7 days of historical data)")
+    else:
+        st.info("ℹ️ No data available for forecasting")
 
 # --- Rubric Code Analysis ---
 st.subheader("🔍 Rubric Code Analysis")
@@ -3944,7 +4985,7 @@ if "Rubric Details" in filtered_df.columns:
                 ax_fail.set_ylabel("Rubric Code")
                 ax_fail.set_title("Top 10 Failing Rubric Codes")
                 plt.tight_layout()
-                st.pyplot(fig_fail)
+                st_pyplot_safe(fig_fail)
         
         with col_rub2:
             # Rubric Code Heatmap (simplified - showing pass/fail rates)
@@ -3965,17 +5006,55 @@ if "Rubric Details" in filtered_df.columns:
             ax_heat.set_title("Fail Rate by Rubric Category")
             plt.xticks(rotation=0)
             plt.tight_layout()
-            st.pyplot(fig_heat)
+            st_pyplot_safe(fig_heat)
 
 # --- Agent-Specific Trends ---
 if user_agent_id:
     # Agent view - show their trend with team comparison
     st.subheader("📈 My Performance Trend vs Team Average")
+    
+    # Add trajectory analysis
+    agent_data = filtered_df[filtered_df["Agent"] == user_agent_id]
+    if len(agent_data) > 0:
+        trajectory = classify_trajectory(filtered_df, agent=user_agent_id)
+        
+        traj_col1, traj_col2, traj_col3, traj_col4 = st.columns(4)
+        with traj_col1:
+            traj_icon = {
+                'improving': '📈',
+                'declining': '📉',
+                'stable': '➡️',
+                'volatile': '📊',
+                'insufficient_data': '❓'
+            }.get(trajectory['trajectory'], '❓')
+            traj_label = {
+                'improving': 'Improving',
+                'declining': 'Declining',
+                'stable': 'Stable',
+                'volatile': 'Volatile',
+                'insufficient_data': 'Insufficient Data'
+            }.get(trajectory['trajectory'], 'Unknown')
+            st.metric("Trajectory", f"{traj_icon} {traj_label}")
+        
+        with traj_col2:
+            st.metric("Current Score", f"{trajectory.get('current_score', 0):.1f}%")
+        
+        with traj_col3:
+            projected = trajectory.get('projected_score', 0)
+            delta = projected - trajectory.get('current_score', 0) if projected else 0
+            st.metric("Projected (7 days)", f"{projected:.1f}%", 
+                     delta=f"{delta:+.1f}%",
+                     delta_color="normal" if delta >= 0 else "inverse",
+                     help="Projected score if current trend continues")
+        
+        with traj_col4:
+            st.metric("Volatility", f"{trajectory.get('volatility', 0):.1f}",
+                     help="Standard deviation of scores (lower is more consistent)")
+    
     agent_trends_col1, agent_trends_col2 = st.columns(2)
     
     with agent_trends_col1:
         st.write("**My QA Score Trend**")
-        agent_data = filtered_df[filtered_df["Agent"] == user_agent_id]
         if len(agent_data) > 0:
             agent_daily = agent_data.groupby(agent_data["Call Date"].dt.date).agg(
                 Avg_QA_Score=("QA Score", "mean")
@@ -4002,7 +5081,7 @@ if user_agent_id:
             ax_agent.legend()
             plt.xticks(rotation=45)
             plt.tight_layout()
-            st.pyplot(fig_agent)
+            st_pyplot_safe(fig_agent)
     
     with agent_trends_col2:
         st.write("**My Pass Rate Trend vs Team**")
@@ -4038,7 +5117,7 @@ if user_agent_id:
             ax_pass_trend.legend()
             plt.xticks(rotation=45)
             plt.tight_layout()
-            st.pyplot(fig_pass_trend)
+            st_pyplot_safe(fig_pass_trend)
 
 else:
     # Admin view - agent selection and comparison
@@ -4067,7 +5146,7 @@ else:
                 ax_agent.legend()
                 plt.xticks(rotation=45)
                 plt.tight_layout()
-                st.pyplot(fig_agent)
+                st_pyplot_safe(fig_agent)
         
         with agent_trends_col2:
             # Agent Comparison
@@ -4098,7 +5177,7 @@ else:
                 plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
                 
                 plt.tight_layout()
-                st.pyplot(fig_compare)
+                st_pyplot_safe(fig_compare)
 
 # --- QA Score Distribution and Label Distribution ---
 col_left, col_right = st.columns(2)
@@ -4114,7 +5193,7 @@ with col_left:
         ax_dist.axvline(x=alert_threshold, color='r', linestyle='--', alpha=0.5, label=f'Threshold ({alert_threshold}%)')
         ax_dist.legend()
         plt.tight_layout()
-        st.pyplot(fig_dist)
+        st_pyplot_safe(fig_dist)
 
 with col_right:
     st.subheader("🏷️ Label Distribution")
@@ -4127,7 +5206,7 @@ with col_right:
         ax_label.set_title("Call Labels Distribution")
         plt.xticks(rotation=45)
         plt.tight_layout()
-        st.pyplot(fig_label)
+        st_pyplot_safe(fig_label)
 
 # --- Coaching Insights Aggregation ---
 st.subheader("💡 Coaching Insights")
@@ -4159,7 +5238,7 @@ if "Coaching Suggestions" in filtered_df.columns:
             ax_coach.set_xlabel("Frequency")
             ax_coach.set_title("Top 10 Coaching Suggestions")
             plt.tight_layout()
-            st.pyplot(fig_coach)
+            st_pyplot_safe(fig_coach)
     else:
         st.info("No coaching suggestions found in the filtered data.")
 
@@ -4478,7 +5557,7 @@ if len(filtered_df) > 0:
         ax_vol.set_title("Call Volume by Agent")
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        st.pyplot(fig_vol)
+        st_pyplot_safe(fig_vol)
     
     with vol_col2:
         st.write("**Call Volume Over Time**")
@@ -4493,7 +5572,7 @@ if len(filtered_df) > 0:
         ax_vol_time.grid(True, alpha=0.3)
         plt.xticks(rotation=45)
         plt.tight_layout()
-        st.pyplot(fig_vol_time)
+        st_pyplot_safe(fig_vol_time)
 
 # --- Time of Day Analysis ---
 st.subheader("⏰ Time of Day Analysis")
@@ -4516,7 +5595,7 @@ if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
             ax_time.grid(True, alpha=0.3)
             ax_time.set_xticks(range(0, 24, 2))
             plt.tight_layout()
-            st.pyplot(fig_time)
+            st_pyplot_safe(fig_time)
     
     with time_col2:
         st.write("**Call Volume by Time of Day**")
@@ -4532,7 +5611,7 @@ if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
             ax_time_vol.set_title("Call Volume by Time of Day")
             ax_time_vol.set_xticks(range(0, 24, 2))
             plt.tight_layout()
-            st.pyplot(fig_time_vol)
+            st_pyplot_safe(fig_time_vol)
 
 # --- Reason and Outcome Analysis ---
 st.subheader("🎯 Call Reason & Outcome Analysis")
@@ -4549,7 +5628,7 @@ if "Reason" in filtered_df.columns or "Outcome" in filtered_df.columns:
                 ax_reason.set_xlabel("Number of Calls")
                 ax_reason.set_title("Top 10 Call Reasons")
                 plt.tight_layout()
-                st.pyplot(fig_reason)
+                st_pyplot_safe(fig_reason)
     
     with reason_col2:
         if "Outcome" in filtered_df.columns:
@@ -4561,7 +5640,7 @@ if "Reason" in filtered_df.columns or "Outcome" in filtered_df.columns:
                 ax_outcome.set_xlabel("Number of Calls")
                 ax_outcome.set_title("Top 10 Outcomes")
                 plt.tight_layout()
-                st.pyplot(fig_outcome)
+                st_pyplot_safe(fig_outcome)
 
 # --- Anomaly Detection ---
 st.markdown("---")
@@ -4619,7 +5698,7 @@ if "QA Score" in filtered_df.columns and "Call Date" in filtered_df.columns and 
         ax_anomaly.grid(True, alpha=0.3)
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        st.pyplot(fig_anomaly)
+        st_pyplot_safe(fig_anomaly)
     else:
         st.success("✅ No anomalies detected in the filtered data")
 else:
@@ -4666,7 +5745,7 @@ with analytics_tab1:
                 ax_wow_score.legend()
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                st.pyplot(fig_wow_score)
+                st_pyplot_safe(fig_wow_score)
                 
                 # Show WoW changes
                 st.write("**Week-over-Week Changes**")
@@ -4687,7 +5766,7 @@ with analytics_tab1:
                 ax_wow_pass.legend()
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                st.pyplot(fig_wow_pass)
+                st_pyplot_safe(fig_wow_pass)
         else:
             st.info("ℹ️ Need at least 2 weeks of data for week-over-week comparison")
 
@@ -4744,7 +5823,7 @@ with analytics_tab2:
                 ax_agent_trend.grid(True, alpha=0.3)
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                st.pyplot(fig_agent_trend)
+                st_pyplot_safe(fig_agent_trend)
         else:
             st.info("ℹ️ Need multiple weeks of data per agent to show improvement trends")
     else:
@@ -4806,7 +5885,7 @@ with analytics_tab3:
                 ax_fail.set_xlabel("Failure Count")
                 ax_fail.set_title("Top 10 Failure Reasons")
                 plt.tight_layout()
-                st.pyplot(fig_fail)
+                st_pyplot_safe(fig_fail)
             
             # Show detailed view for selected failure code
             selected_failure_code = st.selectbox(
