@@ -1457,7 +1457,37 @@ def load_all_calls_cached(cache_version=0):
                     if 'auto_refresh_checked' not in st.session_state:
                         st.session_state.auto_refresh_checked = False
                     
+                    # OPTIMIZATION: Only run lightweight check if cache is older than threshold (5 minutes)
+                    # This prevents unnecessary S3 API calls when cache was recently updated
+                    should_check_for_new_files = False
                     if not st.session_state.auto_refresh_checked:
+                        if disk_cache_timestamp:
+                            try:
+                                from datetime import datetime
+                                cache_time = datetime.fromisoformat(disk_cache_timestamp.replace('Z', '+00:00'))
+                                if cache_time.tzinfo is None:
+                                    # Handle naive datetime (assume UTC)
+                                    from datetime import timezone
+                                    cache_time = cache_time.replace(tzinfo=timezone.utc)
+                                age_seconds = (datetime.now(timezone.utc) - cache_time).total_seconds()
+                                age_minutes = age_seconds / 60
+                                
+                                # Only check if cache is older than 5 minutes
+                                if age_minutes > 5:
+                                    should_check_for_new_files = True
+                                    logger.info(f"⏰ Cache is {age_minutes:.1f} minutes old (>5 min threshold) - will check for new files")
+                                else:
+                                    logger.info(f"⏰ Cache is {age_minutes:.1f} minutes old (≤5 min threshold) - skipping lightweight check")
+                                    st.session_state.auto_refresh_checked = True
+                            except Exception as e:
+                                # If timestamp parsing fails, run the check anyway (safe fallback)
+                                logger.warning(f"⚠️ Could not parse cache timestamp: {e}, will check for new files")
+                                should_check_for_new_files = True
+                        else:
+                            # No timestamp available - run check to be safe
+                            should_check_for_new_files = True
+                    
+                    if should_check_for_new_files:
                         # Check for new files (lightweight check)
                         logger.info("🔍 Checking for new files in background...")
                         try:
