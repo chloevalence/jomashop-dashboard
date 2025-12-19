@@ -84,7 +84,7 @@ def cache_file_lock(filepath, timeout=30):
     
     Args:
         filepath: Path to the file to lock
-        timeout: Maximum time to wait for lock (seconds)
+        timeout: Maximum time to wait for lock (seconds). None = wait indefinitely (with max iteration limit).
     
     Yields:
         Locked file handle (or None if locking unavailable)
@@ -106,8 +106,20 @@ def cache_file_lock(filepath, timeout=30):
         lock_file = open(lock_path, 'w')
         start_time = time.time()
         
+        # BUG FIX: Handle timeout=None with maximum iteration limit to prevent infinite hang
+        # Maximum iterations = 5 minutes worth of retries (3000 iterations at 0.1s each)
+        MAX_ITERATIONS = 3000 if timeout is None else None
+        
         # Try to acquire lock
-        while time.time() - start_time < timeout:
+        iteration_count = 0
+        while timeout is None or (time.time() - start_time < timeout):
+            # BUG FIX: Add iteration limit for timeout=None to prevent infinite hang
+            if timeout is None and MAX_ITERATIONS is not None:
+                iteration_count += 1
+                if iteration_count >= MAX_ITERATIONS:
+                    # Reached maximum iterations - break to raise timeout error
+                    break
+            
             try:
                 if sys.platform == 'win32':
                     # Windows file locking
@@ -128,7 +140,10 @@ def cache_file_lock(filepath, timeout=30):
             except Exception:
                 pass
             lock_file = None
-            raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
+            if timeout is None:
+                raise LockTimeoutError(f"Could not acquire lock for {filepath} after {MAX_ITERATIONS * 0.1:.0f}s (max wait time). Another process may be holding the lock indefinitely.")
+            else:
+                raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
         
         yield lock_file
         
@@ -1158,46 +1173,23 @@ def load_all_calls_cached():
                         st.session_state.auto_refresh_checked = False
                     
                     if not st.session_state.auto_refresh_checked:
-                        # OPTIMIZATION: Only run lightweight check if S3 cache is older than threshold
-                        # This prevents unnecessary S3 pagination when cache is fresh
-                        should_check = True
-                        cache_age_minutes = None
-                        
-                        if '_s3_cache_timestamp' in st.session_state:
-                            try:
-                                from datetime import datetime
-                                s3_timestamp_str = st.session_state['_s3_cache_timestamp']
-                                s3_timestamp = datetime.fromisoformat(s3_timestamp_str.replace('Z', '+00:00'))
-                                current_time = datetime.now(s3_timestamp.tzinfo) if s3_timestamp.tzinfo else datetime.now()
-                                age_seconds = (current_time - s3_timestamp).total_seconds()
-                                cache_age_minutes = age_seconds / 60
-                                
-                                # Only check if cache is older than 5 minutes
-                                CHECK_THRESHOLD_MINUTES = 5
-                                if cache_age_minutes < CHECK_THRESHOLD_MINUTES:
-                                    should_check = False
-                                    logger.info(f"⏭️ Skipping lightweight check - S3 cache is fresh ({cache_age_minutes:.1f} minutes old, threshold: {CHECK_THRESHOLD_MINUTES} minutes)")
-                            except Exception as e:
-                                logger.debug(f"Could not parse S3 cache timestamp: {e}, will run check anyway")
-                        
-                        if should_check:
-                            # Check for new files (lightweight check)
-                            logger.info(f"🔍 Checking for new files in background...{f' (cache age: {cache_age_minutes:.1f} min)' if cache_age_minutes else ''}")
-                            try:
-                                new_count, check_error = check_for_new_pdfs_lightweight()
-                                if check_error:
-                                    logger.warning(f"⚠️ Background check error: {check_error}")
-                                elif new_count > 0:
-                                    logger.info(f"🆕 Found {new_count} new PDF(s) - will load in background")
-                                    # Set flag to trigger background load
-                                    st.session_state.auto_refresh_pending = new_count
-                                    st.session_state.new_pdfs_notification_count = new_count
-                                else:
-                                    logger.info("✅ No new files found - cache is up to date")
-                                    # Clear notification count since there are no new files
-                                    st.session_state.new_pdfs_notification_count = 0
-                            except Exception as e:
-                                logger.warning(f"⚠️ Failed to check for new files: {e}")
+                        # Check for new files (lightweight check)
+                        logger.info("🔍 Checking for new files in background...")
+                        try:
+                            new_count, check_error = check_for_new_pdfs_lightweight()
+                            if check_error:
+                                logger.warning(f"⚠️ Background check error: {check_error}")
+                            elif new_count > 0:
+                                logger.info(f"🆕 Found {new_count} new PDF(s) - will load in background")
+                                # Set flag to trigger background load
+                                st.session_state.auto_refresh_pending = new_count
+                                st.session_state.new_pdfs_notification_count = new_count
+                            else:
+                                logger.info("✅ No new files found - cache is up to date")
+                                # Clear notification count since there are no new files
+                                st.session_state.new_pdfs_notification_count = 0
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to check for new files: {e}")
                         
                         st.session_state.auto_refresh_checked = True
                     
