@@ -1214,9 +1214,21 @@ def load_all_calls_cached(cache_version=0):
     if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
         cached_timestamp = st.session_state[s3_timestamp_key]
         # Use cached result if timestamp matches (cache is still valid)
-        s3_cache_result = st.session_state[s3_cache_key]
-        s3_cache_timestamp = cached_timestamp
-        logger.debug(f"📦 Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})")
+        # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
+        cached_result = st.session_state[s3_cache_key]
+        if cached_result is not None and isinstance(cached_result, tuple) and len(cached_result) >= 1 and cached_result[0] is not None:
+            s3_cache_result = cached_result
+            s3_cache_timestamp = cached_timestamp
+            logger.debug(f"📦 Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})")
+        else:
+            # Session state contains invalid data - clear it and reload from S3
+            logger.warning(f"⚠️ Session state contains invalid S3 cache data, clearing and reloading from S3")
+            if s3_cache_key in st.session_state:
+                del st.session_state[s3_cache_key]
+            if s3_timestamp_key in st.session_state:
+                del st.session_state[s3_timestamp_key]
+            s3_cache_result = None
+            s3_cache_timestamp = None
     else:
         # Load from S3 (only if not in session state)
         s3_client, s3_bucket = get_s3_client_and_bucket()
@@ -1305,15 +1317,8 @@ def load_all_calls_cached(cache_version=0):
     partial_processed = 0
     partial_total = 0
     
-    # Check if there's merged cache data from refresh operation (preserves Streamlit cache data)
-    # CRITICAL FIX: Don't delete _merged_cache_data immediately - keep it until Streamlit cache is confirmed updated
-    if '_merged_cache_data' in st.session_state:
-        merged_data = st.session_state['_merged_cache_data']
-        merged_errors = st.session_state.get('_merged_cache_errors', [])
-        logger.info(f"✅ Using merged cache data from refresh: {len(merged_data)} calls")
-        # DON'T delete immediately - return it so Streamlit can cache it
-        # Will be cleaned up on subsequent calls if Streamlit cache has correct count
-        return merged_data, merged_errors
+    # NOTE: Removed duplicate check for _merged_cache_data - it's already checked earlier at line 1271
+    # and returns immediately, making this check unreachable dead code
     
     # Load disk cache regardless of reload_all_triggered - we'll check that flag later
     disk_result = load_cached_data_from_disk()
@@ -1618,6 +1623,414 @@ def create_data_hash(df: pd.DataFrame, additional_params: dict = None) -> str:
     if additional_params:
         data_str += str(additional_params)
     return hashlib.md5(data_str.encode()).hexdigest()
+
+def create_filter_cache_key(date_range, agent_filter, score_filter, label_filter, search_text=None):
+    """Create a cache key based on filter parameters for chart caching.
+    
+    Args:
+        date_range: Tuple of (start_date, end_date)
+        agent_filter: List of selected agents
+        score_filter: Tuple of (min_score, max_score)
+        label_filter: List of selected labels
+        search_text: Optional search text
+        
+    Returns:
+        Cache key string
+    """
+    import hashlib
+    key_parts = [
+        str(date_range),
+        str(sorted(agent_filter)) if agent_filter else "all",
+        str(score_filter),
+        str(sorted(label_filter)) if label_filter else "all",
+        str(search_text) if search_text else ""
+    ]
+    key_str = "|".join(key_parts)
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+# Enhanced chart caching with filter-based cache keys
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_cached_chart_with_filters(chart_id: str, cache_key: str, chart_func, *args, **kwargs):
+    """Cache matplotlib chart figures with filter-based cache keys.
+    
+    Args:
+        chart_id: Unique identifier for the chart type
+        cache_key: Cache key based on filter parameters
+        chart_func: Function that generates the chart
+        *args, **kwargs: Arguments to pass to chart_func
+        
+    Returns:
+        matplotlib figure object
+    """
+    return chart_func(*args, **kwargs)
+    return hashlib.md5(data_str.encode()).hexdigest()
+
+def create_filter_cache_key(date_range, agent_filter, score_filter, label_filter, search_text=None):
+    """Create a cache key based on filter parameters for chart caching.
+    
+    Args:
+        date_range: Tuple of (start_date, end_date)
+        agent_filter: List of selected agents
+        score_filter: Tuple of (min_score, max_score)
+        label_filter: List of selected labels
+        search_text: Optional search text
+        
+    Returns:
+        Cache key string
+    """
+    import hashlib
+    key_parts = [
+        str(date_range),
+        str(sorted(agent_filter)) if agent_filter else "all",
+        str(score_filter),
+        str(sorted(label_filter)) if label_filter else "all",
+        str(search_text) if search_text else ""
+    ]
+    key_str = "|".join(key_parts)
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+# Enhanced chart caching with filter-based cache keys
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_cached_chart_with_filters(chart_id: str, cache_key: str, chart_func, *args, **kwargs):
+    """Cache matplotlib chart figures with filter-based cache keys.
+    
+    Args:
+        chart_id: Unique identifier for the chart type
+        cache_key: Cache key based on filter parameters
+        chart_func: Function that generates the chart
+        *args, **kwargs: Arguments to pass to chart_func
+        
+    Returns:
+        matplotlib figure object
+    """
+    return chart_func(*args, **kwargs)
+
+# --- Benchmarking Functions ---
+def calculate_historical_baselines(df, current_start_date, current_end_date):
+    """Calculate historical baselines for comparison.
+    
+    Args:
+        df: DataFrame with call data
+        current_start_date: Start date of current period (date or datetime)
+        current_end_date: End date of current period (date or datetime)
+        
+    Returns:
+        Dictionary with baseline metrics
+    """
+    from datetime import timedelta
+    import pandas as pd
+    
+    # Convert to pandas Timestamp for consistent comparison
+    if not isinstance(current_start_date, pd.Timestamp):
+        current_start_date = pd.Timestamp(current_start_date)
+    if not isinstance(current_end_date, pd.Timestamp):
+        current_end_date = pd.Timestamp(current_end_date)
+    
+    baselines = {}
+    
+    # Last 30 days baseline
+    last_30_start = current_end_date - timedelta(days=30)
+    last_30_data = df[(df["Call Date"] >= last_30_start) & (df["Call Date"] < current_start_date)]
+    if not last_30_data.empty:
+        baselines['last_30_days'] = {
+            'avg_score': last_30_data["QA Score"].mean() if "QA Score" in last_30_data.columns else None,
+            'pass_rate': calculate_pass_rate(last_30_data),
+            'total_calls': len(last_30_data),
+            'period': (last_30_start, current_start_date)
+        }
+    
+    # Last 90 days baseline
+    last_90_start = current_end_date - timedelta(days=90)
+    last_90_data = df[(df["Call Date"] >= last_90_start) & (df["Call Date"] < current_start_date)]
+    if not last_90_data.empty:
+        baselines['last_90_days'] = {
+            'avg_score': last_90_data["QA Score"].mean() if "QA Score" in last_90_data.columns else None,
+            'pass_rate': calculate_pass_rate(last_90_data),
+            'total_calls': len(last_90_data),
+            'period': (last_90_start, current_start_date)
+        }
+    
+    # Year-over-year (if data available)
+    if current_start_date.year > df["Call Date"].min().year:
+        yoy_start = current_start_date - timedelta(days=365)
+        yoy_end = current_end_date - timedelta(days=365)
+        yoy_data = df[(df["Call Date"] >= yoy_start) & (df["Call Date"] <= yoy_end)]
+        if not yoy_data.empty:
+            baselines['year_over_year'] = {
+                'avg_score': yoy_data["QA Score"].mean() if "QA Score" in yoy_data.columns else None,
+                'pass_rate': calculate_pass_rate(yoy_data),
+                'total_calls': len(yoy_data),
+                'period': (yoy_start, yoy_end)
+            }
+    
+    return baselines
+
+def calculate_pass_rate(df):
+    """Calculate pass rate from dataframe."""
+    if "Rubric Pass Count" in df.columns and "Rubric Fail Count" in df.columns:
+        total_pass = df["Rubric Pass Count"].sum()
+        total_fail = df["Rubric Fail Count"].sum()
+        if (total_pass + total_fail) > 0:
+            return (total_pass / (total_pass + total_fail)) * 100
+    return None
+
+def calculate_percentile_rankings(df, metric_col="QA Score"):
+    """Calculate percentile rankings for agents.
+    
+    Args:
+        df: DataFrame with agent performance data
+        metric_col: Column name for the metric to rank
+        
+    Returns:
+        DataFrame with percentile rankings
+    """
+    if metric_col not in df.columns:
+        return pd.DataFrame()
+    
+    agent_perf = df.groupby("Agent")[metric_col].mean().reset_index()
+    agent_perf['percentile'] = agent_perf[metric_col].rank(pct=True) * 100
+    agent_perf = agent_perf.sort_values('percentile', ascending=False)
+    
+    return agent_perf
+
+# --- Predictive Analytics Functions ---
+def predict_future_scores(df, days_ahead=7):
+    """Predict future QA scores using time series forecasting.
+    
+    Args:
+        df: DataFrame with historical QA scores and dates
+        days_ahead: Number of days to forecast
+        
+    Returns:
+        Dictionary with forecast data and confidence intervals
+    """
+    try:
+        from prophet import Prophet
+    except ImportError:
+        # Fallback to simple linear trend if Prophet not available
+        return predict_future_scores_simple(df, days_ahead)
+    
+    if "Call Date" not in df.columns or "QA Score" not in df.columns:
+        return None
+    
+    # Prepare data for Prophet
+    daily_scores = df.groupby("Call Date")["QA Score"].mean().reset_index()
+    daily_scores.columns = ['ds', 'y']
+    daily_scores = daily_scores.sort_values('ds')
+    
+    if len(daily_scores) < 7:  # Need at least 7 days of data
+        return predict_future_scores_simple(df, days_ahead)
+    
+    try:
+        model = Prophet(interval_width=0.95, daily_seasonality=False, weekly_seasonality=True)
+        model.fit(daily_scores)
+        
+        # Create future dataframe
+        future = model.make_future_dataframe(periods=days_ahead)
+        forecast = model.predict(future)
+        
+        # Extract forecast for future dates only
+        forecast_dates = forecast.tail(days_ahead)
+        
+        return {
+            'dates': forecast_dates['ds'].dt.date.tolist(),
+            'forecast': forecast_dates['yhat'].tolist(),
+            'lower_bound': forecast_dates['yhat_lower'].tolist(),
+            'upper_bound': forecast_dates['yhat_upper'].tolist(),
+            'method': 'prophet'
+        }
+    except Exception as e:
+        logger.warning(f"Prophet forecasting failed: {e}, using simple method")
+        return predict_future_scores_simple(df, days_ahead)
+
+def predict_future_scores_simple(df, days_ahead=7):
+    """Simple linear trend forecasting as fallback.
+    
+    Args:
+        df: DataFrame with historical QA scores and dates
+        days_ahead: Number of days to forecast
+        
+    Returns:
+        Dictionary with forecast data
+    """
+    if "Call Date" not in df.columns or "QA Score" not in df.columns:
+        return None
+    
+    daily_scores = df.groupby("Call Date")["QA Score"].mean().reset_index()
+    daily_scores = daily_scores.sort_values('Call Date')
+    
+    if len(daily_scores) < 2:
+        return None
+    
+    # Simple linear regression
+    from datetime import timedelta
+    import numpy as np
+    
+    dates = daily_scores["Call Date"]
+    scores = daily_scores["QA Score"]
+    
+    # Convert dates to numeric for regression
+    date_nums = [(d - dates.min()).days for d in dates]
+    
+    # Linear regression
+    coeffs = np.polyfit(date_nums, scores, 1)
+    slope = coeffs[0]
+    intercept = coeffs[1]
+    
+    # Predict future dates
+    last_date = dates.max()
+    forecast_dates = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
+    forecast_nums = [(d - dates.min()).days for d in forecast_dates]
+    forecast_scores = [slope * n + intercept for n in forecast_nums]
+    
+    # Calculate confidence interval (simple std-based)
+    residuals = scores - (slope * np.array(date_nums) + intercept)
+    std_error = np.std(residuals)
+    
+    return {
+        'dates': [d.date() for d in forecast_dates],
+        'forecast': forecast_scores,
+        'lower_bound': [f - 1.96 * std_error for f in forecast_scores],
+        'upper_bound': [f + 1.96 * std_error for f in forecast_scores],
+        'method': 'linear'
+    }
+
+def identify_at_risk_agents(df, threshold=70, lookback_days=14):
+    """Identify agents at risk of dropping below threshold.
+    
+    Args:
+        df: DataFrame with agent performance data
+        threshold: QA score threshold
+        lookback_days: Number of days to analyze for trend
+        
+    Returns:
+        List of dictionaries with at-risk agent information
+    """
+    from datetime import timedelta
+    
+    if "Call Date" not in df.columns or "Agent" not in df.columns or "QA Score" not in df.columns:
+        return []
+    
+    cutoff_date = df["Call Date"].max() - timedelta(days=lookback_days)
+    recent_data = df[df["Call Date"] >= cutoff_date]
+    
+    if recent_data.empty:
+        return []
+    
+    at_risk = []
+    
+    for agent in recent_data["Agent"].unique():
+        agent_data = recent_data[recent_data["Agent"] == agent].sort_values("Call Date")
+        
+        if len(agent_data) < 3:  # Need at least 3 data points
+            continue
+        
+        # Calculate metrics
+        recent_avg = agent_data["QA Score"].mean()
+        trend_slope = calculate_trend_slope(agent_data["Call Date"], agent_data["QA Score"])
+        volatility = agent_data["QA Score"].std()
+        proximity_to_threshold = threshold - recent_avg
+        
+        # Calculate risk score (0-100)
+        risk_score = 0
+        
+        # Trend component (0-40 points)
+        if trend_slope < -1:  # Declining trend
+            risk_score += 40
+        elif trend_slope < -0.5:
+            risk_score += 20
+        
+        # Volatility component (0-30 points)
+        if volatility > 15:
+            risk_score += 30
+        elif volatility > 10:
+            risk_score += 15
+        
+        # Proximity component (0-30 points)
+        if proximity_to_threshold <= 5:  # Very close to threshold
+            risk_score += 30
+        elif proximity_to_threshold <= 10:
+            risk_score += 15
+        
+        if risk_score >= 50:  # High risk threshold
+            at_risk.append({
+                'agent': agent,
+                'risk_score': risk_score,
+                'recent_avg': recent_avg,
+                'trend_slope': trend_slope,
+                'volatility': volatility,
+                'proximity_to_threshold': proximity_to_threshold,
+                'recent_calls': len(agent_data)
+            })
+    
+    # Sort by risk score
+    at_risk.sort(key=lambda x: x['risk_score'], reverse=True)
+    return at_risk
+
+def calculate_trend_slope(dates, scores):
+    """Calculate linear trend slope.
+    
+    Args:
+        dates: Series of dates
+        scores: Series of scores
+        
+    Returns:
+        Slope value (positive = improving, negative = declining)
+    """
+    import numpy as np
+    from datetime import timedelta
+    
+    if len(dates) < 2:
+        return 0
+    
+    date_nums = [(d - dates.min()).days for d in dates]
+    coeffs = np.polyfit(date_nums, scores, 1)
+    return coeffs[0]
+
+def classify_trajectory(df, agent=None):
+    """Classify agent trajectory as improving, declining, stable, or volatile.
+    
+    Args:
+        df: DataFrame with performance data
+        agent: Optional agent ID to filter
+        
+    Returns:
+        Dictionary with trajectory classification
+    """
+    if agent:
+        df = df[df["Agent"] == agent]
+    
+    if "Call Date" not in df.columns or "QA Score" not in df.columns or len(df) < 3:
+        return {'trajectory': 'insufficient_data', 'slope': 0, 'volatility': 0}
+    
+    df_sorted = df.sort_values("Call Date")
+    dates = df_sorted["Call Date"]
+    scores = df_sorted["QA Score"]
+    
+    slope = calculate_trend_slope(dates, scores)
+    volatility = scores.std()
+    
+    # Classify trajectory
+    if volatility > 15:
+        trajectory = 'volatile'
+    elif slope > 0.5:
+        trajectory = 'improving'
+    elif slope < -0.5:
+        trajectory = 'declining'
+    else:
+        trajectory = 'stable'
+    
+    # Projected score if trend continues
+    last_score = scores.iloc[-1]
+    projected_score = last_score + (slope * 7)  # Project 7 days ahead
+    
+    return {
+        'trajectory': trajectory,
+        'slope': slope,
+        'volatility': volatility,
+        'current_score': last_score,
+        'projected_score': projected_score
+    }
 
 def load_new_calls_only():
     """
@@ -2198,36 +2611,73 @@ if current_username and current_username.lower() in ["chloe", "shannon"]:
 
 # Check if user is an agent (has agent_id mapping) or admin
 user_agent_id = None
-is_admin = False
 
-# Try to get agent_id from secrets - add this mapping to secrets.toml
+# Helper functions for clear admin distinction
+def is_regular_admin():
+    """Check if current user is a regular admin (can view all agent data, but not super admin features).
+    
+    Regular admins can:
+    - View all agent data and analytics
+    - Access dark mode
+    - See all charts and reports
+    
+    Regular admins cannot:
+    - Access refresh controls
+    - Access background refresh settings
+    - Access system monitoring
+    - Access data quality validation
+    """
+    if not current_username:
+        return False
+    
+    # Try to get agent_id from secrets
+    try:
+        user_mapping = st.secrets.get("user_mapping", {})
+        if current_username in user_mapping:
+            agent_id_value = user_mapping[current_username].get("agent_id", "")
+            # No agent_id means admin
+            if not agent_id_value:
+                return True
+        elif current_username.lower() in ["chloe", "shannon", "jerson"]:
+            # Super admins are also regular admins
+            return True
+        else:
+            # No mapping found - default to admin view for now
+            # You can add mappings in secrets.toml to restrict access
+            return True
+    except Exception:
+        # If mapping doesn't exist, default to admin view
+        return True
+
+def is_super_admin():
+    """Check if current user is a super admin (has access to refresh controls and monitoring features).
+    
+    Super admins can:
+    - Everything regular admins can do, PLUS:
+    - Refresh Data controls
+    - Background Refresh Settings
+    - System Monitoring & Metrics
+    - Data Quality Validation
+    
+    Currently only: Chloe, Shannon, and Jerson
+    """
+    if not current_username:
+        return False
+    allowed_users = ['chloe', 'shannon', 'jerson']
+    return current_username.lower() in allowed_users
+
+# Set user_agent_id and is_admin for backward compatibility
 try:
     user_mapping = st.secrets.get("user_mapping", {})
     if current_username and current_username in user_mapping:
         agent_id_value = user_mapping[current_username].get("agent_id", "")
         if agent_id_value:
             user_agent_id = agent_id_value
-        else:
-            # No agent_id means admin
-            is_admin = True
-    elif current_username in ["chloe", "shannon"]:  # Default admins
-        is_admin = True
-    else:
-        # No mapping found - default to admin view for now
-        # You can add mappings in secrets.toml to restrict access
-        is_admin = True
-except Exception as e:
-    # If mapping doesn't exist, default to admin view
-    is_admin = True
+except Exception:
+    pass
 
-# Helper function to check if user has access to refresh controls and admin features
-# Only Chloe, Shannon, and Jerson have access
-def has_admin_access():
-    """Check if current user has access to refresh controls, background refresh, system monitoring, and data quality validation."""
-    if not current_username:
-        return False
-    allowed_users = ['chloe', 'shannon', 'jerson']
-    return current_username.lower() in allowed_users
+# Set is_admin for backward compatibility (but prefer using is_regular_admin() function)
+is_admin = is_regular_admin()
 
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
@@ -2236,7 +2686,7 @@ if is_anonymous_user:
     st.sidebar.info("🔒 Anonymous View: De-identified Data")
 elif user_agent_id:
     st.sidebar.info(f"👤 Agent View: {user_agent_id}")
-elif is_admin:
+elif is_regular_admin():
     st.sidebar.info("👑 Admin View: All Data")
 else:
     st.sidebar.info("👤 User View: All Data")
@@ -2445,14 +2895,15 @@ if st.session_state.bg_check_error:
     st.sidebar.markdown("---")
     st.sidebar.warning(f"⚠️ Background check: {st.session_state.bg_check_error}")
 
-# Prominent refresh button for when new data is added
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔄 Refresh Data")
-st.sidebar.info("💡 **When to refresh:** Click 'Refresh New Data' after new PDFs are added to S3")
-st.sidebar.caption("ℹ️ **Cache never expires** - Data stays cached until you manually refresh")
+# Prominent refresh button for when new data is added (Chloe, Shannon, and Jerson only)
+if is_super_admin():
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔄 Refresh Data")
+    st.sidebar.info("💡 **When to refresh:** Click 'Refresh New Data' after new PDFs are added to S3")
+    st.sidebar.caption("ℹ️ **Cache never expires** - Data stays cached until you manually refresh")
 
 # Background refresh settings (Chloe, Shannon, and Jerson only)
-if has_admin_access():
+if is_super_admin():
     with st.sidebar.expander("⚙️ Background Refresh Settings"):
         bg_enabled = st.checkbox("Enable background refresh", value=st.session_state.bg_refresh_enabled)
         if bg_enabled != st.session_state.bg_refresh_enabled:
@@ -2486,7 +2937,7 @@ if has_admin_access():
 
 # Smart refresh button (Chloe, Shannon, and Jerson only) - only loads new PDFs
 # Note: files_to_load will be defined later, but we'll use None here to get all cached data
-if has_admin_access():
+if is_super_admin():
     if st.sidebar.button('🔄 Refresh New Data', help='Only processes new PDFs added since last refresh. Fast and efficient!', type='primary'):
         log_audit_event(current_username, 'refresh_data', 'Refreshed new data from S3')
         
@@ -3457,7 +3908,7 @@ if 'rubric_filter_type' not in st.session_state:
     st.session_state.rubric_filter_type = "Any Status"
 
 # Dark mode toggle (admin only)
-if is_admin:
+if is_regular_admin():
     st.sidebar.markdown("---")
     dark_mode = st.sidebar.toggle("🌙 Dark Mode", value=False, help="Toggle dark mode (requires page refresh)")
     if dark_mode:
@@ -3838,7 +4289,7 @@ else:
     st.title("📋 QA Rubric Dashboard")
 
 # Monitoring Dashboard (Chloe, Shannon, and Jerson only)
-if has_admin_access():
+if is_super_admin():
     with st.expander("📊 System Monitoring & Metrics (Chloe, Shannon, and Jerson only)", expanded=False):
         st.markdown("### Usage Metrics")
         metrics = load_metrics()
@@ -3919,7 +4370,7 @@ if has_admin_access():
                 st.info("Audit log file not found. Audit entries will be created as you use the system.")
 
 # Data Validation Dashboard (Chloe, Shannon, and Jerson only)
-if has_admin_access():
+if is_super_admin():
     with st.expander("🔍 Data Quality Validation (Chloe, Shannon, and Jerson only)", expanded=False):
         st.markdown("### Data Quality Metrics")
         
@@ -4064,6 +4515,100 @@ else:
     with col4:
         st.metric("Unique Agents", filtered_df["Agent"].nunique())
 
+# --- Historical Baseline Comparisons (Benchmarking) ---
+with st.expander("📊 Historical Baseline Comparisons", expanded=False):
+    st.markdown("### Compare Current Performance to Historical Baselines")
+    
+    # Calculate baselines - convert date objects to pandas Timestamp for consistent comparison
+    start_date_dt = pd.Timestamp(start_date) if not isinstance(start_date, pd.Timestamp) else start_date
+    end_date_dt = pd.Timestamp(end_date) if not isinstance(end_date, pd.Timestamp) else end_date
+    
+    # Calculate baselines
+    baselines = calculate_historical_baselines(meta_df, start_date_dt, end_date_dt)
+    
+    if baselines:
+        current_avg_score = filtered_df["QA Score"].mean() if "QA Score" in filtered_df.columns else None
+        current_pass_rate = calculate_pass_rate(filtered_df)
+        
+        baseline_col1, baseline_col2, baseline_col3 = st.columns(3)
+        
+        # Last 30 days comparison
+        if 'last_30_days' in baselines:
+            with baseline_col1:
+                baseline_30 = baselines['last_30_days']
+                if current_avg_score and baseline_30['avg_score']:
+                    score_change_30 = current_avg_score - baseline_30['avg_score']
+                    st.metric(
+                        "vs Last 30 Days",
+                        f"{current_avg_score:.1f}%",
+                        delta=f"{score_change_30:+.1f}%",
+                        delta_color="normal" if score_change_30 >= 0 else "inverse",
+                        help=f"Baseline: {baseline_30['avg_score']:.1f}%"
+                    )
+        
+        # Last 90 days comparison
+        if 'last_90_days' in baselines:
+            with baseline_col2:
+                baseline_90 = baselines['last_90_days']
+                if current_avg_score and baseline_90['avg_score']:
+                    score_change_90 = current_avg_score - baseline_90['avg_score']
+                    st.metric(
+                        "vs Last 90 Days",
+                        f"{current_avg_score:.1f}%",
+                        delta=f"{score_change_90:+.1f}%",
+                        delta_color="normal" if score_change_90 >= 0 else "inverse",
+                        help=f"Baseline: {baseline_90['avg_score']:.1f}%"
+                    )
+        
+        # Year-over-year comparison
+        if 'year_over_year' in baselines:
+            with baseline_col3:
+                baseline_yoy = baselines['year_over_year']
+                if current_avg_score and baseline_yoy['avg_score']:
+                    score_change_yoy = current_avg_score - baseline_yoy['avg_score']
+                    st.metric(
+                        "vs Same Period Last Year",
+                        f"{current_avg_score:.1f}%",
+                        delta=f"{score_change_yoy:+.1f}%",
+                        delta_color="normal" if score_change_yoy >= 0 else "inverse",
+                        help=f"Baseline: {baseline_yoy['avg_score']:.1f}%"
+                    )
+    else:
+        st.info("ℹ️ Insufficient historical data for baseline comparisons")
+    
+    # Benchmark visualization chart
+    if baselines and current_avg_score:
+        st.markdown("### Benchmark Comparison Chart")
+        baseline_names = []
+        baseline_scores = []
+        
+        if 'last_30_days' in baselines and baselines['last_30_days']['avg_score']:
+            baseline_names.append('Last 30 Days')
+            baseline_scores.append(baselines['last_30_days']['avg_score'])
+        
+        if 'last_90_days' in baselines and baselines['last_90_days']['avg_score']:
+            baseline_names.append('Last 90 Days')
+            baseline_scores.append(baselines['last_90_days']['avg_score'])
+        
+        if 'year_over_year' in baselines and baselines['year_over_year']['avg_score']:
+            baseline_names.append('Same Period Last Year')
+            baseline_scores.append(baselines['year_over_year']['avg_score'])
+        
+        if baseline_names:
+            baseline_names.append('Current Period')
+            baseline_scores.append(current_avg_score)
+            
+            fig_bench, ax_bench = plt.subplots(figsize=(10, 6))
+            colors = ['steelblue' if i < len(baseline_names) - 1 else 'orange' for i in range(len(baseline_names))]
+            bars = ax_bench.bar(baseline_names, baseline_scores, color=colors)
+            ax_bench.set_ylabel("Average QA Score (%)")
+            ax_bench.set_title("Current Performance vs Historical Baselines")
+            ax_bench.axhline(y=alert_threshold, color='r', linestyle='--', alpha=0.5, label=f'Threshold ({alert_threshold}%)')
+            ax_bench.legend()
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            st.pyplot(fig_bench)
+
 # --- Agent Leaderboard ---
 if not user_agent_id:
     # Admin view - show all agents
@@ -4078,9 +4623,35 @@ if not user_agent_id:
 
     # Calculate pass rate
     agent_performance["Pass_Rate"] = (agent_performance["Total_Pass"] / (agent_performance["Total_Pass"] + agent_performance["Total_Fail"]) * 100).fillna(0)
-    agent_performance = agent_performance.sort_values("Avg_QA_Score", ascending=False)
-
-    st.dataframe(agent_performance.round(1))
+    
+    # Add percentile rankings
+    percentile_rankings = calculate_percentile_rankings(filtered_df, "QA Score")
+    if not percentile_rankings.empty:
+        agent_performance = agent_performance.merge(percentile_rankings[['Agent', 'percentile']], on='Agent', how='left')
+        agent_performance['percentile'] = agent_performance['percentile'].fillna(0)
+        
+        # Add percentile badges
+        def get_percentile_badge(pct):
+            if pct >= 90:
+                return "🏆 Top 10%"
+            elif pct >= 75:
+                return "🥇 Top 25%"
+            elif pct >= 50:
+                return "🥈 Top 50%"
+            elif pct >= 25:
+                return "🥉 Bottom 50%"
+            else:
+                return "📉 Bottom 25%"
+        
+        agent_performance['Percentile_Rank'] = agent_performance['percentile'].apply(get_percentile_badge)
+        agent_performance = agent_performance.sort_values("Avg_QA_Score", ascending=False)
+        
+        # Display with percentile column
+        display_cols = ['Agent', 'Total_Calls', 'Avg_QA_Score', 'Pass_Rate', 'Percentile_Rank', 'Avg_Call_Duration']
+        st.dataframe(agent_performance[display_cols].round(1), hide_index=True)
+    else:
+        agent_performance = agent_performance.sort_values("Avg_QA_Score", ascending=False)
+        st.dataframe(agent_performance.round(1), hide_index=True)
 else:
     # Agent view - show only their performance summary
     st.subheader("📊 My Performance Summary")
@@ -4125,6 +4696,50 @@ if len(alerts_df) > 0:
     st.dataframe(alert_summary)
 else:
     st.success(f"✅ All calls meet the threshold ({alert_threshold}%)")
+
+# --- At-Risk Agent Detection (Predictive Analytics) ---
+if not user_agent_id:  # Admin view only
+    with st.expander("🔮 At-Risk Agent Detection", expanded=False):
+        st.markdown("### Early Warning System for Agents at Risk")
+        st.caption("Identifies agents who may drop below threshold based on recent trends, volatility, and proximity to threshold")
+        
+        at_risk_agents = identify_at_risk_agents(filtered_df, threshold=alert_threshold)
+        
+        if at_risk_agents:
+            st.warning(f"⚠️ Found {len(at_risk_agents)} agent(s) at risk")
+            
+            risk_data = []
+            for agent_info in at_risk_agents:
+                risk_data.append({
+                    'Agent': agent_info['agent'],
+                    'Risk Score': f"{agent_info['risk_score']:.0f}/100",
+                    'Recent Avg Score': f"{agent_info['recent_avg']:.1f}%",
+                    'Trend': "📉 Declining" if agent_info['trend_slope'] < 0 else "📈 Improving",
+                    'Volatility': f"{agent_info['volatility']:.1f}",
+                    'Distance to Threshold': f"{agent_info['proximity_to_threshold']:.1f}%",
+                    'Recent Calls': agent_info['recent_calls']
+                })
+            
+            risk_df = pd.DataFrame(risk_data)
+            st.dataframe(risk_df, hide_index=True)
+            
+            # Show risk factors for top at-risk agent
+            if at_risk_agents:
+                top_risk = at_risk_agents[0]
+                st.markdown(f"**Why is {top_risk['agent']} at risk?**")
+                risk_factors = []
+                if top_risk['trend_slope'] < -0.5:
+                    risk_factors.append(f"📉 Declining trend (slope: {top_risk['trend_slope']:.2f})")
+                if top_risk['volatility'] > 10:
+                    risk_factors.append(f"📊 High volatility ({top_risk['volatility']:.1f})")
+                if top_risk['proximity_to_threshold'] <= 10:
+                    risk_factors.append(f"⚠️ Close to threshold ({top_risk['proximity_to_threshold']:.1f}% away)")
+                
+                if risk_factors:
+                    for factor in risk_factors:
+                        st.write(f"- {factor}")
+        else:
+            st.success("✅ No agents currently identified as at risk")
 
 # --- QA Score Trends Over Time ---
 st.subheader("📈 QA Score Trends Over Time")
@@ -4172,6 +4787,64 @@ with col_trend2:
         plt.xticks(rotation=45)
         plt.tight_layout()
         st.pyplot(fig_pf)
+
+# --- Trend Forecasting (Predictive Analytics) ---
+with st.expander("🔮 Trend Forecasting", expanded=False):
+    st.markdown("### Predict Future QA Scores")
+    st.caption("Forecasts future QA scores based on historical trends using time series analysis")
+    
+    forecast_days = st.selectbox("Forecast Period", [7, 14, 30], index=0, help="Number of days to forecast ahead")
+    
+    if len(filtered_df) > 0 and "QA Score" in filtered_df.columns and "Call Date" in filtered_df.columns:
+        with st.spinner("Calculating forecast..."):
+            forecast_result = predict_future_scores(filtered_df, days_ahead=forecast_days)
+        
+        if forecast_result:
+            # Display forecast
+            forecast_df = pd.DataFrame({
+                'Date': forecast_result['dates'],
+                'Forecast': forecast_result['forecast'],
+                'Lower Bound': forecast_result['lower_bound'],
+                'Upper Bound': forecast_result['upper_bound']
+            })
+            
+            # Create forecast chart
+            fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
+            
+            # Plot historical data
+            daily_scores = filtered_df.groupby(filtered_df["Call Date"].dt.date)["QA Score"].mean().reset_index()
+            daily_scores.columns = ["Date", "Avg QA Score"]
+            ax_forecast.plot(daily_scores["Date"], daily_scores["Avg QA Score"], 
+                           marker="o", linewidth=2, color="steelblue", label="Historical")
+            
+            # Plot forecast
+            forecast_dates = pd.to_datetime(forecast_df['Date'])
+            ax_forecast.plot(forecast_dates, forecast_df['Forecast'], 
+                           marker="s", linewidth=2, color="orange", label="Forecast")
+            ax_forecast.fill_between(forecast_dates, forecast_df['Lower Bound'], forecast_df['Upper Bound'],
+                                   alpha=0.3, color="orange", label="95% Confidence Interval")
+            
+            ax_forecast.axhline(y=alert_threshold, color='r', linestyle='--', alpha=0.5, 
+                              label=f'Threshold ({alert_threshold}%)')
+            ax_forecast.set_xlabel("Date")
+            ax_forecast.set_ylabel("Average QA Score (%)")
+            ax_forecast.set_title(f"QA Score Forecast ({forecast_days} days ahead) - {forecast_result['method'].title()} Method")
+            ax_forecast.grid(True, alpha=0.3)
+            ax_forecast.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st.pyplot(fig_forecast)
+            
+            # Show forecast summary
+            avg_forecast = forecast_df['Forecast'].mean()
+            st.metric("Average Forecasted Score", f"{avg_forecast:.1f}%", 
+                     delta=f"{avg_forecast - daily_scores['Avg QA Score'].iloc[-1]:+.1f}%",
+                     delta_color="normal" if avg_forecast >= daily_scores['Avg QA Score'].iloc[-1] else "inverse",
+                     help="Average of forecasted scores vs most recent historical score")
+        else:
+            st.warning("⚠️ Insufficient data for forecasting (need at least 7 days of historical data)")
+    else:
+        st.info("ℹ️ No data available for forecasting")
 
 # --- Rubric Code Analysis ---
 st.subheader("🔍 Rubric Code Analysis")
@@ -4255,11 +4928,49 @@ if "Rubric Details" in filtered_df.columns:
 if user_agent_id:
     # Agent view - show their trend with team comparison
     st.subheader("📈 My Performance Trend vs Team Average")
+    
+    # Add trajectory analysis
+    agent_data = filtered_df[filtered_df["Agent"] == user_agent_id]
+    if len(agent_data) > 0:
+        trajectory = classify_trajectory(filtered_df, agent=user_agent_id)
+        
+        traj_col1, traj_col2, traj_col3, traj_col4 = st.columns(4)
+        with traj_col1:
+            traj_icon = {
+                'improving': '📈',
+                'declining': '📉',
+                'stable': '➡️',
+                'volatile': '📊',
+                'insufficient_data': '❓'
+            }.get(trajectory['trajectory'], '❓')
+            traj_label = {
+                'improving': 'Improving',
+                'declining': 'Declining',
+                'stable': 'Stable',
+                'volatile': 'Volatile',
+                'insufficient_data': 'Insufficient Data'
+            }.get(trajectory['trajectory'], 'Unknown')
+            st.metric("Trajectory", f"{traj_icon} {traj_label}")
+        
+        with traj_col2:
+            st.metric("Current Score", f"{trajectory.get('current_score', 0):.1f}%")
+        
+        with traj_col3:
+            projected = trajectory.get('projected_score', 0)
+            delta = projected - trajectory.get('current_score', 0) if projected else 0
+            st.metric("Projected (7 days)", f"{projected:.1f}%", 
+                     delta=f"{delta:+.1f}%",
+                     delta_color="normal" if delta >= 0 else "inverse",
+                     help="Projected score if current trend continues")
+        
+        with traj_col4:
+            st.metric("Volatility", f"{trajectory.get('volatility', 0):.1f}",
+                     help="Standard deviation of scores (lower is more consistent)")
+    
     agent_trends_col1, agent_trends_col2 = st.columns(2)
     
     with agent_trends_col1:
         st.write("**My QA Score Trend**")
-        agent_data = filtered_df[filtered_df["Agent"] == user_agent_id]
         if len(agent_data) > 0:
             agent_daily = agent_data.groupby(agent_data["Call Date"].dt.date).agg(
                 Avg_QA_Score=("QA Score", "mean")
