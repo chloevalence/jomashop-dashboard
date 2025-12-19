@@ -970,11 +970,11 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     for attempt in range(max_retries):
         try:
             # Use file locking to prevent concurrent reads during writes
-            # CRITICAL FIX: Remove timeout - wait indefinitely for lock
-            # In single-process Streamlit app, locks are released when operations complete
-            # No risk of permanent deadlock, so we can wait as long as needed
+            # BUG FIX: Use timeout for read locks to prevent deadlock with concurrent threads
+            # ThreadPoolExecutor uses 10 workers, and if a writer crashes/hangs, readers should timeout and retry
+            # rather than wait forever. Use 5-second timeout (same order of magnitude as write timeout of 10 seconds)
             try:
-                with cache_file_lock(CACHE_FILE, timeout=None):
+                with cache_file_lock(CACHE_FILE, timeout=5):
                     logger.debug(f"📂 Checking persistent cache file: {CACHE_FILE}")
                     with open(CACHE_FILE, 'r', encoding='utf-8') as f:
                         cached_data = json.load(f)
@@ -1320,14 +1320,39 @@ def load_all_calls_cached(cache_version=0):
             logger.info("⚠️ Refresh in progress but no S3 cache found - continuing with normal load")
     
     # Check if there's merged cache data from refresh operation
+    # BUG FIX: Only use _merged_cache_data if S3 cache is not newer
+    # If S3 cache is newer, clear stale _merged_cache_data and reload from S3
     if '_merged_cache_data' in st.session_state:
-        merged_data = st.session_state['_merged_cache_data']
-        merged_errors = st.session_state.get('_merged_cache_errors', [])
-        logger.info(f"✅ Using merged cache data from refresh: {len(merged_data)} calls")
-        # Store S3 timestamp if available
-        if s3_cache_timestamp:
-            st.session_state['_s3_cache_timestamp'] = s3_cache_timestamp
-        return merged_data, merged_errors
+        # Check if S3 cache is newer than when _merged_cache_data was set
+        if s3_cache_timestamp and '_merged_cache_data_timestamp' in st.session_state:
+            merged_data_timestamp = st.session_state['_merged_cache_data_timestamp']
+            if s3_cache_timestamp > merged_data_timestamp:
+                # S3 cache is newer - clear stale merged data and reload from S3
+                logger.info(f"🔄 S3 cache is newer ({s3_cache_timestamp} > {merged_data_timestamp}) - clearing stale _merged_cache_data")
+                del st.session_state['_merged_cache_data']
+                if '_merged_cache_errors' in st.session_state:
+                    del st.session_state['_merged_cache_errors']
+                if '_merged_cache_data_timestamp' in st.session_state:
+                    del st.session_state['_merged_cache_data_timestamp']
+                # Fall through to use S3 cache below
+            else:
+                # Use merged cache data (it's still current)
+                merged_data = st.session_state['_merged_cache_data']
+                merged_errors = st.session_state.get('_merged_cache_errors', [])
+                logger.info(f"✅ Using merged cache data from refresh: {len(merged_data)} calls")
+                # Store S3 timestamp if available
+                if s3_cache_timestamp:
+                    st.session_state['_s3_cache_timestamp'] = s3_cache_timestamp
+                return merged_data, merged_errors
+        else:
+            # No S3 timestamp to compare - use merged cache data
+            merged_data = st.session_state['_merged_cache_data']
+            merged_errors = st.session_state.get('_merged_cache_errors', [])
+            logger.info(f"✅ Using merged cache data from refresh: {len(merged_data)} calls")
+            # Store S3 timestamp if available
+            if s3_cache_timestamp:
+                st.session_state['_s3_cache_timestamp'] = s3_cache_timestamp
+            return merged_data, merged_errors
     
     # CRITICAL: Use S3 cache if available (source of truth)
     if s3_cache_result and s3_cache_result[0]:
@@ -3193,6 +3218,8 @@ if is_super_admin():
                             st.session_state['_merged_cache_data'] = all_calls_merged
                             verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
                             st.session_state['_merged_cache_errors'] = new_errors if new_errors else verify_errors
+                            # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                            st.session_state['_merged_cache_data_timestamp'] = datetime.now().isoformat()
                         else:
                             # Caches are different - merge to preserve all data
                             # Calculate difference for logging
@@ -3231,6 +3258,8 @@ if is_super_admin():
                                 st.session_state['_merged_cache_data'] = merged_data
                                 verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
                                 st.session_state['_merged_cache_errors'] = previous_streamlit_errors if previous_streamlit_errors else verify_errors
+                                # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                                st.session_state['_merged_cache_data_timestamp'] = datetime.now().isoformat()
                             else:
                                 # Fallback: use disk cache without merge (save failed, merged_data not on disk)
                                 # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
@@ -3239,15 +3268,21 @@ if is_super_admin():
                                     st.session_state['_merged_cache_data'] = disk_result_verify[0]
                                     verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
                                     st.session_state['_merged_cache_errors'] = verify_errors
+                                    # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                                    st.session_state['_merged_cache_data_timestamp'] = datetime.now().isoformat()
                                 else:
                                     logger.error(f"❌ CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback")
                                     st.session_state['_merged_cache_data'] = all_calls_merged
                                     st.session_state['_merged_cache_errors'] = new_errors if new_errors else []
+                                    # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                                    st.session_state['_merged_cache_data_timestamp'] = datetime.now().isoformat()
                     else:
                         # disk_result_verify[0] is None - use previous_streamlit_cache only
                         logger.warning(f"⚠️ disk_result_verify[0] is None - using previous_streamlit_cache only")
                         st.session_state['_merged_cache_data'] = previous_streamlit_cache
                         st.session_state['_merged_cache_errors'] = previous_streamlit_errors if previous_streamlit_errors else []
+                        # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                        st.session_state['_merged_cache_data_timestamp'] = datetime.now().isoformat()
                 else:
                     # No previous Streamlit cache - just use disk cache
                     logger.info(f"ℹ️ No previous Streamlit cache to merge - using disk cache ({disk_cache_count} calls)")
@@ -3258,10 +3293,14 @@ if is_super_admin():
                         # CRITICAL FIX: Check if disk_result_verify is None before calling len()
                         verify_errors = disk_result_verify[1] if (disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1] is not None) else []
                         st.session_state['_merged_cache_errors'] = verify_errors
+                        # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                        st.session_state['_merged_cache_data_timestamp'] = datetime.now().isoformat()
                     else:
                         logger.error(f"❌ CRITICAL: disk_result_verify is invalid (None or failed verification) - using all_calls_merged as fallback")
                         st.session_state['_merged_cache_data'] = all_calls_merged
                         st.session_state['_merged_cache_errors'] = new_errors if new_errors else []
+                        # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                        st.session_state['_merged_cache_data_timestamp'] = datetime.now().isoformat()
                 
                 # CRITICAL FIX: Don't clear Streamlit cache - let it update naturally
                 # The merged data is stored in session state (_merged_cache_data)
