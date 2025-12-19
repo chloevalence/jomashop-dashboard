@@ -73,6 +73,9 @@ logger.debug(f"Logging initialized. Log file: {log_file}")
 # Suppress noisy matplotlib categorical-unit warnings about string data that look like numbers/dates
 warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib.category')
 
+# Suppress matplotlib.category INFO level logging messages (categorical units warnings)
+logging.getLogger('matplotlib.category').setLevel(logging.WARNING)
+
 # --- File Locking (must be defined before load_metrics/save_metrics) ---
 class LockTimeoutError(Exception):
     """Raised when file lock acquisition times out."""
