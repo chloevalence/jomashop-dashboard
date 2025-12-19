@@ -1,0 +1,54 @@
+# Copy this section and paste it into your .streamlit/secrets.toml file
+# Replace the placeholder agent IDs with actual agent IDs from your PDF data
+# To find agent IDs: Run the dashboard as admin and check the "Agent" column, or check PDF filenames in S3
+
+[user_mapping]
+
+# Admins (no agent_id = can see all data)
+[user_mapping.alexa]
+# Admin - no agent_id needed
+
+[user_mapping.jordi]
+# Team Lead - no agent_id needed (or set if you want to restrict)
+
+[user_mapping.maria]
+# QA - no agent_id needed (or set if you want to restrict)
+
+[user_mapping.rafael]
+# QA - no agent_id needed (or set if you want to restrict)
+
+# Agents (set agent_id to match the Agent field in your PDF data)
+[user_mapping.jesus]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 01 - Jesus (e.g., bpagent030844482)
+
+[user_mapping.gerardo]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 02 - Gerardo Fernandez
+
+[user_mapping.edgar]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 03 - Edgar Cardoza
+
+[user_mapping.osiris]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 04 - Osiris García
+
+[user_mapping.daniela]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 06 - Daniela Maruri
+
+[user_mapping.yasmin]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 07 - Yasmin Contreras
+
+[user_mapping.moises]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 08 - Moises Ramirez
+
+[user_mapping.marcos]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 09 - Marcos Hernandez
+
+[user_mapping.angel]
+agent_id = "REPLACE_WITH_ACTUAL_AGENT_ID"  # BPO Agent 10 - Angel Tellez
+
+# Valence admins (no agent_id = can see all data)
+[user_mapping.chloe]
+# Admin - no agent_id needed
+
+[user_mapping.shannon]
+# Admin - no agent_id needed
+
