@@ -84,7 +84,7 @@ def cache_file_lock(filepath, timeout=30):
     
     Args:
         filepath: Path to the file to lock
-        timeout: Maximum time to wait for lock (seconds)
+        timeout: Maximum time to wait for lock (seconds). None = wait indefinitely (with max iteration limit).
     
     Yields:
         Locked file handle (or None if locking unavailable)
@@ -106,8 +106,20 @@ def cache_file_lock(filepath, timeout=30):
         lock_file = open(lock_path, 'w')
         start_time = time.time()
         
+        # BUG FIX: Handle timeout=None with maximum iteration limit to prevent infinite hang
+        # Maximum iterations = 5 minutes worth of retries (3000 iterations at 0.1s each)
+        MAX_ITERATIONS = 3000 if timeout is None else None
+        
         # Try to acquire lock
-        while time.time() - start_time < timeout:
+        iteration_count = 0
+        while timeout is None or (time.time() - start_time < timeout):
+            # BUG FIX: Add iteration limit for timeout=None to prevent infinite hang
+            if timeout is None and MAX_ITERATIONS is not None:
+                iteration_count += 1
+                if iteration_count >= MAX_ITERATIONS:
+                    # Reached maximum iterations - break to raise timeout error
+                    break
+            
             try:
                 if sys.platform == 'win32':
                     # Windows file locking
@@ -128,7 +140,10 @@ def cache_file_lock(filepath, timeout=30):
             except Exception:
                 pass
             lock_file = None
-            raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
+            if timeout is None:
+                raise LockTimeoutError(f"Could not acquire lock for {filepath} after {MAX_ITERATIONS * 0.1:.0f}s (max wait time). Another process may be holding the lock indefinitely.")
+            else:
+                raise LockTimeoutError(f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file.")
         
         yield lock_file
         
