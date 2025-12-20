@@ -1483,23 +1483,23 @@ def load_all_calls_cached(cache_version=0):
                             logger.info(f"🔍 Checking for new files in background...{f' (cache age: {cache_age_minutes:.1f} min)' if cache_age_minutes else ''}")
                             try:
                                 new_count, check_error = check_for_new_pdfs_lightweight()
-                            if check_error:
-                                logger.warning(f"⚠️ Background check error: {check_error}")
-                            elif new_count > 0:
-                                logger.info(f"🆕 Found {new_count} new PDF(s) - will load in background")
-                                # Set flag to trigger background load
-                                st.session_state.auto_refresh_pending = new_count
-                                st.session_state.new_pdfs_notification_count = new_count
-                            else:
-                                logger.info("✅ No new files found - cache is up to date")
-                                # Clear notification count since there are no new files
-                                st.session_state.new_pdfs_notification_count = 0
-                        except Exception as e:
-                            # CRITICAL FIX: Log full exception details to help diagnose crashes
-                            logger.warning(f"⚠️ Failed to check for new files: {e}")
-                            import traceback
-                            logger.debug(f"⚠️ Background check traceback: {traceback.format_exc()}")
-                            # Don't crash the app - just mark as checked so we don't retry immediately
+                                if check_error:
+                                    logger.warning(f"⚠️ Background check error: {check_error}")
+                                elif new_count > 0:
+                                    logger.info(f"🆕 Found {new_count} new PDF(s) - will load in background")
+                                    # Set flag to trigger background load
+                                    st.session_state.auto_refresh_pending = new_count
+                                    st.session_state.new_pdfs_notification_count = new_count
+                                else:
+                                    logger.info("✅ No new files found - cache is up to date")
+                                    # Clear notification count since there are no new files
+                                    st.session_state.new_pdfs_notification_count = 0
+                            except Exception as e:
+                                # CRITICAL FIX: Log full exception details to help diagnose crashes
+                                logger.warning(f"⚠️ Failed to check for new files: {e}")
+                                import traceback
+                                logger.debug(f"⚠️ Background check traceback: {traceback.format_exc()}")
+                                # Don't crash the app - just mark as checked so we don't retry immediately
                         
                         st.session_state.auto_refresh_checked = True
                     
