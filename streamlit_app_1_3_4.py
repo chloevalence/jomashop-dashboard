@@ -4944,10 +4944,16 @@ if "Agent" in meta_df.columns:
     meta_df["Agent"] = meta_df["Agent"].apply(normalize_agent_id)
 
     # Check if any agent IDs were actually changed
-    if not original_agents.equals(meta_df["Agent"]):
+    # Count how many actually changed (not just NaN differences)
+    changed_mask = (original_agents != meta_df["Agent"]) & (
+        original_agents.notna() | meta_df["Agent"].notna()
+    )
+    changed_count = changed_mask.sum()
+
+    if changed_count > 0:
         agent_ids_updated = True
         logger.info(
-            "🔄 Agent IDs normalized - updating cache with corrected agent assignments"
+            f"🔄 Agent IDs normalized - updating cache with corrected agent assignments ({changed_count} calls updated)"
         )
 
         # Update call_data with normalized agent IDs
@@ -6308,7 +6314,8 @@ if (
                             filtered_df["Rubric Fail Count"],
                             bins=[0, 1, 3, 5, 10, 100],
                             labels=["0", "1-2", "3-4", "5-9", "10+"],
-                        )
+                        ),
+                        observed=True,
                     )
                     .agg(
                         Avg_AHT=("Call Duration (min)", "mean"),
@@ -6381,7 +6388,9 @@ if (
                     "Avg Fail Count (All Calls)",
                 ],
                 "Value": [
-                    len(long_aht_calls),
+                    str(
+                        len(long_aht_calls)
+                    ),  # Convert to string to avoid Arrow serialization error
                     f"{long_aht_calls['Call Duration (min)'].mean():.1f} min",
                     f"{filtered_df['Call Duration (min)'].mean():.1f} min",
                     f"{long_aht_calls['QA Score'].mean():.1f}%"
