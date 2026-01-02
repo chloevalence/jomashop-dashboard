@@ -6404,6 +6404,491 @@ if (
             }
             st.dataframe(pd.DataFrame(summary_stats), hide_index=True)
 
+            # --- Root Cause Analysis: Coaching Suggestions & Challenges ---
+            st.markdown("---")
+            st.markdown("### 🔍 Root Cause Analysis: Text-Based Factors")
+
+            # Initialize variables for insights section
+            high_aht_coaching_categories = []
+            rubric_code_aht_analysis = {}
+
+            # Function to categorize coaching suggestions and challenges
+            def categorize_text(text, text_type="coaching"):
+                """Categorize coaching suggestions or challenges into themes"""
+                if not text or pd.isna(text):
+                    return "Other"
+
+                text_lower = str(text).lower()
+
+                # Product knowledge keywords
+                product_keywords = [
+                    "product",
+                    "item",
+                    "inventory",
+                    "stock",
+                    "availability",
+                    "specification",
+                    "feature",
+                    "model",
+                    "brand",
+                    "catalog",
+                    "knowledge",
+                    "unfamiliar",
+                    "unaware",
+                    "doesn't know",
+                ]
+
+                # Communication keywords
+                communication_keywords = [
+                    "communication",
+                    "clarity",
+                    "explain",
+                    "understand",
+                    "confusing",
+                    "unclear",
+                    "misunderstand",
+                    "listening",
+                    "tone",
+                    "empathy",
+                    "rapport",
+                    "connection",
+                    "interrupt",
+                ]
+
+                # Hold time keywords
+                hold_keywords = [
+                    "hold",
+                    "wait",
+                    "transfer",
+                    "escalate",
+                    "supervisor",
+                    "on hold",
+                    "put on hold",
+                    "long hold",
+                    "excessive hold",
+                ]
+
+                # System/Technical keywords
+                system_keywords = [
+                    "system",
+                    "technical",
+                    "error",
+                    "bug",
+                    "glitch",
+                    "software",
+                    "platform",
+                    "tool",
+                    "database",
+                    "slow",
+                    "loading",
+                    "crash",
+                    "down",
+                    "issue",
+                    "problem",
+                ]
+
+                # Process/Procedure keywords
+                process_keywords = [
+                    "process",
+                    "procedure",
+                    "policy",
+                    "protocol",
+                    "workflow",
+                    "step",
+                    "order",
+                    "sequence",
+                    "method",
+                    "approach",
+                    "guideline",
+                    "standard",
+                    "compliance",
+                ]
+
+                # Efficiency keywords
+                efficiency_keywords = [
+                    "efficient",
+                    "quick",
+                    "fast",
+                    "speed",
+                    "time",
+                    "streamline",
+                    "optimize",
+                    "reduce time",
+                    "faster",
+                ]
+
+                # Count matches for each category
+                product_score = sum(1 for kw in product_keywords if kw in text_lower)
+                comm_score = sum(1 for kw in communication_keywords if kw in text_lower)
+                hold_score = sum(1 for kw in hold_keywords if kw in text_lower)
+                system_score = sum(1 for kw in system_keywords if kw in text_lower)
+                process_score = sum(1 for kw in process_keywords if kw in text_lower)
+                efficiency_score = sum(
+                    1 for kw in efficiency_keywords if kw in text_lower
+                )
+
+                # Return category with highest score
+                scores = {
+                    "Product Knowledge": product_score,
+                    "Communication": comm_score,
+                    "Hold Time": hold_score,
+                    "System/Technical": system_score,
+                    "Process/Procedure": process_score,
+                    "Efficiency": efficiency_score,
+                }
+
+                max_score = max(scores.values())
+                if max_score > 0:
+                    return max(scores, key=scores.get)
+                return "Other"
+
+            # Analyze coaching suggestions in high-AHT calls
+            if "Coaching Suggestions" in filtered_df.columns:
+                st.write("**Coaching Suggestions Analysis: High AHT vs All Calls**")
+
+                # Categorize coaching suggestions for all calls
+                all_coaching_categories = []
+                high_aht_coaching_categories = []  # Reset for this analysis
+                for idx, row in filtered_df.iterrows():
+                    coaching = row.get("Coaching Suggestions", [])
+                    if isinstance(coaching, list):
+                        for item in coaching:
+                            if item:
+                                all_coaching_categories.append(
+                                    categorize_text(item, "coaching")
+                                )
+                    elif coaching:
+                        all_coaching_categories.append(
+                            categorize_text(coaching, "coaching")
+                        )
+
+                # Categorize coaching suggestions for high-AHT calls
+                high_aht_coaching_categories = []
+                for idx, row in long_aht_calls.iterrows():
+                    coaching = row.get("Coaching Suggestions", [])
+                    if isinstance(coaching, list):
+                        for item in coaching:
+                            if item:
+                                high_aht_coaching_categories.append(
+                                    categorize_text(item, "coaching")
+                                )
+                    elif coaching:
+                        high_aht_coaching_categories.append(
+                            categorize_text(coaching, "coaching")
+                        )
+
+                if high_aht_coaching_categories:
+                    # Calculate frequencies
+                    from collections import Counter
+
+                    all_coaching_counts = Counter(all_coaching_categories)
+                    high_aht_coaching_counts = Counter(high_aht_coaching_categories)
+
+                    # Create comparison DataFrame
+                    coaching_comparison = []
+                    all_categories = set(
+                        list(all_coaching_counts.keys())
+                        + list(high_aht_coaching_counts.keys())
+                    )
+
+                    for category in sorted(all_categories):
+                        all_count = all_coaching_counts.get(category, 0)
+                        high_aht_count = high_aht_coaching_counts.get(category, 0)
+                        all_pct = (
+                            (all_count / len(all_coaching_categories) * 100)
+                            if all_coaching_categories
+                            else 0
+                        )
+                        high_aht_pct = (
+                            (high_aht_count / len(high_aht_coaching_categories) * 100)
+                            if high_aht_coaching_categories
+                            else 0
+                        )
+
+                        coaching_comparison.append(
+                            {
+                                "Category": category,
+                                "All Calls": f"{all_count} ({all_pct:.1f}%)",
+                                "High AHT Calls": f"{high_aht_count} ({high_aht_pct:.1f}%)",
+                                "Difference": f"{high_aht_pct - all_pct:+.1f}%",
+                            }
+                        )
+
+                    coaching_df = pd.DataFrame(coaching_comparison)
+                    st.dataframe(coaching_df, hide_index=True)
+
+                    # Visualization
+                    col_coach1, col_coach2 = st.columns(2)
+                    with col_coach1:
+                        st.write("**Top Categories in High AHT Calls**")
+                        top_categories = high_aht_coaching_counts.most_common(8)
+                        if top_categories:
+                            fig_coach, ax_coach = plt.subplots(figsize=(10, 6))
+                            categories, counts = zip(*top_categories)
+                            ax_coach.barh(categories, counts, color="coral")
+                            ax_coach.set_xlabel("Frequency")
+                            ax_coach.set_title(
+                                "Top Coaching Categories in High AHT Calls"
+                            )
+                            plt.tight_layout()
+                            st_pyplot_safe(fig_coach)
+
+                    with col_coach2:
+                        st.write("**Category Comparison**")
+                        comparison_categories = [cat for cat, _ in top_categories[:6]]
+                        all_values = [
+                            all_coaching_counts.get(cat, 0)
+                            for cat in comparison_categories
+                        ]
+                        high_aht_values = [
+                            high_aht_coaching_counts.get(cat, 0)
+                            for cat in comparison_categories
+                        ]
+
+                        x = range(len(comparison_categories))
+                        width = 0.35
+                        fig_comp, ax_comp = plt.subplots(figsize=(10, 6))
+                        ax_comp.barh(
+                            [i - width / 2 for i in x],
+                            all_values,
+                            width,
+                            label="All Calls",
+                            color="steelblue",
+                            alpha=0.7,
+                        )
+                        ax_comp.barh(
+                            [i + width / 2 for i in x],
+                            high_aht_values,
+                            width,
+                            label="High AHT Calls",
+                            color="coral",
+                            alpha=0.7,
+                        )
+                        ax_comp.set_yticks(x)
+                        ax_comp.set_yticklabels(comparison_categories)
+                        ax_comp.set_xlabel("Frequency")
+                        ax_comp.set_title("Coaching Categories: All vs High AHT")
+                        ax_comp.legend()
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_comp)
+
+            # Analyze Challenges in high-AHT calls
+            if "Challenges" in filtered_df.columns:
+                st.write("**Challenges Analysis: High AHT vs All Calls**")
+
+                # Categorize challenges
+                all_challenge_categories = []
+                for idx, row in filtered_df.iterrows():
+                    challenge = row.get("Challenges", "")
+                    if challenge and pd.notna(challenge):
+                        all_challenge_categories.append(
+                            categorize_text(challenge, "challenge")
+                        )
+
+                high_aht_challenge_categories = []
+                for idx, row in long_aht_calls.iterrows():
+                    challenge = row.get("Challenges", "")
+                    if challenge and pd.notna(challenge):
+                        high_aht_challenge_categories.append(
+                            categorize_text(challenge, "challenge")
+                        )
+
+                if high_aht_challenge_categories:
+                    from collections import Counter
+
+                    all_challenge_counts = Counter(all_challenge_categories)
+                    high_aht_challenge_counts = Counter(high_aht_challenge_categories)
+
+                    challenge_comparison = []
+                    all_challenge_cats = set(
+                        list(all_challenge_counts.keys())
+                        + list(high_aht_challenge_counts.keys())
+                    )
+
+                    for category in sorted(all_challenge_cats):
+                        all_count = all_challenge_counts.get(category, 0)
+                        high_aht_count = high_aht_challenge_counts.get(category, 0)
+                        all_pct = (
+                            (all_count / len(all_challenge_categories) * 100)
+                            if all_challenge_categories
+                            else 0
+                        )
+                        high_aht_pct = (
+                            (high_aht_count / len(high_aht_challenge_categories) * 100)
+                            if high_aht_challenge_categories
+                            else 0
+                        )
+
+                        challenge_comparison.append(
+                            {
+                                "Category": category,
+                                "All Calls": f"{all_count} ({all_pct:.1f}%)",
+                                "High AHT Calls": f"{high_aht_count} ({high_aht_pct:.1f}%)",
+                                "Difference": f"{high_aht_pct - all_pct:+.1f}%",
+                            }
+                        )
+
+                    challenge_df = pd.DataFrame(challenge_comparison)
+                    st.dataframe(challenge_df, hide_index=True)
+
+            # --- Rubric Code Correlation with AHT ---
+            st.markdown("---")
+            st.markdown("### 📋 Rubric Code Correlation with High AHT")
+
+            if "Rubric Details" in filtered_df.columns:
+                # Analyze which rubric codes appear most in high-AHT calls
+                rubric_code_aht_analysis = {}  # Reset for this analysis
+
+                for idx, row in filtered_df.iterrows():
+                    aht = row.get("Call Duration (min)", None)
+                    if pd.isna(aht):
+                        continue
+
+                    rubric_details = row.get("Rubric Details", {})
+                    if isinstance(rubric_details, dict):
+                        for code, details in rubric_details.items():
+                            if (
+                                isinstance(details, dict)
+                                and details.get("status") == "Fail"
+                            ):
+                                if code not in rubric_code_aht_analysis:
+                                    rubric_code_aht_analysis[code] = {
+                                        "total_fails": 0,
+                                        "high_aht_fails": 0,
+                                        "aht_sum": 0,
+                                        "aht_count": 0,
+                                    }
+
+                                rubric_code_aht_analysis[code]["total_fails"] += 1
+                                rubric_code_aht_analysis[code]["aht_sum"] += aht
+                                rubric_code_aht_analysis[code]["aht_count"] += 1
+
+                                if aht >= aht_threshold:
+                                    rubric_code_aht_analysis[code][
+                                        "high_aht_fails"
+                                    ] += 1
+
+                if rubric_code_aht_analysis:
+                    # Create analysis DataFrame
+                    rubric_aht_list = []
+                    for code, stats in rubric_code_aht_analysis.items():
+                        avg_aht = (
+                            stats["aht_sum"] / stats["aht_count"]
+                            if stats["aht_count"] > 0
+                            else 0
+                        )
+                        high_aht_pct = (
+                            (stats["high_aht_fails"] / stats["total_fails"] * 100)
+                            if stats["total_fails"] > 0
+                            else 0
+                        )
+
+                        rubric_aht_list.append(
+                            {
+                                "Rubric Code": code,
+                                "Total Fails": stats["total_fails"],
+                                "High AHT Fails": stats["high_aht_fails"],
+                                "% High AHT": f"{high_aht_pct:.1f}%",
+                                "Avg AHT (when failed)": f"{avg_aht:.1f} min",
+                            }
+                        )
+
+                    rubric_aht_df = pd.DataFrame(rubric_aht_list)
+                    rubric_aht_df = rubric_aht_df.sort_values(
+                        "High AHT Fails", ascending=False
+                    ).head(15)
+
+                    st.dataframe(rubric_aht_df, hide_index=True)
+
+                    # Visualization
+                    if len(rubric_aht_df) > 0:
+                        fig_rubric_aht, ax_rubric_aht = plt.subplots(figsize=(12, 6))
+                        top_codes = rubric_aht_df.head(10)
+                        ax_rubric_aht.barh(
+                            top_codes["Rubric Code"],
+                            top_codes["High AHT Fails"],
+                            color="crimson",
+                        )
+                        ax_rubric_aht.set_xlabel("Number of High AHT Failures")
+                        ax_rubric_aht.set_title(
+                            "Top Rubric Codes Failing in High AHT Calls"
+                        )
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_rubric_aht)
+
+            # --- Actionable Insights Summary ---
+            st.markdown("---")
+            st.markdown("### 💡 Actionable Insights")
+
+            insights = []
+
+            # Coaching insights
+            if (
+                "Coaching Suggestions" in filtered_df.columns
+                and high_aht_coaching_categories
+                and len(high_aht_coaching_categories) > 0
+            ):
+                from collections import Counter
+
+                high_aht_coaching_counts = Counter(high_aht_coaching_categories)
+                top_coaching = high_aht_coaching_counts.most_common(1)
+                if top_coaching:
+                    category, count = top_coaching[0]
+                    total_high_aht = len(high_aht_coaching_categories)
+                    pct = (count / total_high_aht * 100) if total_high_aht > 0 else 0
+                    insights.append(
+                        f"🎯 **{category}** issues appear in {pct:.1f}% of coaching suggestions for high-AHT calls"
+                    )
+
+            # Rubric insights
+            if rubric_code_aht_analysis:
+                # Find rubric code with highest percentage of high-AHT failures
+                max_high_aht_pct = 0
+                top_rubric_code = None
+                for code, stats in rubric_code_aht_analysis.items():
+                    if (
+                        stats["total_fails"] >= 5
+                    ):  # Only consider codes with at least 5 failures
+                        high_aht_pct = (
+                            (stats["high_aht_fails"] / stats["total_fails"] * 100)
+                            if stats["total_fails"] > 0
+                            else 0
+                        )
+                        if high_aht_pct > max_high_aht_pct:
+                            max_high_aht_pct = high_aht_pct
+                            top_rubric_code = code
+
+                if top_rubric_code:
+                    stats = rubric_code_aht_analysis[top_rubric_code]
+                    insights.append(
+                        f"📋 **Rubric Code {top_rubric_code}** fails in {max_high_aht_pct:.1f}% of high-AHT calls ({stats['high_aht_fails']} out of {stats['total_fails']} failures)"
+                    )
+
+            # AHT difference insight
+            avg_all_aht = filtered_df["Call Duration (min)"].mean()
+            avg_high_aht = long_aht_calls["Call Duration (min)"].mean()
+            aht_difference = avg_high_aht - avg_all_aht
+            insights.append(
+                f"⏱️ High-AHT calls average **{aht_difference:.1f} min longer** than all calls ({avg_high_aht:.1f} min vs {avg_all_aht:.1f} min)"
+            )
+
+            # Fail count insight
+            if "Rubric Fail Count" in filtered_df.columns:
+                avg_fails_all = filtered_df["Rubric Fail Count"].mean()
+                avg_fails_high = long_aht_calls["Rubric Fail Count"].mean()
+                if not pd.isna(avg_fails_all) and not pd.isna(avg_fails_high):
+                    fail_diff = avg_fails_high - avg_fails_all
+                    insights.append(
+                        f"❌ High-AHT calls have **{fail_diff:.1f} more failed rubric items** on average ({avg_fails_high:.1f} vs {avg_fails_all:.1f})"
+                    )
+
+            # Display insights
+            if insights:
+                for insight in insights:
+                    st.info(insight)
+            else:
+                st.info("Run the analysis above to generate insights")
+
         else:
             st.info("No calls found above the 75th percentile threshold")
 
