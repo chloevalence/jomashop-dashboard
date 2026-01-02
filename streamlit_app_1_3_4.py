@@ -4487,6 +4487,8 @@ try:
             # Use cache_version to force cache refresh when refresh completes
             cache_version = st.session_state.get("_cache_version", 0)
             call_data, errors = load_all_calls_cached(cache_version=cache_version)
+            # Store errors in session state for potential cache updates
+            st.session_state["_last_load_errors"] = errors
             logger.info(f"Data loaded. Got {len(call_data) if call_data else 0} calls")
 
             # Clear loading messages
@@ -4834,6 +4836,18 @@ def normalize_agent_id(agent_str):
 
     agent_str = str(agent_str).lower().strip()
 
+    # Special case: "unknown" -> Agent 01 (Jesus)
+    if agent_str == "unknown":
+        return "bpagent01"
+
+    # Special case: bp016803073 and bp016803074 -> Agent 01 (Jesus)
+    if agent_str in ["bp016803073", "bp016803074"]:
+        return "bpagent01"
+
+    # Special case: Any string starting with "bp01" (first 4 chars) -> Agent 01 (Jesus)
+    if agent_str.startswith("bp01"):
+        return "bpagent01"
+
     # Extract number from bpagent### pattern (could be bpagent01, bpagent030844482, etc.)
     match = re.search(r"bpagent(\d+)", agent_str)
     if match:
@@ -4923,8 +4937,44 @@ meta_df.dropna(subset=["Call Date"], inplace=True)
 
 # Normalize agent IDs AFTER column rename (works for both cached and new data)
 # This ensures normalization works regardless of whether data came from cache or fresh load
+agent_ids_updated = False
 if "Agent" in meta_df.columns:
+    # Store original agent IDs to check if any changed
+    original_agents = meta_df["Agent"].copy()
     meta_df["Agent"] = meta_df["Agent"].apply(normalize_agent_id)
+
+    # Check if any agent IDs were actually changed
+    if not original_agents.equals(meta_df["Agent"]):
+        agent_ids_updated = True
+        logger.info(
+            "🔄 Agent IDs normalized - updating cache with corrected agent assignments"
+        )
+
+        # Update call_data with normalized agent IDs
+        for i, call in enumerate(call_data):
+            if i < len(meta_df):
+                # Update the agent field in the call data
+                if "agent" in call:
+                    call["agent"] = meta_df.iloc[i]["Agent"]
+                elif "Agent" in call:
+                    call["Agent"] = meta_df.iloc[i]["Agent"]
+                else:
+                    # Add agent field if it doesn't exist
+                    call["agent"] = meta_df.iloc[i]["Agent"]
+
+        # Save updated call_data back to cache
+        try:
+            # Get errors list (empty if not available)
+            errors = getattr(st.session_state, "_last_load_errors", [])
+            save_cached_data_to_disk(call_data, errors)
+            logger.info(
+                f"✅ Updated cache with normalized agent IDs ({len(call_data)} calls)"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to update cache with normalized agent IDs: {e}")
+            logger.warning(
+                "⚠️ Normalization will still work, but cache won't be updated until next save"
+            )
 
 # Apply anonymization if user is anonymous
 # Create mappings from full dataset before any filtering
