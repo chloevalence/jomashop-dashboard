@@ -5695,14 +5695,13 @@ if is_super_admin():
 # Summary Metrics
 if show_comparison and user_agent_id:
     # Agent view with comparison
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
         my_calls = len(filtered_df)
         st.metric(
             "My Calls",
             my_calls,
-            delta=f"{my_calls - overall_total_calls}" if overall_total_calls else None,
         )
 
     with col2:
@@ -5742,12 +5741,37 @@ if show_comparison and user_agent_id:
         )
 
     with col4:
+        my_avg_aht = (
+            filtered_df["Call Duration (min)"].mean()
+            if "Call Duration (min)" in filtered_df.columns
+            and filtered_df["Call Duration (min)"].notna().any()
+            else None
+        )
+        overall_avg_aht = (
+            overall_df["Call Duration (min)"].mean()
+            if "Call Duration (min)" in overall_df.columns
+            and overall_df["Call Duration (min)"].notna().any()
+            else None
+        )
+        delta_aht = (
+            my_avg_aht - overall_avg_aht
+            if my_avg_aht is not None and overall_avg_aht is not None
+            else None
+        )
+        st.metric(
+            "My Avg AHT",
+            f"{my_avg_aht:.1f} min" if my_avg_aht is not None else "N/A",
+            delta=f"{delta_aht:+.1f} min" if delta_aht is not None else None,
+            delta_color="inverse" if delta_aht and delta_aht > 0 else "normal",
+        )
+
+    with col5:
         st.metric(
             "Overall Avg Score",
             f"{overall_avg_score:.1f}%" if overall_avg_score else "N/A",
         )
 
-    with col5:
+    with col6:
         st.metric(
             "Overall Pass Rate",
             f"{overall_pass_rate:.1f}%" if overall_pass_rate else "N/A",
@@ -5755,7 +5779,7 @@ if show_comparison and user_agent_id:
 
     # Comparison section
     st.subheader("📊 My Performance vs. Team Average")
-    comp_col1, comp_col2 = st.columns(2)
+    comp_col1, comp_col2, comp_col3 = st.columns(3)
 
     with comp_col1:
         st.write("**QA Score Comparison**")
@@ -5809,9 +5833,34 @@ if show_comparison and user_agent_id:
         plt.tight_layout()
         st_pyplot_safe(fig_pass)
 
+    with comp_col3:
+        st.write("**AHT Comparison**")
+        if my_avg_aht is not None and overall_avg_aht is not None:
+            aht_comparison = pd.DataFrame(
+                {
+                    "Metric": ["My Avg AHT", "Team Avg AHT"],
+                    "AHT (min)": [my_avg_aht, overall_avg_aht],
+                }
+            )
+            fig_aht, ax_aht = plt.subplots(figsize=(8, 5))
+            aht_comparison.plot(
+                x="Metric",
+                y="AHT (min)",
+                kind="bar",
+                ax=ax_aht,
+                color=["purple", "lavender"],
+            )
+            ax_aht.set_ylabel("Average Handle Time (min)")
+            ax_aht.set_title("My AHT vs Team Average")
+            plt.xticks(rotation=0)
+            plt.tight_layout()
+            st_pyplot_safe(fig_aht)
+        else:
+            st.info("AHT data not available")
+
 else:
     # Admin/All data view
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Total Calls", len(filtered_df))
     with col2:
@@ -5837,6 +5886,17 @@ else:
         )
         st.metric("Pass Rate", f"{pass_rate:.1f}%")
     with col4:
+        avg_aht = (
+            filtered_df["Call Duration (min)"].mean()
+            if "Call Duration (min)" in filtered_df.columns
+            and filtered_df["Call Duration (min)"].notna().any()
+            else None
+        )
+        st.metric(
+            "Avg AHT",
+            f"{avg_aht:.1f} min" if avg_aht is not None else "N/A",
+        )
+    with col5:
         st.metric("Unique Agents", filtered_df["Agent"].nunique())
 
 # --- Historical Baseline Comparisons (Benchmarking) ---
@@ -6085,6 +6145,213 @@ if len(alerts_df) > 0:
     st.dataframe(alert_summary)
 else:
     st.success(f"✅ All calls meet the threshold ({alert_threshold}%)")
+
+# --- AHT Root Cause Analysis ---
+if (
+    "Call Duration (min)" in filtered_df.columns
+    and filtered_df["Call Duration (min)"].notna().any()
+):
+    with st.expander(
+        "🔍 Average Handle Time (AHT) Root Cause Analysis", expanded=False
+    ):
+        st.markdown("### Analyze Factors Contributing to Long Call Duration")
+        st.caption(
+            "Identifies patterns and correlations in calls with extended handle times"
+        )
+
+        # Calculate threshold for "long" calls (75th percentile)
+        aht_threshold = filtered_df["Call Duration (min)"].quantile(0.75)
+        long_aht_calls = filtered_df[
+            filtered_df["Call Duration (min)"] >= aht_threshold
+        ]
+
+        if len(long_aht_calls) > 0:
+            st.info(
+                f"📊 Analyzing {len(long_aht_calls)} calls with AHT ≥ {aht_threshold:.1f} min (75th percentile)"
+            )
+
+            rca_col1, rca_col2 = st.columns(2)
+
+            with rca_col1:
+                st.write("**AHT Distribution**")
+                fig_aht_dist, ax_aht_dist = plt.subplots(figsize=(10, 5))
+                ax_aht_dist.hist(
+                    filtered_df["Call Duration (min)"].dropna(),
+                    bins=30,
+                    color="steelblue",
+                    alpha=0.7,
+                    edgecolor="black",
+                )
+                ax_aht_dist.axvline(
+                    x=aht_threshold,
+                    color="r",
+                    linestyle="--",
+                    linewidth=2,
+                    label=f"75th Percentile ({aht_threshold:.1f} min)",
+                )
+                ax_aht_dist.set_xlabel("Average Handle Time (min)")
+                ax_aht_dist.set_ylabel("Number of Calls")
+                ax_aht_dist.set_title("AHT Distribution")
+                ax_aht_dist.legend()
+                plt.tight_layout()
+                st_pyplot_safe(fig_aht_dist)
+
+            with rca_col2:
+                st.write("**AHT vs QA Score Correlation**")
+                if "QA Score" in filtered_df.columns:
+                    # Scatter plot
+                    fig_aht_score, ax_aht_score = plt.subplots(figsize=(10, 5))
+                    ax_aht_score.scatter(
+                        filtered_df["QA Score"],
+                        filtered_df["Call Duration (min)"],
+                        alpha=0.5,
+                        color="steelblue",
+                    )
+                    ax_aht_score.scatter(
+                        long_aht_calls["QA Score"],
+                        long_aht_calls["Call Duration (min)"],
+                        alpha=0.7,
+                        color="red",
+                        label="Long AHT Calls",
+                    )
+                    ax_aht_score.set_xlabel("QA Score (%)")
+                    ax_aht_score.set_ylabel("AHT (min)")
+                    ax_aht_score.set_title("AHT vs QA Score")
+                    ax_aht_score.legend()
+                    ax_aht_score.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_aht_score)
+
+                    # Calculate correlation
+                    correlation = filtered_df["QA Score"].corr(
+                        filtered_df["Call Duration (min)"]
+                    )
+                    if not pd.isna(correlation):
+                        st.metric(
+                            "Correlation",
+                            f"{correlation:.3f}",
+                            help="Negative = longer calls tend to have lower scores",
+                        )
+
+            # Analysis by Agent
+            st.write("**Top Agents by Long AHT Calls**")
+            agent_aht_analysis = (
+                long_aht_calls.groupby("Agent")
+                .agg(
+                    Long_AHT_Calls=("Call ID", "count"),
+                    Avg_AHT=("Call Duration (min)", "mean"),
+                    Avg_QA_Score=("QA Score", "mean"),
+                )
+                .reset_index()
+                .sort_values("Long_AHT_Calls", ascending=False)
+                .head(10)
+            )
+            if len(agent_aht_analysis) > 0:
+                st.dataframe(agent_aht_analysis.round(2), hide_index=True)
+
+            # Analysis by Failed Rubric Items
+            if "Rubric Fail Count" in filtered_df.columns:
+                st.write("**AHT vs Rubric Failures**")
+                fail_aht_analysis = (
+                    filtered_df.groupby(
+                        pd.cut(
+                            filtered_df["Rubric Fail Count"],
+                            bins=[0, 1, 3, 5, 10, 100],
+                            labels=["0", "1-2", "3-4", "5-9", "10+"],
+                        )
+                    )
+                    .agg(
+                        Avg_AHT=("Call Duration (min)", "mean"),
+                        Call_Count=("Call ID", "count"),
+                    )
+                    .reset_index()
+                )
+                fail_aht_analysis.columns = [
+                    "Fail_Count_Range",
+                    "Avg_AHT",
+                    "Call_Count",
+                ]
+                if len(fail_aht_analysis) > 0:
+                    fig_fail_aht, ax_fail_aht = plt.subplots(figsize=(10, 5))
+                    fail_aht_analysis.plot(
+                        x="Fail_Count_Range",
+                        y="Avg_AHT",
+                        kind="bar",
+                        ax=ax_fail_aht,
+                        color="coral",
+                    )
+                    ax_fail_aht.set_xlabel("Number of Failed Rubric Items")
+                    ax_fail_aht.set_ylabel("Average AHT (min)")
+                    ax_fail_aht.set_title("AHT by Number of Failed Rubric Items")
+                    plt.xticks(rotation=0)
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_fail_aht)
+                    st.dataframe(fail_aht_analysis.round(2), hide_index=True)
+
+            # Time of Day Analysis
+            if "Call Date" in filtered_df.columns:
+                st.write("**AHT by Time of Day**")
+                filtered_df["Hour"] = pd.to_datetime(filtered_df["Call Date"]).dt.hour
+                hourly_aht = (
+                    filtered_df.groupby("Hour")
+                    .agg(
+                        Avg_AHT=("Call Duration (min)", "mean"),
+                        Call_Count=("Call ID", "count"),
+                    )
+                    .reset_index()
+                )
+                if len(hourly_aht) > 0:
+                    fig_hourly_aht, ax_hourly_aht = plt.subplots(figsize=(12, 5))
+                    ax_hourly_aht.plot(
+                        hourly_aht["Hour"],
+                        hourly_aht["Avg_AHT"],
+                        marker="o",
+                        linewidth=2,
+                        color="purple",
+                    )
+                    ax_hourly_aht.set_xlabel("Hour of Day")
+                    ax_hourly_aht.set_ylabel("Average AHT (min)")
+                    ax_hourly_aht.set_title("Average Handle Time by Hour of Day")
+                    ax_hourly_aht.grid(True, alpha=0.3)
+                    ax_hourly_aht.set_xticks(range(0, 24))
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_hourly_aht)
+
+            # Summary Statistics
+            st.write("**Summary Statistics: Long AHT Calls**")
+            summary_stats = {
+                "Metric": [
+                    "Total Long AHT Calls",
+                    "Average AHT (Long Calls)",
+                    "Average AHT (All Calls)",
+                    "Average QA Score (Long Calls)",
+                    "Average QA Score (All Calls)",
+                    "Avg Fail Count (Long Calls)",
+                    "Avg Fail Count (All Calls)",
+                ],
+                "Value": [
+                    len(long_aht_calls),
+                    f"{long_aht_calls['Call Duration (min)'].mean():.1f} min",
+                    f"{filtered_df['Call Duration (min)'].mean():.1f} min",
+                    f"{long_aht_calls['QA Score'].mean():.1f}%"
+                    if "QA Score" in long_aht_calls.columns
+                    else "N/A",
+                    f"{filtered_df['QA Score'].mean():.1f}%"
+                    if "QA Score" in filtered_df.columns
+                    else "N/A",
+                    f"{long_aht_calls['Rubric Fail Count'].mean():.1f}"
+                    if "Rubric Fail Count" in long_aht_calls.columns
+                    else "N/A",
+                    f"{filtered_df['Rubric Fail Count'].mean():.1f}"
+                    if "Rubric Fail Count" in filtered_df.columns
+                    else "N/A",
+                ],
+            }
+            st.dataframe(pd.DataFrame(summary_stats), hide_index=True)
+
+        else:
+            st.info("No calls found above the 75th percentile threshold")
 
 # --- At-Risk Agent Detection (Predictive Analytics) ---
 if not user_agent_id:  # Admin view only
@@ -6614,6 +6881,60 @@ if user_agent_id:
             plt.tight_layout()
             st_pyplot_safe(fig_pass_trend)
 
+        # AHT Trend
+        st.write("**My AHT Trend vs Team**")
+        if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
+            agent_aht_daily = (
+                agent_data.groupby(agent_data["Call Date"].dt.date)
+                .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                .reset_index()
+            )
+            agent_aht_daily.columns = ["Call Date", "My_AHT"]
+
+            team_aht_daily = (
+                overall_df.groupby(overall_df["Call Date"].dt.date)
+                .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                .reset_index()
+            )
+            team_aht_daily.columns = ["Call Date", "Team_AHT"]
+
+            aht_comparison = pd.merge(
+                agent_aht_daily[["Call Date", "My_AHT"]],
+                team_aht_daily[["Call Date", "Team_AHT"]],
+                on="Call Date",
+                how="outer",
+            ).sort_values("Call Date")
+
+            if len(aht_comparison) > 0 and aht_comparison["My_AHT"].notna().any():
+                fig_aht_trend, ax_aht_trend = plt.subplots(figsize=(10, 5))
+                ax_aht_trend.plot(
+                    aht_comparison["Call Date"],
+                    aht_comparison["My_AHT"],
+                    marker="o",
+                    linewidth=2,
+                    label="My AHT",
+                    color="purple",
+                )
+                ax_aht_trend.plot(
+                    aht_comparison["Call Date"],
+                    aht_comparison["Team_AHT"],
+                    marker="s",
+                    linewidth=2,
+                    label="Team AHT",
+                    color="lavender",
+                    linestyle="--",
+                )
+                ax_aht_trend.set_xlabel("Date")
+                ax_aht_trend.set_ylabel("Average Handle Time (min)")
+                ax_aht_trend.set_title("My AHT Trend vs Team Average")
+                ax_aht_trend.grid(True, alpha=0.3)
+                ax_aht_trend.legend()
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st_pyplot_safe(fig_aht_trend)
+            else:
+                st.info("AHT trend data not available")
+
 else:
     # Admin view - agent selection and comparison
     st.subheader("👤 Agent-Specific Performance Trends")
@@ -6632,10 +6953,11 @@ else:
                     .agg(
                         Avg_QA_Score=("QA Score", "mean"),
                         Call_Count=("Call ID", "count"),
+                        Avg_AHT=("Call Duration (min)", "mean"),
                     )
                     .reset_index()
                 )
-                agent_daily.columns = ["Date", "Avg_QA_Score", "Call_Count"]
+                agent_daily.columns = ["Date", "Avg_QA_Score", "Call_Count", "Avg_AHT"]
 
                 fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
                 ax_agent.plot(
@@ -6660,6 +6982,30 @@ else:
                 plt.xticks(rotation=45)
                 plt.tight_layout()
                 st_pyplot_safe(fig_agent)
+
+                # AHT Trend for selected agent
+                if (
+                    "Call Duration (min)" in agent_data.columns
+                    and agent_daily["Avg_AHT"].notna().any()
+                ):
+                    st.write("**AHT Trend**")
+                    fig_aht_agent, ax_aht_agent = plt.subplots(figsize=(10, 5))
+                    ax_aht_agent.plot(
+                        agent_daily["Date"],
+                        agent_daily["Avg_AHT"],
+                        marker="o",
+                        linewidth=2,
+                        label="AHT",
+                        color="purple",
+                    )
+                    ax_aht_agent.set_xlabel("Date")
+                    ax_aht_agent.set_ylabel("Average Handle Time (min)")
+                    ax_aht_agent.set_title(f"AHT Trend: {selected_agent_for_trend}")
+                    ax_aht_agent.grid(True, alpha=0.3)
+                    ax_aht_agent.legend()
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_aht_agent)
 
         with agent_trends_col2:
             # Agent Comparison
@@ -6721,6 +7067,36 @@ else:
 
                 plt.tight_layout()
                 st_pyplot_safe(fig_compare)
+
+                # AHT Comparison
+                if "Call Duration (min)" in compare_data.columns:
+                    agent_aht_comparison = (
+                        compare_data.groupby("Agent")
+                        .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                        .reset_index()
+                    )
+                    if (
+                        len(agent_aht_comparison) > 0
+                        and agent_aht_comparison["Avg_AHT"].notna().any()
+                    ):
+                        st.write("**AHT Comparison**")
+                        fig_aht_compare, ax_aht_compare = plt.subplots(figsize=(10, 5))
+                        agent_aht_comparison.plot(
+                            x="Agent",
+                            y="Avg_AHT",
+                            kind="bar",
+                            ax=ax_aht_compare,
+                            color="purple",
+                        )
+                        ax_aht_compare.set_ylabel("Average Handle Time (min)")
+                        ax_aht_compare.set_title("Average Handle Time Comparison")
+                        plt.setp(
+                            ax_aht_compare.xaxis.get_majorticklabels(),
+                            rotation=45,
+                            ha="right",
+                        )
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_aht_compare)
 
 # --- QA Score Distribution and Label Distribution ---
 col_left, col_right = st.columns(2)
