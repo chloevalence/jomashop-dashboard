@@ -3642,12 +3642,6 @@ if st.session_state.bg_check_error:
 if is_super_admin():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🔄 Refresh Data")
-    st.sidebar.info(
-        "💡 **When to refresh:** Click 'Refresh New Data' after new PDFs are added to S3"
-    )
-    st.sidebar.caption(
-        "ℹ️ **Cache never expires** - Data stays cached until you manually refresh"
-    )
 
 # Background refresh settings (Chloe, Shannon, and Jerson only)
 if is_super_admin():
@@ -4288,7 +4282,6 @@ rubric_data = load_rubric()
 # --- Rubric Reference Link in Sidebar ---
 st.sidebar.markdown("---")
 if rubric_data:
-    st.sidebar.success(f"📚 Rubric loaded ({len(rubric_data)} items)")
     st.sidebar.info("💡 View full rubric reference in the main dashboard below")
 else:
     st.sidebar.warning("⚠️ Rubric file not found")
@@ -4670,7 +4663,8 @@ try:
             st.stop()
 
     if call_data:
-        # Check if we actually processed files or loaded from cache
+        # Only show cache messages if we actually processed files or refresh was triggered
+        refresh_in_progress = st.session_state.get("refresh_in_progress", False)
         if was_processing and "last_actual_processing_time" in st.session_state:
             # We actually processed files - show actual processing time
             actual_time = st.session_state["last_actual_processing_time"]
@@ -4682,8 +4676,8 @@ try:
             else:
                 time_str = f"{actual_time:.1f}s"
             st.success(f"✅ Loaded {file_count} calls in {time_str}")
-        elif "last_actual_processing_time" in st.session_state:
-            # Data loaded from cache - show when it was last processed
+        elif refresh_in_progress and "last_actual_processing_time" in st.session_state:
+            # Refresh was triggered - show when it was last processed
             last_time = st.session_state["last_actual_processing_time"]
             if last_time > 60:
                 time_str = f"{last_time / 60:.1f} minutes"
@@ -4693,10 +4687,6 @@ try:
                 st.success(
                     f"✅ Loaded {len(call_data)} calls (from cache, originally processed in {time_str})"
                 )
-        else:
-            # First time or no processing time tracked - show cache retrieval time
-            if current_username and current_username.lower() in ["chloe", "shannon"]:
-                st.success(f"✅ Loaded {len(call_data)} calls (from cache)")
     else:
         st.error("❌ No call data found!")
         st.error("Possible issues:")
@@ -5814,11 +5804,16 @@ if show_comparison and user_agent_id:
             if my_avg_aht is not None and overall_avg_aht is not None
             else None
         )
+        delta_value = f"{delta_aht:+.1f} min" if delta_aht is not None else None
+        delta_color_value = None
+        if delta_aht is not None:
+            delta_color_value = "normal" if delta_aht < 0 else "inverse"
+
         st.metric(
             "My Avg AHT",
             f"{my_avg_aht:.1f} min" if my_avg_aht is not None else "N/A",
-            delta=f"{delta_aht:+.1f} min" if delta_aht is not None else None,
-            delta_color="inverse" if delta_aht and delta_aht > 0 else "normal",
+            delta=delta_value,
+            delta_color=delta_color_value,
         )
 
     with col5:
@@ -5953,7 +5948,7 @@ else:
             f"{avg_aht:.1f} min" if avg_aht is not None else "N/A",
         )
     with col5:
-        st.metric("Unique Agents", filtered_df["Agent"].nunique())
+        st.metric("Agents", filtered_df["Agent"].nunique())
 
 # --- Historical Baseline Comparisons (Benchmarking) ---
 with st.expander("📊 Historical Baseline Comparisons", expanded=False):
