@@ -6921,35 +6921,7 @@ if (
             if "Rubric Details" in filtered_df.columns:
                 # Analyze which rubric codes appear most in high-AHT calls
                 # Note: rubric_code_aht_analysis already calculated above for insights
-
-                for idx, row in filtered_df.iterrows():
-                    aht = row.get("Call Duration (min)", None)
-                    if pd.isna(aht):
-                        continue
-
-                    rubric_details = row.get("Rubric Details", {})
-                    if isinstance(rubric_details, dict):
-                        for code, details in rubric_details.items():
-                            if (
-                                isinstance(details, dict)
-                                and details.get("status") == "Fail"
-                            ):
-                                if code not in rubric_code_aht_analysis:
-                                    rubric_code_aht_analysis[code] = {
-                                        "total_fails": 0,
-                                        "high_aht_fails": 0,
-                                        "aht_sum": 0,
-                                        "aht_count": 0,
-                                    }
-
-                                rubric_code_aht_analysis[code]["total_fails"] += 1
-                                rubric_code_aht_analysis[code]["aht_sum"] += aht
-                                rubric_code_aht_analysis[code]["aht_count"] += 1
-
-                                if aht >= aht_threshold:
-                                    rubric_code_aht_analysis[code][
-                                        "high_aht_fails"
-                                    ] += 1
+                # No need to recalculate - just use the existing data
 
                 if rubric_code_aht_analysis:
                     # Create analysis DataFrame
