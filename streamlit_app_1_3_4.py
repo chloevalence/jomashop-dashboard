@@ -2415,10 +2415,10 @@ def load_all_calls_cached(cache_version=0):
         disk_result = load_cached_data_from_disk()
         # CRITICAL FIX: Check if disk_result is None before accessing its elements
         if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
-        disk_call_data, disk_errors = disk_result
+            disk_call_data, disk_errors = disk_result
             # Migrate old cache format to new format
             disk_call_data = migrate_old_cache_format(disk_call_data)
-        cache_count = len(disk_call_data)
+            cache_count = len(disk_call_data)
         
         # Get cache metadata
         if CACHE_FILE.exists():
