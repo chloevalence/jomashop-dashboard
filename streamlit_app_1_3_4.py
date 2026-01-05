@@ -8903,7 +8903,7 @@ if user_agent_id:
                 ax_agent.set_xlabel("Date")
                 ax_agent.set_ylabel("Average QA Score (%)")
                 ax_agent.set_title("My Performance Trend vs Team Average")
-            ax_agent.grid(True, alpha=0.3)
+                ax_agent.grid(True, alpha=0.3)
                 ax_agent.axhline(
                     y=alert_threshold,
                     color="r",
