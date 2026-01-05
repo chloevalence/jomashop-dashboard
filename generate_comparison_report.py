@@ -11,13 +11,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.backends.backend_pdf import PdfPages
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 import json
 import argparse
 import sys
 import re
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 import warnings
 
 # Suppress warnings
@@ -26,6 +26,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 # Configure matplotlib
 import matplotlib
+
 matplotlib.use("Agg")
 matplotlib.rcParams["figure.max_open_warning"] = 0
 
@@ -79,7 +80,7 @@ def extract_date_from_call_id(call_id: str) -> Optional[datetime]:
     """Extract date from call_id format: YYYYMMDD_HHMMSS_..."""
     if pd.isna(call_id) or not call_id:
         return None
-    
+
     call_id_str = str(call_id).strip()
     if len(call_id_str) >= 8:
         try:
@@ -90,36 +91,38 @@ def extract_date_from_call_id(call_id: str) -> Optional[datetime]:
     return None
 
 
-def load_bpo_centers_data(cache_path: Path, transition_date: datetime) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFrame:
     """
     Load BPO Centers data from cache, split by transition date.
-    
+
     Returns:
         Tuple of (before_data, after_data) DataFrames
     """
     print(f"📂 Loading BPO Centers data from: {cache_path}")
-    
+
     if not cache_path.exists():
         raise FileNotFoundError(f"Cache file not found: {cache_path}")
-    
+
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached_data = json.load(f)
-        
+
         # Extract call data
         if isinstance(cached_data, dict):
-            call_data = cached_data.get("call_data", cached_data.get("calls", cached_data.get("data", [])))
+            call_data = cached_data.get(
+                "call_data", cached_data.get("calls", cached_data.get("data", []))
+            )
         else:
             call_data = cached_data
-        
+
         if not call_data:
             raise ValueError("No call data found in cache file")
-        
+
         print(f"✅ Loaded {len(call_data)} calls from cache")
-        
+
         # Convert to DataFrame
         df = pd.DataFrame(call_data)
-        
+
         # Normalize column names
         column_mapping = {
             "call_date": "Call Date",
@@ -129,11 +132,11 @@ def load_bpo_centers_data(cache_path: Path, transition_date: datetime) -> Tuple[
             "rubric_pass_count": "Rubric Pass Count",
             "rubric_fail_count": "Rubric Fail Count",
         }
-        
+
         for old_col, new_col in column_mapping.items():
             if old_col in df.columns and new_col not in df.columns:
                 df.rename(columns={old_col: new_col}, inplace=True)
-        
+
         # Ensure Call Date is datetime
         if "Call Date" in df.columns:
             if df["Call Date"].dtype == "object":
@@ -144,13 +147,14 @@ def load_bpo_centers_data(cache_path: Path, transition_date: datetime) -> Tuple[
                 df["Call Date"] = pd.to_datetime(df["date_raw"], errors="coerce")
             else:
                 raise ValueError("No date column found in BPO Centers data")
-        
+
         # Normalize agent IDs
         if "Agent" in df.columns:
             df["Agent"] = df["Agent"].apply(normalize_agent_id)
-        
+
         # Calculate AHT from speaking_time_per_speaker if available
         if "AHT" not in df.columns and "speaking_time_per_speaker" in df.columns:
+
             def compute_aht(row):
                 speaking_times = row.get("speaking_time_per_speaker")
                 if isinstance(speaking_times, dict):
@@ -166,83 +170,85 @@ def load_bpo_centers_data(cache_path: Path, transition_date: datetime) -> Tuple[
                                 pass
                     return total_seconds / 60.0 if total_seconds > 0 else None
                 return None
-            
+
             df["AHT"] = df.apply(compute_aht, axis=1)
-        
-        # Split by transition date
-        before_mask = df["Call Date"] < transition_date
-        after_mask = df["Call Date"] >= transition_date
-        
-        before_data = df[before_mask].copy()
+
+        # Filter to start_date onwards
+        after_mask = df["Call Date"] >= start_date
         after_data = df[after_mask].copy()
-        
-        print(f"📊 BPO Centers data split:")
-        print(f"   Before {transition_date.strftime('%Y-%m-%d')}: {len(before_data)} calls")
-        print(f"   After {transition_date.strftime('%Y-%m-%d')}: {len(after_data)} calls")
-        
-        return before_data, after_data
-        
+
+        print(f"📊 BPO Centers data filtered:")
+        print(
+            f"   From {start_date.strftime('%Y-%m-%d')} onwards: {len(after_data)} calls"
+        )
+        print(
+            f"   Date range: {after_data['Call Date'].min()} to {after_data['Call Date'].max()}"
+        )
+
+        return after_data
+
     except Exception as e:
         raise Exception(f"Error loading BPO Centers data: {e}")
 
 
-def load_previous_center_data(csv_paths: List[Path], transition_date: datetime) -> pd.DataFrame:
+def load_previous_center_data(csv_paths: List[Path]) -> pd.DataFrame:
     """
     Load and normalize previous contact center CSV files.
-    
+
     Args:
         csv_paths: List of CSV file paths (one per agent)
         transition_date: Only include calls before this date
-    
+
     Returns:
         Combined DataFrame with all previous contact center data
     """
-    print(f"📂 Loading previous contact center data from {len(csv_paths)} CSV file(s)...")
-    
+    print(
+        f"📂 Loading previous contact center data from {len(csv_paths)} CSV file(s)..."
+    )
+
     all_dataframes = []
-    
+
     for i, csv_path in enumerate(csv_paths):
         if not csv_path.exists():
             print(f"⚠️  Warning: CSV file not found: {csv_path}")
             continue
-        
+
         try:
             df = pd.read_csv(csv_path, low_memory=False)
             print(f"   Loaded {len(df)} calls from {csv_path.name}")
-            
+
             # Normalize column names to lowercase for easier lookup
             df.columns = df.columns.str.lower()
-            
+
             # Extract date from call_id (case-insensitive lookup)
             call_id_col = None
             for col in df.columns:
                 if "call_id" in col.lower() or col.lower() == "callid":
                     call_id_col = col
                     break
-            
+
             if call_id_col:
                 df["Call Date"] = df[call_id_col].apply(extract_date_from_call_id)
             else:
                 print(f"⚠️  Warning: No 'call_id' column found in {csv_path.name}")
                 print(f"   Available columns: {list(df.columns)[:10]}...")
                 continue
-            
-            # Filter to dates before transition date
+
+            # Use ALL calls (no date filtering)
             valid_dates = df["Call Date"].notna()
-            before_transition = df["Call Date"] < transition_date
-            df = df[valid_dates & before_transition].copy()
-            
+            df = df[valid_dates].copy()
+
             if len(df) == 0:
-                print(f"   ⚠️  No calls before {transition_date.strftime('%Y-%m-%d')} in {csv_path.name}")
+                print(f"   ⚠️  No calls with valid dates in {csv_path.name}")
                 continue
-            
+
             # Map columns to standard format (case-insensitive)
             column_mapping = {
                 "qa_score": "QA Score",
                 "label": "Label",
                 "handle_time_minutes": "AHT",
             }
-            
+
             # Create a mapping dict with actual column names
             rename_dict = {}
             for old_col, new_col in column_mapping.items():
@@ -251,21 +257,25 @@ def load_previous_center_data(csv_paths: List[Path], transition_date: datetime) 
                     if col.lower() == old_col.lower():
                         rename_dict[col] = new_col
                         break
-            
+
             if rename_dict:
                 df.rename(columns=rename_dict, inplace=True)
-            
+
             # Handle QA Score - convert "NA" to NaN
             if "QA Score" in df.columns:
                 df["QA Score"] = pd.to_numeric(df["QA Score"], errors="coerce")
-            
+
             # Calculate rubric pass/fail counts from rubric columns
             # Rubric columns are like "1.1.0", "1.2.0", etc. (not the __reason columns)
-            rubric_columns = [col for col in df.columns 
-                            if re.match(r"^\d+\.\d+\.\d+$", str(col)) 
-                            and "__reason" not in str(col).lower()]
-            
+            rubric_columns = [
+                col
+                for col in df.columns
+                if re.match(r"^\d+\.\d+\.\d+$", str(col))
+                and "__reason" not in str(col).lower()
+            ]
+
             if rubric_columns:
+
                 def count_rubric_results(row):
                     pass_count = 0
                     fail_count = 0
@@ -280,8 +290,13 @@ def load_previous_center_data(csv_paths: List[Path], transition_date: datetime) 
                         elif value is False or value_str == "FALSE" or value_str == "F":
                             fail_count += 1
                         # N/A values are ignored
-                    return pd.Series({"Rubric Pass Count": pass_count, "Rubric Fail Count": fail_count})
-                
+                    return pd.Series(
+                        {
+                            "Rubric Pass Count": pass_count,
+                            "Rubric Fail Count": fail_count,
+                        }
+                    )
+
                 rubric_counts = df.apply(count_rubric_results, axis=1)
                 df["Rubric Pass Count"] = rubric_counts["Rubric Pass Count"]
                 df["Rubric Fail Count"] = rubric_counts["Rubric Fail Count"]
@@ -289,33 +304,37 @@ def load_previous_center_data(csv_paths: List[Path], transition_date: datetime) 
                 # If no rubric columns, set defaults
                 df["Rubric Pass Count"] = 0
                 df["Rubric Fail Count"] = 0
-            
+
             # Add agent identifier from filename
-            agent_name = csv_path.stem.replace("qa_results_", "").replace("_", " ").title()
-            df["Agent"] = f"Previous Agent {i+1}" if not agent_name else agent_name
-            
+            agent_name = (
+                csv_path.stem.replace("qa_results_", "").replace("_", " ").title()
+            )
+            df["Agent"] = f"Previous Agent {i + 1}" if not agent_name else agent_name
+
             all_dataframes.append(df)
-            
+
         except Exception as e:
             print(f"⚠️  Error loading {csv_path.name}: {e}")
             continue
-    
+
     if not all_dataframes:
         raise ValueError("No valid data loaded from CSV files")
-    
+
     # Combine all dataframes
     combined_df = pd.concat(all_dataframes, ignore_index=True)
-    
+
     print(f"✅ Combined {len(combined_df)} calls from previous contact center")
-    print(f"   Date range: {combined_df['Call Date'].min()} to {combined_df['Call Date'].max()}")
-    
+    print(
+        f"   Date range: {combined_df['Call Date'].min()} to {combined_df['Call Date'].max()}"
+    )
+
     return combined_df
 
 
 def calculate_qa_metrics(df: pd.DataFrame) -> Dict:
     """Calculate QA score metrics."""
     metrics = {}
-    
+
     if "QA Score" in df.columns:
         valid_scores = df["QA Score"].dropna()
         if len(valid_scores) > 0:
@@ -327,14 +346,14 @@ def calculate_qa_metrics(df: pd.DataFrame) -> Dict:
     else:
         metrics["avg_qa_score"] = None
         metrics["qa_score_count"] = 0
-    
+
     return metrics
 
 
 def calculate_pass_rate_metrics(df: pd.DataFrame) -> Dict:
     """Calculate pass rate metrics."""
     metrics = {}
-    
+
     # Method 1: From Rubric Pass/Fail Count
     if "Rubric Pass Count" in df.columns and "Rubric Fail Count" in df.columns:
         total_pass = df["Rubric Pass Count"].sum()
@@ -377,14 +396,14 @@ def calculate_pass_rate_metrics(df: pd.DataFrame) -> Dict:
         metrics["pass_rate"] = None
         metrics["pass_count"] = 0
         metrics["fail_count"] = 0
-    
+
     return metrics
 
 
 def calculate_aht_metrics(df: pd.DataFrame) -> Dict:
     """Calculate Average Handle Time metrics."""
     metrics = {}
-    
+
     if "AHT" in df.columns:
         valid_aht = df["AHT"].dropna()
         if len(valid_aht) > 0:
@@ -396,21 +415,25 @@ def calculate_aht_metrics(df: pd.DataFrame) -> Dict:
     else:
         metrics["avg_aht"] = None
         metrics["aht_count"] = 0
-    
+
     return metrics
 
 
 def calculate_volume_metrics(df: pd.DataFrame) -> Dict:
     """Calculate call volume metrics."""
     metrics = {}
-    
+
     # Total calls (exclude Invalid labels if present)
     if "Label" in df.columns:
-        valid_calls = df[df["Label"].str.lower() != "invalid"] if df["Label"].dtype == "object" else df
+        valid_calls = (
+            df[df["Label"].str.lower() != "invalid"]
+            if df["Label"].dtype == "object"
+            else df
+        )
         metrics["total_calls"] = len(valid_calls)
     else:
         metrics["total_calls"] = len(df)
-    
+
     # Calls per day
     if "Call Date" in df.columns and metrics["total_calls"] > 0:
         date_range = (df["Call Date"].max() - df["Call Date"].min()).days + 1
@@ -420,19 +443,21 @@ def calculate_volume_metrics(df: pd.DataFrame) -> Dict:
             metrics["calls_per_day"] = metrics["total_calls"]
     else:
         metrics["calls_per_day"] = None
-    
+
     return metrics
 
 
 def calculate_rubric_metrics(df: pd.DataFrame) -> Dict:
     """Calculate rubric failure metrics."""
     metrics = {}
-    
+
     # Find rubric columns (exclude __reason columns)
-    rubric_columns = [col for col in df.columns 
-                     if re.match(r"^\d+\.\d+\.\d+$", str(col))
-                     and "__reason" not in str(col).lower()]
-    
+    rubric_columns = [
+        col
+        for col in df.columns
+        if re.match(r"^\d+\.\d+\.\d+$", str(col)) and "__reason" not in str(col).lower()
+    ]
+
     if rubric_columns:
         failure_counts = {}
         for col in rubric_columns:
@@ -446,9 +471,11 @@ def calculate_rubric_metrics(df: pd.DataFrame) -> Dict:
                     failures += 1
             if failures > 0:
                 failure_counts[col] = failures
-        
+
         # Sort by failure count
-        sorted_failures = sorted(failure_counts.items(), key=lambda x: x[1], reverse=True)
+        sorted_failures = sorted(
+            failure_counts.items(), key=lambda x: x[1], reverse=True
+        )
         metrics["top_failure_codes"] = sorted_failures[:10]  # Top 10
         metrics["total_rubric_failures"] = sum(failure_counts.values())
     else:
@@ -458,16 +485,18 @@ def calculate_rubric_metrics(df: pd.DataFrame) -> Dict:
         else:
             metrics["total_rubric_failures"] = 0
         metrics["top_failure_codes"] = []
-    
+
     return metrics
 
 
 def calculate_agent_metrics(df: pd.DataFrame) -> Dict:
     """Calculate agent performance distribution metrics."""
     metrics = {}
-    
+
     if "Agent" in df.columns and "QA Score" in df.columns:
-        agent_perf = df.groupby("Agent")["QA Score"].agg(["mean", "count"]).reset_index()
+        agent_perf = (
+            df.groupby("Agent")["QA Score"].agg(["mean", "count"]).reset_index()
+        )
         agent_perf.columns = ["Agent", "Avg Score", "Call Count"]
         agent_perf = agent_perf.sort_values("Avg Score", ascending=False)
         metrics["agent_performance"] = agent_perf
@@ -475,37 +504,246 @@ def calculate_agent_metrics(df: pd.DataFrame) -> Dict:
     else:
         metrics["agent_performance"] = pd.DataFrame()
         metrics["num_agents"] = 0
-    
+
+    return metrics
+
+
+def calculate_consistency_metrics(df: pd.DataFrame) -> Dict:
+    """Calculate consistency metrics (standard deviation, coefficient of variation)."""
+    metrics = {}
+
+    if "QA Score" in df.columns:
+        valid_scores = df["QA Score"].dropna()
+        if len(valid_scores) > 0:
+            metrics["score_std"] = valid_scores.std()
+            metrics["score_mean"] = valid_scores.mean()
+            metrics["score_median"] = valid_scores.median()
+            metrics["score_min"] = valid_scores.min()
+            metrics["score_max"] = valid_scores.max()
+            metrics["score_range"] = valid_scores.max() - valid_scores.min()
+            # Coefficient of variation (normalized consistency)
+            if metrics["score_mean"] > 0:
+                metrics["coefficient_of_variation"] = (
+                    metrics["score_std"] / metrics["score_mean"]
+                ) * 100
+            else:
+                metrics["coefficient_of_variation"] = None
+        else:
+            metrics["score_std"] = None
+            metrics["score_mean"] = None
+            metrics["score_median"] = None
+            metrics["score_min"] = None
+            metrics["score_max"] = None
+            metrics["score_range"] = None
+            metrics["coefficient_of_variation"] = None
+    else:
+        metrics["score_std"] = None
+        metrics["score_mean"] = None
+        metrics["score_median"] = None
+        metrics["score_min"] = None
+        metrics["score_max"] = None
+        metrics["score_range"] = None
+        metrics["coefficient_of_variation"] = None
+
+    return metrics
+
+
+def calculate_quality_distribution(df: pd.DataFrame) -> Dict:
+    """Calculate quality tier distribution."""
+    metrics = {}
+
+    if "QA Score" in df.columns:
+        valid_scores = df["QA Score"].dropna()
+        if len(valid_scores) > 0:
+            total = len(valid_scores)
+            excellent = ((valid_scores >= 90) & (valid_scores <= 100)).sum()
+            good = ((valid_scores >= 75) & (valid_scores < 90)).sum()
+            fair = ((valid_scores >= 60) & (valid_scores < 75)).sum()
+            poor = (valid_scores < 60).sum()
+
+            metrics["excellent_count"] = excellent
+            metrics["good_count"] = good
+            metrics["fair_count"] = fair
+            metrics["poor_count"] = poor
+            metrics["excellent_pct"] = (excellent / total) * 100
+            metrics["good_pct"] = (good / total) * 100
+            metrics["fair_pct"] = (fair / total) * 100
+            metrics["poor_pct"] = (poor / total) * 100
+        else:
+            metrics["excellent_count"] = 0
+            metrics["good_count"] = 0
+            metrics["fair_count"] = 0
+            metrics["poor_count"] = 0
+            metrics["excellent_pct"] = 0
+            metrics["good_pct"] = 0
+            metrics["fair_pct"] = 0
+            metrics["poor_pct"] = 0
+    else:
+        metrics["excellent_count"] = 0
+        metrics["good_count"] = 0
+        metrics["fair_count"] = 0
+        metrics["poor_count"] = 0
+        metrics["excellent_pct"] = 0
+        metrics["good_pct"] = 0
+        metrics["fair_pct"] = 0
+        metrics["poor_pct"] = 0
+
+    return metrics
+
+
+def calculate_trend_metrics(df: pd.DataFrame) -> Dict:
+    """Calculate trend metrics (weekly/monthly aggregations)."""
+    metrics = {}
+
+    if "Call Date" in df.columns and "QA Score" in df.columns:
+        df_copy = df[["Call Date", "QA Score"]].copy()
+        df_copy = df_copy.dropna()
+
+        if len(df_copy) > 0:
+            df_copy["Call Date"] = pd.to_datetime(df_copy["Call Date"])
+            df_copy["Week"] = df_copy["Call Date"].dt.to_period("W")
+            df_copy["Month"] = df_copy["Call Date"].dt.to_period("M")
+
+            # Weekly trends
+            weekly_avg = df_copy.groupby("Week")["QA Score"].mean()
+            if len(weekly_avg) > 1:
+                # Calculate improvement rate (slope)
+                weeks = np.arange(len(weekly_avg))
+                scores = weekly_avg.values
+                if len(weeks) > 1:
+                    slope = np.polyfit(weeks, scores, 1)[0]
+                    metrics["weekly_improvement_rate"] = slope
+                    metrics["weekly_trend_data"] = weekly_avg.to_dict()
+                else:
+                    metrics["weekly_improvement_rate"] = None
+                    metrics["weekly_trend_data"] = {}
+            else:
+                metrics["weekly_improvement_rate"] = None
+                metrics["weekly_trend_data"] = {}
+
+            # Monthly trends
+            monthly_avg = df_copy.groupby("Month")["QA Score"].mean()
+            if len(monthly_avg) > 0:
+                metrics["monthly_trend_data"] = monthly_avg.to_dict()
+            else:
+                metrics["monthly_trend_data"] = {}
+        else:
+            metrics["weekly_improvement_rate"] = None
+            metrics["weekly_trend_data"] = {}
+            metrics["monthly_trend_data"] = {}
+    else:
+        metrics["weekly_improvement_rate"] = None
+        metrics["weekly_trend_data"] = {}
+        metrics["monthly_trend_data"] = {}
+
+    return metrics
+
+
+def calculate_rubric_improvements(
+    previous_df: pd.DataFrame, bpo_df: pd.DataFrame
+) -> Dict:
+    """Calculate rubric code improvements by comparing failure rates."""
+    metrics = {}
+
+    def get_rubric_failure_rates(df):
+        """Get failure rates for each rubric code."""
+        failure_rates = {}
+
+        # Find rubric columns
+        rubric_columns = [
+            col
+            for col in df.columns
+            if re.match(r"^\d+\.\d+\.\d+$", str(col))
+            and "__reason" not in str(col).lower()
+        ]
+
+        if rubric_columns:
+            for col in rubric_columns:
+                if col not in df.columns:
+                    continue
+                total = df[col].notna().sum()
+                if total > 0:
+                    failures = 0
+                    for value in df[col]:
+                        value_str = (
+                            str(value).strip().upper() if pd.notna(value) else ""
+                        )
+                        if value is False or value_str == "FALSE" or value_str == "F":
+                            failures += 1
+                    failure_rate = (failures / total) * 100
+                    failure_rates[col] = {
+                        "failures": failures,
+                        "total": total,
+                        "rate": failure_rate,
+                    }
+
+        return failure_rates
+
+    previous_rates = get_rubric_failure_rates(previous_df)
+    bpo_rates = get_rubric_failure_rates(bpo_df)
+
+    # Find improvements (codes where BPO has lower failure rate)
+    improvements = []
+    for code, bpo_data in bpo_rates.items():
+        if code in previous_rates:
+            prev_rate = previous_rates[code]["rate"]
+            bpo_rate = bpo_data["rate"]
+            improvement = prev_rate - bpo_rate  # Positive = improvement
+            if improvement > 0:  # Only show improvements
+                improvements.append(
+                    {
+                        "code": code,
+                        "previous_rate": prev_rate,
+                        "bpo_rate": bpo_rate,
+                        "improvement": improvement,
+                        "improvement_pct": (improvement / prev_rate * 100)
+                        if prev_rate > 0
+                        else 0,
+                    }
+                )
+
+    # Sort by improvement amount
+    improvements.sort(key=lambda x: x["improvement"], reverse=True)
+    metrics["top_improvements"] = improvements[:10]  # Top 10
+    metrics["total_improvements"] = len(improvements)
+
     return metrics
 
 
 def calculate_all_metrics(df: pd.DataFrame) -> Dict:
     """Calculate all KPIs for a dataset."""
     metrics = {}
-    
+
     metrics.update(calculate_qa_metrics(df))
     metrics.update(calculate_pass_rate_metrics(df))
     metrics.update(calculate_aht_metrics(df))
     metrics.update(calculate_volume_metrics(df))
     metrics.update(calculate_rubric_metrics(df))
     metrics.update(calculate_agent_metrics(df))
-    
+    metrics.update(calculate_consistency_metrics(df))
+    metrics.update(calculate_quality_distribution(df))
+    metrics.update(calculate_trend_metrics(df))
+
     return metrics
 
 
-def create_comparison_chart(metric_name: str, previous_value: float, bpo_value: float, 
-                           previous_label: str = "Previous Contact Center",
-                           bpo_label: str = "BPO Centers") -> plt.Figure:
+def create_comparison_chart(
+    metric_name: str,
+    previous_value: float,
+    bpo_value: float,
+    previous_label: str = "Previous Contact Center",
+    bpo_label: str = "BPO Centers",
+) -> plt.Figure:
     """Create a bar chart comparing a metric between previous and BPO Centers."""
     fig, ax = plt.subplots(figsize=(8, 6))
-    
+
     categories = [previous_label, bpo_label]
     values = [previous_value, bpo_value]
-    
+
     # Determine colors (green for improvement if BPO > previous for positive metrics,
     # or BPO < previous for negative metrics like AHT)
     colors = ["#e74c3c", "#2ecc71"]  # Red, Green
-    
+
     # For metrics where lower is better (like AHT), reverse the color logic
     if "AHT" in metric_name or "Handle Time" in metric_name:
         if bpo_value < previous_value:
@@ -518,29 +756,44 @@ def create_comparison_chart(metric_name: str, previous_value: float, bpo_value: 
             colors = ["#e74c3c", "#2ecc71"]  # Improvement (green)
         else:
             colors = ["#2ecc71", "#e74c3c"]  # Worse (red)
-    
-    bars = ax.bar(categories, values, color=colors, alpha=0.7, edgecolor="black", linewidth=1.5)
-    
+
+    bars = ax.bar(
+        categories, values, color=colors, alpha=0.7, edgecolor="black", linewidth=1.5
+    )
+
     # Add value labels on bars
     for bar, value in zip(bars, values):
         height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                f'{value:.2f}' if isinstance(value, (int, float)) else 'N/A',
-                ha='center', va='bottom', fontsize=12, fontweight='bold')
-    
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height,
+            f"{value:.2f}" if isinstance(value, (int, float)) else "N/A",
+            ha="center",
+            va="bottom",
+            fontsize=12,
+            fontweight="bold",
+        )
+
     # Calculate and display percentage change
     if previous_value and previous_value != 0:
         pct_change = ((bpo_value - previous_value) / previous_value) * 100
         change_text = f"{pct_change:+.1f}%"
-        ax.text(0.5, 0.95, f"Change: {change_text}", 
-                transform=ax.transAxes, ha='center', va='top',
-                fontsize=11, fontweight='bold',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-    
-    ax.set_ylabel(metric_name, fontsize=12, fontweight='bold')
-    ax.set_title(f"{metric_name} Comparison", fontsize=14, fontweight='bold', pad=20)
-    ax.grid(axis='y', alpha=0.3, linestyle='--')
-    
+        ax.text(
+            0.5,
+            0.95,
+            f"Change: {change_text}",
+            transform=ax.transAxes,
+            ha="center",
+            va="top",
+            fontsize=11,
+            fontweight="bold",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+        )
+
+    ax.set_ylabel(metric_name, fontsize=12, fontweight="bold")
+    ax.set_title(f"{metric_name} Comparison", fontsize=14, fontweight="bold", pad=20)
+    ax.grid(axis="y", alpha=0.3, linestyle="--")
+
     plt.tight_layout()
     return fig
 
@@ -548,154 +801,588 @@ def create_comparison_chart(metric_name: str, previous_value: float, bpo_value: 
 def create_improvement_summary_chart(improvements: Dict) -> plt.Figure:
     """Create a chart showing percentage improvements for key metrics."""
     fig, ax = plt.subplots(figsize=(10, 6))
-    
+
     metrics = []
     pct_changes = []
     colors_list = []
-    
+
     for metric, pct_change in improvements.items():
         if pct_change is not None:
             metrics.append(metric.replace("_", " ").title())
             pct_changes.append(pct_change)
             # Green for positive improvement, red for negative
             colors_list.append("#2ecc71" if pct_change > 0 else "#e74c3c")
-    
+
     if not metrics:
-        ax.text(0.5, 0.5, "No improvement data available", 
-                ha='center', va='center', transform=ax.transAxes, fontsize=12)
+        ax.text(
+            0.5,
+            0.5,
+            "No improvement data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+        )
         return fig
-    
-    bars = ax.barh(metrics, pct_changes, color=colors_list, alpha=0.7, edgecolor="black", linewidth=1.5)
-    
+
+    bars = ax.barh(
+        metrics,
+        pct_changes,
+        color=colors_list,
+        alpha=0.7,
+        edgecolor="black",
+        linewidth=1.5,
+    )
+
     # Add value labels
     for bar, value in zip(bars, pct_changes):
         width = bar.get_width()
-        ax.text(width, bar.get_y() + bar.get_height()/2.,
-                f'{value:+.1f}%',
-                ha='left' if width > 0 else 'right', va='center', 
-                fontsize=10, fontweight='bold')
-    
-    ax.axvline(x=0, color='black', linestyle='-', linewidth=1)
-    ax.set_xlabel("Percentage Change (%)", fontsize=12, fontweight='bold')
-    ax.set_title("Key Performance Improvements", fontsize=14, fontweight='bold', pad=20)
-    ax.grid(axis='x', alpha=0.3, linestyle='--')
-    
+        ax.text(
+            width,
+            bar.get_y() + bar.get_height() / 2.0,
+            f"{value:+.1f}%",
+            ha="left" if width > 0 else "right",
+            va="center",
+            fontsize=10,
+            fontweight="bold",
+        )
+
+    ax.axvline(x=0, color="black", linestyle="-", linewidth=1)
+    ax.set_xlabel("Percentage Change (%)", fontsize=12, fontweight="bold")
+    ax.set_title("Key Performance Improvements", fontsize=14, fontweight="bold", pad=20)
+    ax.grid(axis="x", alpha=0.3, linestyle="--")
+
     plt.tight_layout()
     return fig
 
 
-def generate_pdf_report(previous_metrics: Dict, bpo_metrics: Dict, 
-                       output_path: Path, transition_date: datetime):
+def create_distribution_comparison(
+    previous_scores: pd.Series, bpo_scores: pd.Series
+) -> plt.Figure:
+    """Create a histogram/box plot comparing score distributions."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Histogram comparison
+    ax1.hist(
+        previous_scores.dropna(),
+        bins=20,
+        alpha=0.6,
+        label="Previous Center",
+        color="#e74c3c",
+        edgecolor="black",
+    )
+    ax1.hist(
+        bpo_scores.dropna(),
+        bins=20,
+        alpha=0.6,
+        label="BPO Centers",
+        color="#2ecc71",
+        edgecolor="black",
+    )
+    ax1.set_xlabel("QA Score", fontsize=12, fontweight="bold")
+    ax1.set_ylabel("Frequency", fontsize=12, fontweight="bold")
+    ax1.set_title("Score Distribution Comparison", fontsize=14, fontweight="bold")
+    ax1.legend()
+    ax1.grid(axis="y", alpha=0.3)
+
+    # Box plot comparison
+    data_to_plot = [previous_scores.dropna().values, bpo_scores.dropna().values]
+    bp = ax2.boxplot(
+        data_to_plot,
+        tick_labels=["Previous\nCenter", "BPO\nCenters"],
+        patch_artist=True,
+        showmeans=True,
+    )
+    bp["boxes"][0].set_facecolor("#e74c3c")
+    bp["boxes"][1].set_facecolor("#2ecc71")
+    ax2.set_ylabel("QA Score", fontsize=12, fontweight="bold")
+    ax2.set_title("Score Distribution (Box Plot)", fontsize=14, fontweight="bold")
+    ax2.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    return fig
+
+
+def create_quality_tier_chart(previous_metrics: Dict, bpo_metrics: Dict) -> plt.Figure:
+    """Create pie charts comparing quality tier distributions."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Previous Center tiers
+    prev_labels = [
+        "Excellent\n(90-100)",
+        "Good\n(75-89)",
+        "Fair\n(60-74)",
+        "Poor\n(<60)",
+    ]
+    prev_sizes = [
+        previous_metrics.get("excellent_pct", 0),
+        previous_metrics.get("good_pct", 0),
+        previous_metrics.get("fair_pct", 0),
+        previous_metrics.get("poor_pct", 0),
+    ]
+    prev_colors = ["#27ae60", "#2ecc71", "#f39c12", "#e74c3c"]
+
+    ax1.pie(
+        prev_sizes,
+        labels=prev_labels,
+        colors=prev_colors,
+        autopct="%1.1f%%",
+        startangle=90,
+        textprops={"fontsize": 10, "fontweight": "bold"},
+    )
+    ax1.set_title(
+        "Previous Contact Center\nQuality Distribution", fontsize=14, fontweight="bold"
+    )
+
+    # BPO Centers tiers
+    bpo_sizes = [
+        bpo_metrics.get("excellent_pct", 0),
+        bpo_metrics.get("good_pct", 0),
+        bpo_metrics.get("fair_pct", 0),
+        bpo_metrics.get("poor_pct", 0),
+    ]
+
+    ax2.pie(
+        bpo_sizes,
+        labels=prev_labels,
+        colors=prev_colors,
+        autopct="%1.1f%%",
+        startangle=90,
+        textprops={"fontsize": 10, "fontweight": "bold"},
+    )
+    ax2.set_title("BPO Centers\nQuality Distribution", fontsize=14, fontweight="bold")
+
+    plt.tight_layout()
+    return fig
+
+
+def create_trend_chart(bpo_df: pd.DataFrame) -> plt.Figure:
+    """Create a time series chart showing trends over time."""
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    if "Call Date" in bpo_df.columns and "QA Score" in bpo_df.columns:
+        df_copy = bpo_df[["Call Date", "QA Score"]].copy()
+        df_copy = df_copy.dropna()
+        df_copy["Call Date"] = pd.to_datetime(df_copy["Call Date"])
+        df_copy = df_copy.sort_values("Call Date")
+
+        # Weekly averages
+        df_copy["Week"] = df_copy["Call Date"].dt.to_period("W")
+        weekly_avg = df_copy.groupby("Week")["QA Score"].mean()
+
+        # Convert period to datetime for plotting
+        weekly_dates = [pd.Period.to_timestamp(w) for w in weekly_avg.index]
+
+        ax.plot(
+            weekly_dates,
+            weekly_avg.values,
+            marker="o",
+            linewidth=2,
+            markersize=8,
+            color="#2ecc71",
+            label="Weekly Average QA Score",
+        )
+        ax.fill_between(weekly_dates, weekly_avg.values, alpha=0.3, color="#2ecc71")
+
+        # Add trend line
+        if len(weekly_avg) > 1:
+            z = np.polyfit(range(len(weekly_avg)), weekly_avg.values, 1)
+            p = np.poly1d(z)
+            ax.plot(
+                weekly_dates,
+                p(range(len(weekly_avg))),
+                "--",
+                color="#34495e",
+                linewidth=2,
+                label="Trend Line",
+                alpha=0.7,
+            )
+
+        ax.set_xlabel("Date", fontsize=12, fontweight="bold")
+        ax.set_ylabel("QA Score", fontsize=12, fontweight="bold")
+        ax.set_title(
+            "BPO Centers Performance Trend (Weekly Average)",
+            fontsize=14,
+            fontweight="bold",
+        )
+        ax.legend()
+        ax.grid(alpha=0.3)
+        plt.xticks(rotation=45)
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No trend data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+        )
+
+    plt.tight_layout()
+    return fig
+
+
+def create_rubric_improvement_chart(improvements: List[Dict]) -> plt.Figure:
+    """Create a horizontal bar chart showing top rubric code improvements."""
+    if not improvements:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(
+            0.5,
+            0.5,
+            "No rubric improvements to display",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+        )
+        return fig
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Get top 10 improvements
+    top_improvements = improvements[:10]
+
+    codes = [imp["code"] for imp in top_improvements]
+    improvement_pcts = [imp["improvement_pct"] for imp in top_improvements]
+
+    colors = ["#2ecc71"] * len(codes)
+    bars = ax.barh(
+        codes,
+        improvement_pcts,
+        color=colors,
+        alpha=0.7,
+        edgecolor="black",
+        linewidth=1.5,
+    )
+
+    # Add value labels
+    for i, (bar, pct) in enumerate(zip(bars, improvement_pcts)):
+        width = bar.get_width()
+        ax.text(
+            width,
+            bar.get_y() + bar.get_height() / 2.0,
+            f"{pct:.1f}%",
+            ha="left",
+            va="center",
+            fontsize=10,
+            fontweight="bold",
+        )
+        # Add previous and BPO rates
+        prev_rate = top_improvements[i]["previous_rate"]
+        bpo_rate = top_improvements[i]["bpo_rate"]
+        ax.text(
+            0,
+            bar.get_y() + bar.get_height() / 2.0,
+            f"  {prev_rate:.1f}% → {bpo_rate:.1f}%",
+            ha="left",
+            va="center",
+            fontsize=9,
+            style="italic",
+        )
+
+    ax.set_xlabel("Improvement (%)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Rubric Code", fontsize=12, fontweight="bold")
+    ax.set_title(
+        "Top Rubric Code Improvements\n(Reduction in Failure Rate)",
+        fontsize=14,
+        fontweight="bold",
+    )
+    ax.grid(axis="x", alpha=0.3)
+
+    plt.tight_layout()
+    return fig
+
+
+def generate_pdf_report(
+    previous_metrics: Dict,
+    bpo_metrics: Dict,
+    output_path: Path,
+    bpo_start_date: datetime,
+    previous_data: pd.DataFrame = None,
+    bpo_data: pd.DataFrame = None,
+):
     """Generate multi-page PDF comparison report."""
     print(f"\n📄 Generating PDF report: {output_path}")
-    
+
     with PdfPages(output_path) as pdf:
         # Page 1: Title Page
         fig = plt.figure(figsize=(11, 8.5))
         ax = fig.add_subplot(111)
-        ax.axis('off')
-        
+        ax.axis("off")
+
         title_text = "Contact Center Performance Comparison Report"
         subtitle_text = "Previous Contact Center vs BPO Centers"
-        date_text = f"Transition Date: {transition_date.strftime('%B %d, %Y')}"
-        generated_text = f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}"
-        
-        ax.text(0.5, 0.7, title_text, ha='center', va='center', 
-                fontsize=24, fontweight='bold', transform=ax.transAxes)
-        ax.text(0.5, 0.6, subtitle_text, ha='center', va='center',
-                fontsize=18, style='italic', transform=ax.transAxes)
-        ax.text(0.5, 0.4, date_text, ha='center', va='center',
-                fontsize=14, transform=ax.transAxes)
-        ax.text(0.5, 0.3, generated_text, ha='center', va='center',
-                fontsize=12, transform=ax.transAxes)
-        
-        pdf.savefig(fig, bbox_inches='tight')
+        date_text = (
+            f"BPO Centers Data: From {bpo_start_date.strftime('%B %d, %Y')} onwards"
+        )
+        generated_text = (
+            f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}"
+        )
+
+        ax.text(
+            0.5,
+            0.7,
+            title_text,
+            ha="center",
+            va="center",
+            fontsize=24,
+            fontweight="bold",
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.5,
+            0.6,
+            subtitle_text,
+            ha="center",
+            va="center",
+            fontsize=18,
+            style="italic",
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.5,
+            0.4,
+            date_text,
+            ha="center",
+            va="center",
+            fontsize=14,
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.5,
+            0.3,
+            generated_text,
+            ha="center",
+            va="center",
+            fontsize=12,
+            transform=ax.transAxes,
+        )
+
+        pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
-        
+
         # Page 2: Executive Summary
         fig = plt.figure(figsize=(11, 8.5))
         ax = fig.add_subplot(111)
-        ax.axis('off')
-        
+        ax.axis("off")
+
         summary_lines = ["EXECUTIVE SUMMARY", ""]
-        
+
         # Calculate improvements
         improvements = {}
         if previous_metrics.get("avg_qa_score") and bpo_metrics.get("avg_qa_score"):
-            pct = ((bpo_metrics["avg_qa_score"] - previous_metrics["avg_qa_score"]) / 
-                   previous_metrics["avg_qa_score"]) * 100
+            pct = (
+                (bpo_metrics["avg_qa_score"] - previous_metrics["avg_qa_score"])
+                / previous_metrics["avg_qa_score"]
+            ) * 100
             improvements["QA Score"] = pct
             summary_lines.append(f"• QA Score: {pct:+.1f}% change")
-        
+
         if previous_metrics.get("pass_rate") and bpo_metrics.get("pass_rate"):
-            pct = ((bpo_metrics["pass_rate"] - previous_metrics["pass_rate"]) / 
-                   previous_metrics["pass_rate"]) * 100
+            pct = (
+                (bpo_metrics["pass_rate"] - previous_metrics["pass_rate"])
+                / previous_metrics["pass_rate"]
+            ) * 100
             improvements["Pass Rate"] = pct
             summary_lines.append(f"• Pass Rate: {pct:+.1f}% change")
-        
+
         if previous_metrics.get("avg_aht") and bpo_metrics.get("avg_aht"):
-            pct = ((bpo_metrics["avg_aht"] - previous_metrics["avg_aht"]) / 
-                   previous_metrics["avg_aht"]) * 100
+            pct = (
+                (bpo_metrics["avg_aht"] - previous_metrics["avg_aht"])
+                / previous_metrics["avg_aht"]
+            ) * 100
             improvements["AHT"] = pct
             summary_lines.append(f"• Average Handle Time: {pct:+.1f}% change")
-        
+
+        # Add consistency improvements
+        if previous_metrics.get("score_std") and bpo_metrics.get("score_std"):
+            std_improvement = (
+                (previous_metrics["score_std"] - bpo_metrics["score_std"])
+                / previous_metrics["score_std"]
+            ) * 100
+            if std_improvement > 0:
+                improvements["Consistency (Lower Std Dev)"] = std_improvement
+                summary_lines.append(
+                    f"• Consistency: {std_improvement:+.1f}% improvement (lower std dev)"
+                )
+
+        # Add quality tier improvements
+        if previous_metrics.get("excellent_pct") and bpo_metrics.get("excellent_pct"):
+            excellent_improvement = (
+                bpo_metrics["excellent_pct"] - previous_metrics["excellent_pct"]
+            )
+            if excellent_improvement > 0:
+                improvements["Excellent Scores (90+)"] = excellent_improvement
+                summary_lines.append(
+                    f"• Excellent Scores (90+): {excellent_improvement:+.1f}% change"
+                )
+
         summary_lines.extend(["", "KEY METRICS"])
         summary_lines.append(f"Previous Contact Center:")
-        summary_lines.append(f"  • Total Calls: {previous_metrics.get('total_calls', 'N/A')}")
-        summary_lines.append(f"  • Avg QA Score: {previous_metrics.get('avg_qa_score', 'N/A'):.1f}" if previous_metrics.get('avg_qa_score') else "  • Avg QA Score: N/A")
-        summary_lines.append(f"  • Pass Rate: {previous_metrics.get('pass_rate', 'N/A'):.1f}%" if previous_metrics.get('pass_rate') else "  • Pass Rate: N/A")
-        summary_lines.append(f"  • Avg AHT: {previous_metrics.get('avg_aht', 'N/A'):.1f} min" if previous_metrics.get('avg_aht') else "  • Avg AHT: N/A")
-        
+        summary_lines.append(
+            f"  • Total Calls: {previous_metrics.get('total_calls', 'N/A')}"
+        )
+        summary_lines.append(
+            f"  • Avg QA Score: {previous_metrics.get('avg_qa_score', 'N/A'):.1f}"
+            if previous_metrics.get("avg_qa_score")
+            else "  • Avg QA Score: N/A"
+        )
+        summary_lines.append(
+            f"  • Median Score: {previous_metrics.get('score_median', 'N/A'):.1f}"
+            if previous_metrics.get("score_median")
+            else "  • Median Score: N/A"
+        )
+        summary_lines.append(
+            f"  • Std Dev: {previous_metrics.get('score_std', 'N/A'):.1f}"
+            if previous_metrics.get("score_std")
+            else "  • Std Dev: N/A"
+        )
+        summary_lines.append(
+            f"  • Pass Rate: {previous_metrics.get('pass_rate', 'N/A'):.1f}%"
+            if previous_metrics.get("pass_rate")
+            else "  • Pass Rate: N/A"
+        )
+        summary_lines.append(
+            f"  • Avg AHT: {previous_metrics.get('avg_aht', 'N/A'):.1f} min"
+            if previous_metrics.get("avg_aht")
+            else "  • Avg AHT: N/A"
+        )
+        summary_lines.append(
+            f"  • Excellent (90+): {previous_metrics.get('excellent_pct', 0):.1f}%"
+            if previous_metrics.get("excellent_pct") is not None
+            else "  • Excellent (90+): N/A"
+        )
+
         summary_lines.append("")
-        summary_lines.append(f"BPO Centers:")
-        summary_lines.append(f"  • Total Calls: {bpo_metrics.get('total_calls', 'N/A')}")
-        summary_lines.append(f"  • Avg QA Score: {bpo_metrics.get('avg_qa_score', 'N/A'):.1f}" if bpo_metrics.get('avg_qa_score') else "  • Avg QA Score: N/A")
-        summary_lines.append(f"  • Pass Rate: {bpo_metrics.get('pass_rate', 'N/A'):.1f}%" if bpo_metrics.get('pass_rate') else "  • Pass Rate: N/A")
-        summary_lines.append(f"  • Avg AHT: {bpo_metrics.get('avg_aht', 'N/A'):.1f} min" if bpo_metrics.get('avg_aht') else "  • Avg AHT: N/A")
-        
+        summary_lines.append(
+            f"BPO Centers (from {bpo_start_date.strftime('%Y-%m-%d')}):"
+        )
+        summary_lines.append(
+            f"  • Total Calls: {bpo_metrics.get('total_calls', 'N/A')}"
+        )
+        summary_lines.append(
+            f"  • Avg QA Score: {bpo_metrics.get('avg_qa_score', 'N/A'):.1f}"
+            if bpo_metrics.get("avg_qa_score")
+            else "  • Avg QA Score: N/A"
+        )
+        summary_lines.append(
+            f"  • Median Score: {bpo_metrics.get('score_median', 'N/A'):.1f}"
+            if bpo_metrics.get("score_median")
+            else "  • Median Score: N/A"
+        )
+        summary_lines.append(
+            f"  • Std Dev: {bpo_metrics.get('score_std', 'N/A'):.1f}"
+            if bpo_metrics.get("score_std")
+            else "  • Std Dev: N/A"
+        )
+        summary_lines.append(
+            f"  • Pass Rate: {bpo_metrics.get('pass_rate', 'N/A'):.1f}%"
+            if bpo_metrics.get("pass_rate")
+            else "  • Pass Rate: N/A"
+        )
+        summary_lines.append(
+            f"  • Avg AHT: {bpo_metrics.get('avg_aht', 'N/A'):.1f} min"
+            if bpo_metrics.get("avg_aht")
+            else "  • Avg AHT: N/A"
+        )
+        summary_lines.append(
+            f"  • Excellent (90+): {bpo_metrics.get('excellent_pct', 0):.1f}%"
+            if bpo_metrics.get("excellent_pct") is not None
+            else "  • Excellent (90+): N/A"
+        )
+
         summary_text = "\n".join(summary_lines)
-        ax.text(0.1, 0.95, summary_text, ha='left', va='top',
-                fontsize=11, family='monospace', transform=ax.transAxes,
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
-        
-        pdf.savefig(fig, bbox_inches='tight')
+        ax.text(
+            0.1,
+            0.95,
+            summary_text,
+            ha="left",
+            va="top",
+            fontsize=11,
+            family="monospace",
+            transform=ax.transAxes,
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.3),
+        )
+
+        pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
-        
+
         # Page 3+: Metric Comparison Charts
         if previous_metrics.get("avg_qa_score") and bpo_metrics.get("avg_qa_score"):
-            fig = create_comparison_chart("Average QA Score", 
-                                         previous_metrics["avg_qa_score"],
-                                         bpo_metrics["avg_qa_score"])
-            pdf.savefig(fig, bbox_inches='tight')
+            fig = create_comparison_chart(
+                "Average QA Score",
+                previous_metrics["avg_qa_score"],
+                bpo_metrics["avg_qa_score"],
+            )
+            pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
-        
+
         if previous_metrics.get("pass_rate") and bpo_metrics.get("pass_rate"):
-            fig = create_comparison_chart("Pass Rate (%)",
-                                         previous_metrics["pass_rate"],
-                                         bpo_metrics["pass_rate"])
-            pdf.savefig(fig, bbox_inches='tight')
+            fig = create_comparison_chart(
+                "Pass Rate (%)", previous_metrics["pass_rate"], bpo_metrics["pass_rate"]
+            )
+            pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
-        
+
         if previous_metrics.get("avg_aht") and bpo_metrics.get("avg_aht"):
-            fig = create_comparison_chart("Average Handle Time (minutes)",
-                                         previous_metrics["avg_aht"],
-                                         bpo_metrics["avg_aht"])
-            pdf.savefig(fig, bbox_inches='tight')
+            fig = create_comparison_chart(
+                "Average Handle Time (minutes)",
+                previous_metrics["avg_aht"],
+                bpo_metrics["avg_aht"],
+            )
+            pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
-        
+
         if previous_metrics.get("total_calls") and bpo_metrics.get("total_calls"):
-            fig = create_comparison_chart("Total Call Volume",
-                                         previous_metrics["total_calls"],
-                                         bpo_metrics["total_calls"])
-            pdf.savefig(fig, bbox_inches='tight')
+            fig = create_comparison_chart(
+                "Total Call Volume",
+                previous_metrics["total_calls"],
+                bpo_metrics["total_calls"],
+            )
+            pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
-        
+
         # Improvement Summary Chart
         if improvements:
             fig = create_improvement_summary_chart(improvements)
-            pdf.savefig(fig, bbox_inches='tight')
+            pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
-    
+
+        # Distribution Comparison
+        if previous_data is not None and bpo_data is not None:
+            if "QA Score" in previous_data.columns and "QA Score" in bpo_data.columns:
+                fig = create_distribution_comparison(
+                    previous_data["QA Score"], bpo_data["QA Score"]
+                )
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)
+
+        # Quality Tier Comparison
+        if (
+            previous_metrics.get("excellent_pct") is not None
+            and bpo_metrics.get("excellent_pct") is not None
+        ):
+            fig = create_quality_tier_chart(previous_metrics, bpo_metrics)
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        # Trend Chart
+        if bpo_data is not None:
+            fig = create_trend_chart(bpo_data)
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        # Rubric Improvements
+        if previous_data is not None and bpo_data is not None:
+            rubric_improvements = calculate_rubric_improvements(previous_data, bpo_data)
+            if rubric_improvements.get("top_improvements"):
+                fig = create_rubric_improvement_chart(
+                    rubric_improvements["top_improvements"]
+                )
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)
+
     print(f"✅ PDF report generated successfully: {output_path}")
 
 
@@ -708,42 +1395,42 @@ def main():
         "--previous-csv",
         nargs="+",
         type=str,
-        help="Path(s) to previous contact center CSV file(s)"
+        help="Path(s) to previous contact center CSV file(s)",
     )
     parser.add_argument(
         "--previous-csv-dir",
         type=str,
-        help="Directory containing previous contact center CSV files"
+        help="Directory containing previous contact center CSV files",
     )
     parser.add_argument(
         "--output",
         type=str,
         default="comparison_report.pdf",
-        help="Output PDF file path (default: comparison_report.pdf)"
+        help="Output PDF file path (default: comparison_report.pdf)",
     )
     parser.add_argument(
         "--cache",
         type=str,
         default=str(CACHE_FILE),
-        help=f"Path to BPO Centers cache file (default: {CACHE_FILE})"
+        help=f"Path to BPO Centers cache file (default: {CACHE_FILE})",
     )
     parser.add_argument(
-        "--transition-date",
+        "--bpo-start-date",
         type=str,
-        default="2025-07-07",
-        help="Transition date in YYYY-MM-DD format (default: 2025-07-07)"
+        default="2025-08-01",
+        help="BPO Centers start date filter in YYYY-MM-DD format (default: 2025-08-01)",
     )
-    
+
     args = parser.parse_args()
-    
-    # Parse transition date
+
+    # Parse BPO start date
     try:
-        transition_date = datetime.strptime(args.transition_date, "%Y-%m-%d")
+        bpo_start_date = datetime.strptime(args.bpo_start_date, "%Y-%m-%d")
     except ValueError:
-        print(f"❌ Invalid transition date format: {args.transition_date}")
-        print("   Use YYYY-MM-DD format (e.g., 2025-07-07)")
+        print(f"❌ Invalid BPO start date format: {args.bpo_start_date}")
+        print("   Use YYYY-MM-DD format (e.g., 2025-08-01)")
         sys.exit(1)
-    
+
     # Determine CSV file paths
     csv_paths = []
     if args.previous_csv:
@@ -761,38 +1448,45 @@ def main():
         print("❌ Error: Must provide either --previous-csv or --previous-csv-dir")
         parser.print_help()
         sys.exit(1)
-    
+
     print("=" * 80)
     print("Contact Center Comparison Report Generator")
     print("=" * 80)
     print()
-    
+
     try:
         # Load data
         print("📊 Loading data...")
-        previous_data = load_previous_center_data(csv_paths, transition_date)
-        bpo_before, bpo_after = load_bpo_centers_data(Path(args.cache), transition_date)
-        
+        previous_data = load_previous_center_data(csv_paths)
+        bpo_data = load_bpo_centers_data(Path(args.cache), bpo_start_date)
+
         # Calculate metrics
         print("\n📈 Calculating metrics...")
         previous_metrics = calculate_all_metrics(previous_data)
-        bpo_metrics = calculate_all_metrics(bpo_after)  # Compare with "after" period
-        
+        bpo_metrics = calculate_all_metrics(bpo_data)
+
         # Generate report
         output_path = Path(args.output)
-        generate_pdf_report(previous_metrics, bpo_metrics, output_path, transition_date)
-        
+        generate_pdf_report(
+            previous_metrics,
+            bpo_metrics,
+            output_path,
+            bpo_start_date,
+            previous_data,
+            bpo_data,
+        )
+
         print("\n" + "=" * 80)
         print("✅ Report generation complete!")
         print("=" * 80)
-        
+
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-
