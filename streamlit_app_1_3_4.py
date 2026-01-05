@@ -9214,9 +9214,9 @@ with st.expander("Score & Label Distribution Analysis", expanded=False):
             filtered_df["QA Score"].hist(
                 bins=20, ax=ax_dist, edgecolor="black", color="steelblue"
             )
-        ax_dist.set_xlabel("QA Score (%)")
-        ax_dist.set_ylabel("Number of Calls")
-        ax_dist.set_title("Distribution of QA Scores")
+            ax_dist.set_xlabel("QA Score (%)")
+            ax_dist.set_ylabel("Number of Calls")
+            ax_dist.set_title("Distribution of QA Scores")
             ax_dist.axvline(
                 x=alert_threshold,
                 color="r",
