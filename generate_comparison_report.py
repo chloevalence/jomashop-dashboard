@@ -76,6 +76,156 @@ def normalize_agent_id(agent_str):
     return agent_str
 
 
+def extract_products_from_text(text):
+    """
+    Extract products from text fields (Summary, Reason, Outcome).
+    Uses keyword matching to identify watch brands, jewelry types, and product categories.
+
+    Args:
+        text: Text string to extract products from (can be None or empty)
+
+    Returns:
+        List of extracted products, or empty list if none found
+    """
+    if not text or pd.isna(text):
+        return []
+
+    text_lower = str(text).lower()
+    products = []
+
+    # Watch brands (common luxury and fashion watch brands)
+    watch_brands = [
+        "rolex",
+        "omega",
+        "tag heuer",
+        "breitling",
+        "cartier",
+        "patek philippe",
+        "audemars piguet",
+        "jaeger-lecoultre",
+        "vacheron constantin",
+        "panerai",
+        "iwc",
+        "zenith",
+        "tudor",
+        "longines",
+        "tissot",
+        "hamilton",
+        "seiko",
+        "citizen",
+        "casio",
+        "fossil",
+        "michael kors",
+        "bulova",
+        "movado",
+        "baume & mercier",
+        "montblanc",
+        "hublot",
+        "richard mille",
+        "ap",
+        "patek",
+        "jlc",
+        "vc",
+        "iwc schaffhausen",
+        "grand seiko",
+    ]
+
+    # Product categories
+    product_categories = [
+        "watch",
+        "watches",
+        "timepiece",
+        "timepieces",
+        "wristwatch",
+        "wristwatches",
+        "bracelet",
+        "bracelets",
+        "necklace",
+        "necklaces",
+        "ring",
+        "rings",
+        "earrings",
+        "pendant",
+        "pendants",
+        "jewelry",
+        "jewellery",
+        "accessories",
+    ]
+
+    # Check for watch brands
+    for brand in watch_brands:
+        if brand in text_lower:
+            # Normalize brand name (capitalize properly)
+            brand_normalized = brand.title()
+            if brand == "ap":
+                brand_normalized = "Audemars Piguet"
+            elif brand == "jlc":
+                brand_normalized = "Jaeger-LeCoultre"
+            elif brand == "vc":
+                brand_normalized = "Vacheron Constantin"
+            elif brand == "patek":
+                brand_normalized = "Patek Philippe"
+            elif brand == "iwc schaffhausen":
+                brand_normalized = "IWC"
+            elif brand == "grand seiko":
+                brand_normalized = "Grand Seiko"
+
+            if brand_normalized not in products:
+                products.append(brand_normalized)
+
+    # Check for product categories
+    for category in product_categories:
+        if category in text_lower:
+            category_normalized = (
+                category.title() if category != "jewellery" else "Jewelry"
+            )
+            if category_normalized not in products:
+                products.append(category_normalized)
+
+    # Look for SKU patterns (alphanumeric codes, model numbers)
+    # Pattern: alphanumeric codes that might be SKUs or model numbers
+    sku_pattern = r"\b[A-Z]{2,}\d{3,}\b|\b\d{4,}[A-Z]{2,}\b"
+    sku_matches = re.findall(sku_pattern, str(text), re.IGNORECASE)
+    for sku in sku_matches:
+        if len(sku) >= 6 and sku.upper() not in products:  # Only add substantial codes
+            products.append(f"SKU: {sku.upper()}")
+
+    # Look for model numbers (patterns like "Submariner", "Speedmaster", etc.)
+    # Common watch model patterns
+    model_keywords = [
+        "submariner",
+        "gmt",
+        "daytona",
+        "yacht-master",
+        "explorer",
+        "datejust",
+        "speedmaster",
+        "seamaster",
+        "constellation",
+        "de ville",
+        "aqua terra",
+        "carrera",
+        "monaco",
+        "aquaracer",
+        "formula 1",
+        "link",
+        "calibre",
+        "navitimer",
+        "chronomat",
+        "superocean",
+        "avenger",
+        "transocean",
+    ]
+
+    for model in model_keywords:
+        if model in text_lower:
+            model_normalized = model.title().replace("-", " ")
+            if model_normalized not in products:
+                products.append(f"Model: {model_normalized}")
+
+    return products
+
+
 def extract_date_from_call_id(call_id: str) -> Optional[datetime]:
     """Extract date from call_id format: YYYYMMDD_HHMMSS_..."""
     if pd.isna(call_id) or not call_id:
@@ -432,11 +582,14 @@ def calculate_volume_metrics(df: pd.DataFrame) -> Dict:
         )
         metrics["total_calls"] = len(valid_calls)
     else:
+        valid_calls = df
         metrics["total_calls"] = len(df)
 
-    # Calls per day
-    if "Call Date" in df.columns and metrics["total_calls"] > 0:
-        date_range = (df["Call Date"].max() - df["Call Date"].min()).days + 1
+    # Calls per day - use valid_calls for date range calculation
+    if "Call Date" in valid_calls.columns and metrics["total_calls"] > 0:
+        date_range = (
+            valid_calls["Call Date"].max() - valid_calls["Call Date"].min()
+        ).days + 1
         if date_range > 0:
             metrics["calls_per_day"] = metrics["total_calls"] / date_range
         else:
@@ -710,6 +863,116 @@ def calculate_rubric_improvements(
     return metrics
 
 
+def calculate_reason_metrics(df: pd.DataFrame) -> Dict:
+    """Calculate call reason distribution metrics."""
+    metrics = {}
+
+    if "Reason" not in df.columns:
+        return metrics
+
+    reason_counts = df["Reason"].value_counts()
+    total_calls = len(df[df["Reason"].notna()])
+
+    if total_calls == 0:
+        return metrics
+
+    metrics["reason_distribution"] = reason_counts.to_dict()
+    metrics["top_reason"] = reason_counts.index[0] if len(reason_counts) > 0 else None
+    metrics["top_reason_count"] = reason_counts.iloc[0] if len(reason_counts) > 0 else 0
+    metrics["top_reason_pct"] = (
+        (reason_counts.iloc[0] / total_calls * 100) if len(reason_counts) > 0 else 0
+    )
+    metrics["unique_reasons"] = len(reason_counts)
+    metrics["reason_calls_with_data"] = total_calls
+
+    return metrics
+
+
+def calculate_outcome_metrics(df: pd.DataFrame) -> Dict:
+    """Calculate call outcome distribution metrics."""
+    metrics = {}
+
+    if "Outcome" not in df.columns:
+        return metrics
+
+    outcome_counts = df["Outcome"].value_counts()
+    total_calls = len(df[df["Outcome"].notna()])
+
+    if total_calls == 0:
+        return metrics
+
+    metrics["outcome_distribution"] = outcome_counts.to_dict()
+    metrics["top_outcome"] = (
+        outcome_counts.index[0] if len(outcome_counts) > 0 else None
+    )
+    metrics["top_outcome_count"] = (
+        outcome_counts.iloc[0] if len(outcome_counts) > 0 else 0
+    )
+    metrics["top_outcome_pct"] = (
+        (outcome_counts.iloc[0] / total_calls * 100) if len(outcome_counts) > 0 else 0
+    )
+    metrics["unique_outcomes"] = len(outcome_counts)
+    metrics["outcome_calls_with_data"] = total_calls
+
+    return metrics
+
+
+def calculate_product_metrics(df: pd.DataFrame) -> Dict:
+    """Calculate product distribution metrics from Summary, Reason, and Outcome fields."""
+    metrics = {}
+
+    # Combine text from Summary, Reason, and Outcome fields
+    product_data = []
+    text_fields = []
+
+    if "Summary" in df.columns:
+        text_fields.append("Summary")
+    if "Reason" in df.columns:
+        text_fields.append("Reason")
+    if "Outcome" in df.columns:
+        text_fields.append("Outcome")
+
+    if not text_fields:
+        return metrics
+
+    for idx, row in df.iterrows():
+        combined_text = " ".join(
+            [str(row.get(field, "") or "") for field in text_fields]
+        )
+        products = extract_products_from_text(combined_text)
+        product_data.extend(products)
+
+    if len(product_data) == 0:
+        return metrics
+
+    product_counts = pd.Series(product_data).value_counts()
+    total_mentions = len(product_data)
+
+    metrics["product_distribution"] = product_counts.to_dict()
+    metrics["top_product"] = (
+        product_counts.index[0] if len(product_counts) > 0 else None
+    )
+    metrics["top_product_count"] = (
+        product_counts.iloc[0] if len(product_counts) > 0 else 0
+    )
+    metrics["top_product_pct"] = (
+        (product_counts.iloc[0] / total_mentions * 100)
+        if len(product_counts) > 0
+        else 0
+    )
+    metrics["unique_products"] = len(product_counts)
+    metrics["total_product_mentions"] = total_mentions
+    # Count calls where ANY of the text fields have non-null data
+    # (since product extraction combines all available text fields)
+    if text_fields:
+        calls_with_any_text = df[df[text_fields].notna().any(axis=1)]
+        metrics["calls_with_products"] = len(calls_with_any_text)
+    else:
+        metrics["calls_with_products"] = 0
+
+    return metrics
+
+
 def calculate_all_metrics(df: pd.DataFrame) -> Dict:
     """Calculate all KPIs for a dataset."""
     metrics = {}
@@ -723,6 +986,9 @@ def calculate_all_metrics(df: pd.DataFrame) -> Dict:
     metrics.update(calculate_consistency_metrics(df))
     metrics.update(calculate_quality_distribution(df))
     metrics.update(calculate_trend_metrics(df))
+    metrics.update(calculate_reason_metrics(df))
+    metrics.update(calculate_outcome_metrics(df))
+    metrics.update(calculate_product_metrics(df))
 
     return metrics
 
@@ -893,8 +1159,10 @@ def create_distribution_comparison(
         patch_artist=True,
         showmeans=True,
     )
-    bp["boxes"][0].set_facecolor("#e74c3c")
-    bp["boxes"][1].set_facecolor("#2ecc71")
+    # Check if boxes were created before accessing (in case data is empty after dropna)
+    if "boxes" in bp and len(bp["boxes"]) >= 2:
+        bp["boxes"][0].set_facecolor("#e74c3c")
+        bp["boxes"][1].set_facecolor("#2ecc71")
     ax2.set_ylabel("QA Score", fontsize=12, fontweight="bold")
     ax2.set_title("Score Distribution (Box Plot)", fontsize=14, fontweight="bold")
     ax2.grid(axis="y", alpha=0.3)
@@ -935,6 +1203,12 @@ def create_quality_tier_chart(previous_metrics: Dict, bpo_metrics: Dict) -> plt.
     )
 
     # BPO Centers tiers
+    bpo_labels = [
+        "Excellent\n(90-100)",
+        "Good\n(75-89)",
+        "Fair\n(60-74)",
+        "Poor\n(<60)",
+    ]
     bpo_sizes = [
         bpo_metrics.get("excellent_pct", 0),
         bpo_metrics.get("good_pct", 0),
@@ -944,7 +1218,7 @@ def create_quality_tier_chart(previous_metrics: Dict, bpo_metrics: Dict) -> plt.
 
     ax2.pie(
         bpo_sizes,
-        labels=prev_labels,
+        labels=bpo_labels,
         colors=prev_colors,
         autopct="%1.1f%%",
         startangle=90,
@@ -1094,6 +1368,190 @@ def create_rubric_improvement_chart(improvements: List[Dict]) -> plt.Figure:
     return fig
 
 
+def create_reason_comparison_chart(
+    previous_reasons: Dict, bpo_reasons: Dict
+) -> plt.Figure:
+    """Create side-by-side comparison chart for call reasons."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+    # Previous center reasons (top 10)
+    if previous_reasons:
+        prev_series = pd.Series(previous_reasons).head(10)
+        ax1.barh(
+            range(len(prev_series)), prev_series.values, color="#e74c3c", alpha=0.7
+        )
+        ax1.set_yticks(range(len(prev_series)))
+        ax1.set_yticklabels(prev_series.index, fontsize=9)
+        ax1.set_xlabel("Number of Calls", fontsize=11)
+        ax1.set_title(
+            "Previous Contact Center\nTop 10 Call Reasons",
+            fontsize=12,
+            fontweight="bold",
+        )
+        ax1.invert_yaxis()
+        ax1.grid(axis="x", alpha=0.3)
+    else:
+        ax1.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax1.transAxes,
+        )
+        ax1.set_title(
+            "Previous Contact Center\nCall Reasons", fontsize=12, fontweight="bold"
+        )
+
+    # BPO Centers reasons (top 10)
+    if bpo_reasons:
+        bpo_series = pd.Series(bpo_reasons).head(10)
+        ax2.barh(range(len(bpo_series)), bpo_series.values, color="#2ecc71", alpha=0.7)
+        ax2.set_yticks(range(len(bpo_series)))
+        ax2.set_yticklabels(bpo_series.index, fontsize=9)
+        ax2.set_xlabel("Number of Calls", fontsize=11)
+        ax2.set_title(
+            "BPO Centers\nTop 10 Call Reasons", fontsize=12, fontweight="bold"
+        )
+        ax2.invert_yaxis()
+        ax2.grid(axis="x", alpha=0.3)
+    else:
+        ax2.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax2.transAxes,
+        )
+        ax2.set_title("BPO Centers\nCall Reasons", fontsize=12, fontweight="bold")
+
+    plt.tight_layout()
+    return fig
+
+
+def create_outcome_comparison_chart(
+    previous_outcomes: Dict, bpo_outcomes: Dict
+) -> plt.Figure:
+    """Create side-by-side comparison chart for call outcomes."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+    # Previous center outcomes (top 10)
+    if previous_outcomes:
+        prev_series = pd.Series(previous_outcomes).head(10)
+        ax1.barh(
+            range(len(prev_series)), prev_series.values, color="#e74c3c", alpha=0.7
+        )
+        ax1.set_yticks(range(len(prev_series)))
+        ax1.set_yticklabels(prev_series.index, fontsize=9)
+        ax1.set_xlabel("Number of Calls", fontsize=11)
+        ax1.set_title(
+            "Previous Contact Center\nTop 10 Outcomes", fontsize=12, fontweight="bold"
+        )
+        ax1.invert_yaxis()
+        ax1.grid(axis="x", alpha=0.3)
+    else:
+        ax1.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax1.transAxes,
+        )
+        ax1.set_title(
+            "Previous Contact Center\nOutcomes", fontsize=12, fontweight="bold"
+        )
+
+    # BPO Centers outcomes (top 10)
+    if bpo_outcomes:
+        bpo_series = pd.Series(bpo_outcomes).head(10)
+        ax2.barh(range(len(bpo_series)), bpo_series.values, color="#2ecc71", alpha=0.7)
+        ax2.set_yticks(range(len(bpo_series)))
+        ax2.set_yticklabels(bpo_series.index, fontsize=9)
+        ax2.set_xlabel("Number of Calls", fontsize=11)
+        ax2.set_title("BPO Centers\nTop 10 Outcomes", fontsize=12, fontweight="bold")
+        ax2.invert_yaxis()
+        ax2.grid(axis="x", alpha=0.3)
+    else:
+        ax2.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax2.transAxes,
+        )
+        ax2.set_title("BPO Centers\nOutcomes", fontsize=12, fontweight="bold")
+
+    plt.tight_layout()
+    return fig
+
+
+def create_product_comparison_chart(
+    previous_products: Dict, bpo_products: Dict
+) -> plt.Figure:
+    """Create side-by-side comparison chart for products discussed."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+    # Previous center products (top 10)
+    if previous_products:
+        prev_series = pd.Series(previous_products).head(10)
+        ax1.barh(
+            range(len(prev_series)), prev_series.values, color="#e74c3c", alpha=0.7
+        )
+        ax1.set_yticks(range(len(prev_series)))
+        ax1.set_yticklabels(prev_series.index, fontsize=9)
+        ax1.set_xlabel("Number of Mentions", fontsize=11)
+        ax1.set_title(
+            "Previous Contact Center\nTop 10 Products Discussed",
+            fontsize=12,
+            fontweight="bold",
+        )
+        ax1.invert_yaxis()
+        ax1.grid(axis="x", alpha=0.3)
+    else:
+        ax1.text(
+            0.5,
+            0.5,
+            "No products found",
+            ha="center",
+            va="center",
+            transform=ax1.transAxes,
+        )
+        ax1.set_title(
+            "Previous Contact Center\nProducts Discussed",
+            fontsize=12,
+            fontweight="bold",
+        )
+
+    # BPO Centers products (top 10)
+    if bpo_products:
+        bpo_series = pd.Series(bpo_products).head(10)
+        ax2.barh(range(len(bpo_series)), bpo_series.values, color="#2ecc71", alpha=0.7)
+        ax2.set_yticks(range(len(bpo_series)))
+        ax2.set_yticklabels(bpo_series.index, fontsize=9)
+        ax2.set_xlabel("Number of Mentions", fontsize=11)
+        ax2.set_title(
+            "BPO Centers\nTop 10 Products Discussed", fontsize=12, fontweight="bold"
+        )
+        ax2.invert_yaxis()
+        ax2.grid(axis="x", alpha=0.3)
+    else:
+        ax2.text(
+            0.5,
+            0.5,
+            "No products found",
+            ha="center",
+            va="center",
+            transform=ax2.transAxes,
+        )
+        ax2.set_title("BPO Centers\nProducts Discussed", fontsize=12, fontweight="bold")
+
+    plt.tight_layout()
+    return fig
+
+
 def generate_pdf_report(
     previous_metrics: Dict,
     bpo_metrics: Dict,
@@ -1171,7 +1629,11 @@ def generate_pdf_report(
 
         # Calculate improvements
         improvements = {}
-        if previous_metrics.get("avg_qa_score") and bpo_metrics.get("avg_qa_score"):
+        if (
+            previous_metrics.get("avg_qa_score") is not None
+            and bpo_metrics.get("avg_qa_score") is not None
+            and previous_metrics["avg_qa_score"] != 0
+        ):
             pct = (
                 (bpo_metrics["avg_qa_score"] - previous_metrics["avg_qa_score"])
                 / previous_metrics["avg_qa_score"]
@@ -1179,7 +1641,11 @@ def generate_pdf_report(
             improvements["QA Score"] = pct
             summary_lines.append(f"• QA Score: {pct:+.1f}% change")
 
-        if previous_metrics.get("pass_rate") and bpo_metrics.get("pass_rate"):
+        if (
+            previous_metrics.get("pass_rate") is not None
+            and bpo_metrics.get("pass_rate") is not None
+            and previous_metrics["pass_rate"] != 0
+        ):
             pct = (
                 (bpo_metrics["pass_rate"] - previous_metrics["pass_rate"])
                 / previous_metrics["pass_rate"]
@@ -1187,7 +1653,11 @@ def generate_pdf_report(
             improvements["Pass Rate"] = pct
             summary_lines.append(f"• Pass Rate: {pct:+.1f}% change")
 
-        if previous_metrics.get("avg_aht") and bpo_metrics.get("avg_aht"):
+        if (
+            previous_metrics.get("avg_aht") is not None
+            and bpo_metrics.get("avg_aht") is not None
+            and previous_metrics["avg_aht"] != 0
+        ):
             pct = (
                 (bpo_metrics["avg_aht"] - previous_metrics["avg_aht"])
                 / previous_metrics["avg_aht"]
@@ -1196,7 +1666,11 @@ def generate_pdf_report(
             summary_lines.append(f"• Average Handle Time: {pct:+.1f}% change")
 
         # Add consistency improvements
-        if previous_metrics.get("score_std") and bpo_metrics.get("score_std"):
+        if (
+            previous_metrics.get("score_std") is not None
+            and bpo_metrics.get("score_std") is not None
+            and previous_metrics["score_std"] != 0
+        ):
             std_improvement = (
                 (previous_metrics["score_std"] - bpo_metrics["score_std"])
                 / previous_metrics["score_std"]
@@ -1208,7 +1682,10 @@ def generate_pdf_report(
                 )
 
         # Add quality tier improvements
-        if previous_metrics.get("excellent_pct") and bpo_metrics.get("excellent_pct"):
+        if (
+            previous_metrics.get("excellent_pct") is not None
+            and bpo_metrics.get("excellent_pct") is not None
+        ):
             excellent_improvement = (
                 bpo_metrics["excellent_pct"] - previous_metrics["excellent_pct"]
             )
@@ -1309,7 +1786,10 @@ def generate_pdf_report(
         plt.close(fig)
 
         # Page 3+: Metric Comparison Charts
-        if previous_metrics.get("avg_qa_score") and bpo_metrics.get("avg_qa_score"):
+        if (
+            previous_metrics.get("avg_qa_score") is not None
+            and bpo_metrics.get("avg_qa_score") is not None
+        ):
             fig = create_comparison_chart(
                 "Average QA Score",
                 previous_metrics["avg_qa_score"],
@@ -1318,14 +1798,20 @@ def generate_pdf_report(
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        if previous_metrics.get("pass_rate") and bpo_metrics.get("pass_rate"):
+        if (
+            previous_metrics.get("pass_rate") is not None
+            and bpo_metrics.get("pass_rate") is not None
+        ):
             fig = create_comparison_chart(
                 "Pass Rate (%)", previous_metrics["pass_rate"], bpo_metrics["pass_rate"]
             )
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        if previous_metrics.get("avg_aht") and bpo_metrics.get("avg_aht"):
+        if (
+            previous_metrics.get("avg_aht") is not None
+            and bpo_metrics.get("avg_aht") is not None
+        ):
             fig = create_comparison_chart(
                 "Average Handle Time (minutes)",
                 previous_metrics["avg_aht"],
@@ -1334,7 +1820,10 @@ def generate_pdf_report(
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        if previous_metrics.get("total_calls") and bpo_metrics.get("total_calls"):
+        if (
+            previous_metrics.get("total_calls") is not None
+            and bpo_metrics.get("total_calls") is not None
+        ):
             fig = create_comparison_chart(
                 "Total Call Volume",
                 previous_metrics["total_calls"],
@@ -1382,6 +1871,42 @@ def generate_pdf_report(
                 )
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
+
+        # Call Reasons Comparison
+        if (
+            previous_metrics.get("reason_distribution") is not None
+            and bpo_metrics.get("reason_distribution") is not None
+        ):
+            fig = create_reason_comparison_chart(
+                previous_metrics["reason_distribution"],
+                bpo_metrics["reason_distribution"],
+            )
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        # Call Outcomes Comparison
+        if (
+            previous_metrics.get("outcome_distribution") is not None
+            and bpo_metrics.get("outcome_distribution") is not None
+        ):
+            fig = create_outcome_comparison_chart(
+                previous_metrics["outcome_distribution"],
+                bpo_metrics["outcome_distribution"],
+            )
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        # Products Discussed Comparison
+        if (
+            previous_metrics.get("product_distribution") is not None
+            and bpo_metrics.get("product_distribution") is not None
+        ):
+            fig = create_product_comparison_chart(
+                previous_metrics["product_distribution"],
+                bpo_metrics["product_distribution"],
+            )
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
 
     print(f"✅ PDF report generated successfully: {output_path}")
 
