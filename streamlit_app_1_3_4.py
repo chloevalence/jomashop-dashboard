@@ -5194,10 +5194,10 @@ if is_super_admin():
                 st.cache_data.clear()
                 
                 # Clear persistent disk cache
-        if CACHE_FILE.exists():
-            try:
+                if CACHE_FILE.exists():
+                    try:
                         with cache_file_lock(CACHE_FILE, timeout=5):
-                CACHE_FILE.unlink()
+                            CACHE_FILE.unlink()
                             logger.info(f" Cleared persistent disk cache: {CACHE_FILE}")
             except Exception as e:
                 logger.warning(f"Failed to clear disk cache: {e}")
