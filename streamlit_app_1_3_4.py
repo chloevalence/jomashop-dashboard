@@ -446,6 +446,7 @@ def normalize_agent_id(agent_str):
     # Special case: "unknown" -> Agent 01 (Jesus)
     if agent_str == "unknown":
         return "bpagent01"
+        return "bpagent01"
 
     # Special case: bp016803073 and bp016803074 -> Agent 01 (Jesus)
     if agent_str in ["bp016803073", "bp016803074"]:
