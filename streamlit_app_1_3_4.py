@@ -8697,7 +8697,7 @@ if "Rubric Details" in filtered_df.columns:
             ax_heat.set_title("Fail Rate by Rubric Category")
             plt.xticks(rotation=0)
             plt.tight_layout()
-                st_pyplot_safe(fig_heat)
+            st_pyplot_safe(fig_heat)
 
 # --- Trend Forecasting (Predictive Analytics) ---
 with st.expander("Trend Forecasting", expanded=False):
