@@ -298,6 +298,14 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             else:
                 raise ValueError("No date column found in BPO Centers data")
 
+        # Filter out rows with NaT (null datetime) values - similar to load_previous_center_data
+        valid_dates = df["Call Date"].notna()
+        df = df[valid_dates].copy()
+        
+        if len(df) == 0:
+            print("⚠️  Warning: No calls with valid dates in BPO Centers data")
+            return pd.DataFrame()
+
         # Normalize agent IDs
         if "Agent" in df.columns:
             df["Agent"] = df["Agent"].apply(normalize_agent_id)
@@ -587,13 +595,17 @@ def calculate_volume_metrics(df: pd.DataFrame) -> Dict:
 
     # Calls per day - use valid_calls for date range calculation
     if "Call Date" in valid_calls.columns and metrics["total_calls"] > 0:
-        date_range = (
-            valid_calls["Call Date"].max() - valid_calls["Call Date"].min()
-        ).days + 1
-        if date_range > 0:
-            metrics["calls_per_day"] = metrics["total_calls"] / date_range
+        # Filter out NaT values before calculating date range
+        valid_dates = valid_calls["Call Date"].dropna()
+        if len(valid_dates) > 0:
+            date_range = (valid_dates.max() - valid_dates.min()).days + 1
+            if date_range > 0:
+                metrics["calls_per_day"] = metrics["total_calls"] / date_range
+            else:
+                metrics["calls_per_day"] = metrics["total_calls"]
         else:
-            metrics["calls_per_day"] = metrics["total_calls"]
+            # All dates are NaT - cannot calculate calls per day
+            metrics["calls_per_day"] = None
     else:
         metrics["calls_per_day"] = None
 
