@@ -2515,41 +2515,41 @@ def load_all_calls_cached(cache_version=0):
                 logger.info(
                     f" Loading remaining {remaining_files} files from S3 with incremental saves (skipping already-processed files)"
                 )
-            
-            try:
-                load_start = time.time()
-                new_calls, new_errors, actual_new_count = load_new_calls_only()
-                load_duration = time.time() - load_start
-                elapsed = time.time() - start_time
-                
-                if isinstance(new_errors, str):
+
+                try:
+                    load_start = time.time()
+                    new_calls, new_errors, actual_new_count = load_new_calls_only()
+                    load_duration = time.time() - load_start
+                    elapsed = time.time() - start_time
+
+                    if isinstance(new_errors, str):
                         logger.error(f" Error loading new files: {new_errors}")
-                    # Return existing cache if new load fails
-                    return disk_call_data, [new_errors] if disk_errors else []
-                
-                # Merge new calls with existing disk cache
-                all_calls_merged = disk_call_data + new_calls
-                all_calls_merged = deduplicate_calls(all_calls_merged)
-                
-                # Save merged data to disk immediately
+                        # Return existing cache if new load fails
+                        return disk_call_data, [new_errors] if disk_errors else []
+
+                    # Merge new calls with existing disk cache
+                    all_calls_merged = disk_call_data + new_calls
+                    all_calls_merged = deduplicate_calls(all_calls_merged)
+
+                    # Save merged data to disk immediately
                     save_cached_data_to_disk(
                         all_calls_merged, new_errors if new_errors else []
                     )
-                
+
                     logger.info(
                         f" Loaded {actual_new_count} new files. Total: {len(all_calls_merged)} calls (merged with {len(disk_call_data)} from cache)"
                     )
-                
-                # Return merged data
-                return all_calls_merged, new_errors if new_errors else []
-            except Exception as e:
-                    logger.error(f" Error in load_new_calls_only: {e}")
-                import traceback
 
-                logger.error(traceback.format_exc())
-                # Fallback to disk cache if new load fails
-                return disk_call_data, disk_errors if disk_errors else []
-        else:
+                    # Return merged data
+                    return all_calls_merged, new_errors if new_errors else []
+                except Exception as e:
+                    logger.error(f" Error in load_new_calls_only: {e}")
+                    import traceback
+
+                    logger.error(traceback.format_exc())
+                    # Fallback to disk cache if new load fails
+                    return disk_call_data, disk_errors if disk_errors else []
+                else:
             # Too many files remaining - return partial cache and let user manually refresh
             # This prevents crashes from long-running operations during page load
                 logger.info(
