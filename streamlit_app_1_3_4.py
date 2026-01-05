@@ -3084,7 +3084,7 @@ def load_new_calls_only():
                 )
             else:
                 logger.info(
-                    " No disk cache found in count_new_pdfs - all files will be treated as new"
+                    " No disk cache found in count_new_csvs - all files will be treated as new"
                 )
 
         # Also check session state (for files processed in current session)
@@ -3979,9 +3979,9 @@ def check_for_new_csvs_lightweight():
                                 s3_key = f"{s3_prefix.rstrip('/')}/{filename}"
                         else:
                             s3_key = filename
-                        # Ensure it ends with .pdf
-                        if not s3_key.lower().endswith(".pdf"):
-                            s3_key = f"{s3_key}.pdf"
+                        # Ensure it ends with .csv (legacy format handling)
+                        if not s3_key.lower().endswith(".csv"):
+                            s3_key = f"{s3_key}.csv"
 
                 # Normalize the key (remove leading/trailing slashes for comparison)
                 if s3_key:
@@ -4107,7 +4107,7 @@ if is_super_admin():
     st.sidebar.markdown("### Refresh Data")
 
 
-# Smart refresh button (Chloe, Shannon, and Jerson only) - only loads new PDFs
+# Smart refresh button (Chloe, Shannon, and Jerson only) - only loads new CSV files
 # Note: files_to_load will be defined later, but we'll use None here to get all cached data
 if is_super_admin():
     if st.sidebar.button(
