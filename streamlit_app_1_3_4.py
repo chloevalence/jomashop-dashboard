@@ -2066,7 +2066,10 @@ def load_all_calls_cached(cache_version=0):
             logger.info(
                 f" Refresh in progress - using S3 cache directly: {len(migrated_calls)} calls"
             )
-            return (migrated_calls, s3_cache_result[1] if len(s3_cache_result) > 1 else [])
+            return (
+                migrated_calls,
+                s3_cache_result[1] if len(s3_cache_result) > 1 else [],
+            )
         else:
             logger.info(
                 " Refresh in progress but no S3 cache found - continuing with normal load"
