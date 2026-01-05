@@ -7101,25 +7101,6 @@ else:
 
     st.dataframe(comparison_table, hide_index=True)
 
-# --- Performance Alerts ---
-st.subheader("Performance Alerts")
-alerts_df = (
-    filtered_df[filtered_df["QA Score"] < alert_threshold]
-    if "QA Score" in filtered_df.columns
-    else pd.DataFrame()
-)
-if len(alerts_df) > 0:
-    st.warning(f" {len(alerts_df)} call(s) below threshold ({alert_threshold}%)")
-    alert_summary = (
-        alerts_df.groupby("Agent")
-        .agg(Low_Score_Calls=("Call ID", "count"), Avg_Score=("QA Score", "mean"))
-        .reset_index()
-        .sort_values("Low_Score_Calls", ascending=False)
-    )
-    st.dataframe(alert_summary)
-else:
-    st.success(f" All calls meet the threshold ({alert_threshold}%)")
-
 # --- AHT Root Cause Analysis ---
 if (
     "Call Duration (min)" in filtered_df.columns
