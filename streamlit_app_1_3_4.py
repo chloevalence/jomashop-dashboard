@@ -435,25 +435,25 @@ except Exception as e:
     st.stop()
 
 
-# --- Normalize Agent IDs to bpagent## format ---
+# --- Normalize Agent IDs to Agent ## format ---
 def normalize_agent_id(agent_str):
-    """Normalize agent ID to bpagent## format (e.g., bpagent01, bpagent02)"""
+    """Normalize agent ID to Agent ## format (e.g., Agent 1, Agent 2)"""
     if pd.isna(agent_str) or not agent_str:
         return agent_str
 
     agent_str = str(agent_str).lower().strip()
 
-    # Special case: "unknown" -> Agent 01 (Jesus)
+    # Special case: "unknown" -> Agent 1
     if agent_str == "unknown":
-        return "bpagent01"
+        return "Agent 1"
 
-    # Special case: bp016803073 and bp016803074 -> Agent 01 (Jesus)
+    # Special case: bp016803073 and bp016803074 -> Agent 1
     if agent_str in ["bp016803073", "bp016803074"]:
-        return "bpagent01"
+        return "Agent 1"
 
-    # Special case: Any string starting with "bp01" (first 4 chars) -> Agent 01 (Jesus)
+    # Special case: Any string starting with "bp01" (first 4 chars) -> Agent 1
     if agent_str.startswith("bp01"):
-        return "bpagent01"
+        return "Agent 1"
 
     # Extract number from bpagent### pattern (could be bpagent01, bpagent030844482, etc.)
     match = re.search(r"bpagent(\d+)", agent_str)
@@ -465,7 +465,9 @@ def normalize_agent_id(agent_str):
             agent_num = agent_num[:2]  # Take first 2 digits
         else:
             agent_num = agent_num.zfill(2)  # Pad to 2 digits
-        return f"bpagent{agent_num}"
+        # Convert to integer to remove leading zeros, then format as "Agent X"
+        agent_number = int(agent_num)
+        return f"Agent {agent_number}"
 
     # If no match, return as is
     return agent_str
