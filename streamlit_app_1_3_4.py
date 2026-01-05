@@ -651,9 +651,18 @@ def parse_csv_row(row, filename):
     data["coaching_suggestions"] = coaching_suggestions
 
     # Set metadata fields
-    normalized_key = filename.strip("/")
-    data["_id"] = normalized_key
-    data["_s3_key"] = normalized_key
+    # Use call_id as the unique identifier for each row, not the filename
+    # This ensures each row in a CSV is treated as a separate call
+    call_id = data.get("call_id", "")
+    if call_id:
+        # Create unique _id from call_id and filename to ensure uniqueness
+        data["_id"] = f"{filename}:{call_id}"
+        data["_s3_key"] = f"{filename}:{call_id}"
+    else:
+        # Fallback: use filename + row index if no call_id
+        normalized_key = filename.strip("/")
+        data["_id"] = normalized_key
+        data["_s3_key"] = normalized_key
     data["filename"] = filename
     data["company"] = "Jomashop"
 
