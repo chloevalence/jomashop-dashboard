@@ -2077,10 +2077,6 @@ def load_all_calls_cached(cache_version=0):
                             if "_merged_cache_errors" in st.session_state:
                                 del st.session_state["_merged_cache_errors"]
 
-                    # After loading from cache, check for new files in background
-                    # Set flag to trigger background refresh check
-                    if "auto_refresh_checked" not in st.session_state:
-                        st.session_state.auto_refresh_checked = False
 
                     if not st.session_state.auto_refresh_checked:
                         # OPTIMIZATION: Only run lightweight check if S3 cache is older than threshold
@@ -2126,7 +2122,8 @@ def load_all_calls_cached(cache_version=0):
                                 f" Checking for new files in background...{f' (cache age: {cache_age_minutes:.1f} min)' if cache_age_minutes else ''}"
                             )
                         try:
-                            new_count, check_error = check_for_new_pdfs_lightweight()
+                            # Background refresh removed - manual refresh only
+                            new_count, check_error = 0, None
                             if check_error:
                                 logger.warning(f"Background check error: {check_error}")
                             elif new_count > 0:
@@ -3802,7 +3799,6 @@ def is_regular_admin():
 
     Regular admins cannot:
     - Access refresh controls
-    - Access background refresh settings
     - Access system monitoring
     - Access data quality validation
     """
@@ -3838,7 +3834,6 @@ def is_super_admin():
     Super admins can:
     - Everything regular admins can do, PLUS:
     - Refresh Data controls
-    - Background Refresh Settings
     - System Monitoring & Metrics
     - Data Quality Validation
 
@@ -3889,8 +3884,6 @@ if st.sidebar.button("🚪 Logout", help="Log out of your account", type="second
         st.sidebar.error("Error logging out. Please refresh the page.")
 
 
-# --- Background Refresh: Check for new PDFs periodically ---
-@st.cache_data(ttl=60, max_entries=1, show_spinner=False)
 def check_for_new_pdfs_lightweight():
     """
     Lightweight check: Just counts new CSV files without downloading (PDFs are ignored).
@@ -4049,105 +4042,15 @@ def check_for_new_pdfs_lightweight():
         return 0, f"Error checking for new CSV files: {e}"
 
 
-# Initialize background refresh state
-if "bg_refresh_enabled" not in st.session_state:
-    st.session_state.bg_refresh_enabled = True  # Enable by default
-if "last_bg_check_time" not in st.session_state:
-    st.session_state.last_bg_check_time = 0
-if "bg_check_interval_minutes" not in st.session_state:
-    st.session_state.bg_check_interval_minutes = (
-        60  # Check every hour (very low AWS cost)
-    )
+# Initialize notification count (for manual refresh button)
 if "new_csvs_notification_count" not in st.session_state:
     st.session_state.new_csvs_notification_count = 0
-if "bg_check_error" not in st.session_state:
-    st.session_state.bg_check_error = None
-
-# Background refresh: Check for new CSV files if enough time has passed (PDFs are ignored)
-current_time = time.time()
-time_since_last_check = (
-    current_time - st.session_state.last_bg_check_time
-) / 60  # minutes
-
-if (
-    st.session_state.bg_refresh_enabled
-    and time_since_last_check >= st.session_state.bg_check_interval_minutes
-):
-    # Perform lightweight check
-    new_count, check_error = check_for_new_pdfs_lightweight()
-    st.session_state.last_bg_check_time = current_time
-
-    if check_error:
-        st.session_state.bg_check_error = check_error
-    else:
-        st.session_state.bg_check_error = None
-        if new_count > 0:
-            st.session_state.new_csvs_notification_count = new_count
-        else:
-            # Clear notification count since there are no new files
-            st.session_state.new_csvs_notification_count = 0
-else:
-    # Even if not time for background check, verify count is correct
-    # If we have a notification count but haven't checked recently, verify it's still valid
-    if st.session_state.new_csvs_notification_count > 0:
-        # Quick verification - if we have a notification but haven't checked recently, verify it
-        new_count, _ = check_for_new_pdfs_lightweight()
-        if new_count == 0:
-            # Clear stale notification count
-            st.session_state.new_csvs_notification_count = 0
-
-# Show notification if new PDFs are available
-if st.session_state.new_csvs_notification_count > 0:
-    st.sidebar.markdown("---")
-    st.sidebar.success(
-        f"**{st.session_state.new_csvs_notification_count} new CSV file(s) available!**"
-    )
-    st.sidebar.caption("Click 'Refresh New Data' below to load them")
-
-# Show background check error if any
-if st.session_state.bg_check_error:
-    st.sidebar.markdown("---")
-    st.sidebar.warning(f" Background check: {st.session_state.bg_check_error}")
 
 # Prominent refresh button for when new data is added (Chloe, Shannon, and Jerson only)
 if is_super_admin():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Refresh Data")
 
-# Background refresh settings (Chloe, Shannon, and Jerson only)
-if is_super_admin():
-    with st.sidebar.expander(" Background Refresh Settings"):
-        bg_enabled = st.checkbox(
-            "Enable background refresh", value=st.session_state.bg_refresh_enabled
-        )
-        if bg_enabled != st.session_state.bg_refresh_enabled:
-            st.session_state.bg_refresh_enabled = bg_enabled
-            st.rerun()
-
-        if bg_enabled:
-            interval = st.number_input(
-                "Check interval (minutes)",
-                min_value=1,
-                max_value=60,
-                value=st.session_state.bg_check_interval_minutes,
-                step=1,
-                help="How often to check for new PDFs in the background",
-            )
-            if interval != st.session_state.bg_check_interval_minutes:
-                st.session_state.bg_check_interval_minutes = interval
-                st.rerun()
-
-            if st.button("Check Now"):
-                new_count, check_error = check_for_new_pdfs_lightweight()
-                st.session_state.last_bg_check_time = time.time()
-                if check_error:
-                    st.error(f" {check_error}")
-                elif new_count > 0:
-                    st.success(f" Found {new_count} new PDF(s)!")
-                    st.session_state.new_csvs_notification_count = new_count
-                else:
-                    st.info(" No new PDFs found")
-                st.rerun()
 
 # Smart refresh button (Chloe, Shannon, and Jerson only) - only loads new PDFs
 # Note: files_to_load will be defined later, but we'll use None here to get all cached data
