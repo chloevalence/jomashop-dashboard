@@ -485,9 +485,12 @@ def parse_csv_row(row, filename):
     data = {}
 
     # Basic field mappings
-    data["call_id"] = (
-        str(row.get("call_id", "")) if pd.notna(row.get("call_id")) else None
-    )
+    # CRITICAL: Normalize empty strings to None to avoid issues in extract_cache_key
+    call_id_raw = row.get("call_id", "")
+    if pd.isna(call_id_raw) or call_id_raw == "" or str(call_id_raw).strip() == "":
+        data["call_id"] = None
+    else:
+        data["call_id"] = str(call_id_raw).strip()
     data["qa_score"] = (
         float(row.get("qa_score", 0)) if pd.notna(row.get("qa_score")) else None
     )
