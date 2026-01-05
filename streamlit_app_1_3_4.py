@@ -2134,8 +2134,8 @@ def load_all_calls_cached(cache_version=0):
                 del st.session_state[s3_timestamp_key]
             s3_cache_result = None
             s3_cache_timestamp = None
-    else:
-        # Load from S3 (only if not in session state)
+        else:
+            # Load from S3 (only if not in session state)
         s3_client, s3_bucket = get_s3_client_and_bucket()
         if s3_client and s3_bucket:
             try:
