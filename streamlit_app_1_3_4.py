@@ -8521,8 +8521,9 @@ with col_trend2:
             daily_stats["Fail_Rate"] = (
                 daily_stats["Total_Fail"] / daily_stats["Total"] * 100
             ).fillna(0)
-        
-        fig_pf, ax_pf = plt.subplots(figsize=(10, 5))
+            
+            # Create line chart
+            fig_pf, ax_pf = plt.subplots(figsize=(10, 5))
             ax_pf.plot(
                 daily_stats["Date"],
                 daily_stats["Pass_Rate"],
