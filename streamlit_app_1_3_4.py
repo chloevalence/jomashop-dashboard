@@ -8468,7 +8468,7 @@ col_trend1, col_trend2 = st.columns(2)
 
 with col_trend1:
         st.write("**QA Score Trend**")
-    if len(filtered_df) > 0 and "QA Score" in filtered_df.columns:
+        if len(filtered_df) > 0 and "QA Score" in filtered_df.columns:
         # Daily average QA scores
             daily_scores = (
                 filtered_df.groupby(filtered_df["Call Date"].dt.date)["QA Score"]
