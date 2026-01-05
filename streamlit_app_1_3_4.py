@@ -439,27 +439,38 @@ except Exception as e:
 AGENT_MAPPING_FILE = log_dir / "agent_id_mapping.json"
 
 # Known agent mappings (from user specification)
+# Include both versions (with and without spaces) to handle data inconsistencies
 KNOWN_AGENT_MAPPINGS = {
     # Agent 1: Jesus
     "unknown": "Agent 1",
     "bp016803073": "Agent 1",
     "bp016803074": "Agent 1",
+    "bp agent 016803073": "Agent 1",  # Space version
+    "bp agent 016803074": "Agent 1",  # Space version
     # Agent 2: Gerardo
     "bpagent024577540": "Agent 2",
+    "bp agent 024577540": "Agent 2",  # Space version
     # Agent 3: Edgar
     "bpagent030844482": "Agent 3",
+    "bp agent 030844482": "Agent 3",  # Space version
     # Agent 4: Osiris
     "bpagent047779576": "Agent 4",
+    "bp agent 047779576": "Agent 4",  # Space version
     # Agent 6: Daniela
     "bpagent065185612": "Agent 6",
+    "bp agent 065185612": "Agent 6",  # Space version
     # Agent 7: Yasmin
     "bpagent072229421": "Agent 7",
+    "bp agent 072229421": "Agent 7",  # Space version
     # Agent 8: Moises
     "bpagent089724913": "Agent 8",
+    "bp agent 089724913": "Agent 8",  # Space version
     # Agent 9: Marcos
     "bpagent093540654": "Agent 9",
+    "bp agent 093540654": "Agent 9",  # Space version
     # Agent 10: Angel
     "bpagent102256681": "Agent 10",
+    "bp agent 102256681": "Agent 10",  # Space version
 }
 
 
@@ -493,9 +504,14 @@ def get_or_create_agent_mapping(agent_id_lower):
     """Get agent number for an agent ID, or create a new mapping deterministically."""
     mapping = load_agent_mapping()
     
-    # Check if already mapped
+    # Normalize by removing spaces to handle "bp agent 102256681" vs "bpagent102256681"
+    agent_id_normalized = agent_id_lower.replace(" ", "").replace("_", "")
+    
+    # Check if already mapped (try both with and without spaces)
     if agent_id_lower in mapping:
         return mapping[agent_id_lower]
+    if agent_id_normalized in mapping:
+        return mapping[agent_id_normalized]
     
     # Check if already in normalized format (e.g., "agent 1", "agent 2")
     # This handles cases where cache already has normalized values
@@ -508,18 +524,19 @@ def get_or_create_agent_mapping(agent_id_lower):
         except ValueError:
             pass  # Not a valid number, continue with mapping logic
     
-    # Check special cases first
-    if agent_id_lower == "unknown":
+    # Check special cases first (normalize these too)
+    if agent_id_normalized == "unknown" or agent_id_lower == "unknown":
         return "Agent 1"
-    if agent_id_lower in ["bp016803073", "bp016803074"]:
+    if agent_id_normalized in ["bp016803073", "bp016803074"] or agent_id_lower in ["bp016803073", "bp016803074"]:
         return "Agent 1"
-    if agent_id_lower.startswith("bp01"):
+    if agent_id_normalized.startswith("bp01") or agent_id_lower.startswith("bp01"):
         return "Agent 1"
     
     # For new agent IDs, assign deterministically based on hash
     # This ensures the same agent ID always gets the same number
+    # Use normalized version for hash to ensure consistency
     import hashlib
-    hash_value = int(hashlib.md5(agent_id_lower.encode()).hexdigest(), 16)
+    hash_value = int(hashlib.md5(agent_id_normalized.encode()).hexdigest(), 16)
     # Use modulo to get a number between 1 and 99, but skip 5 (no agent 5 per user spec)
     agent_number = (hash_value % 99) + 1
     if agent_number == 5:
@@ -527,8 +544,9 @@ def get_or_create_agent_mapping(agent_id_lower):
     
     agent_name = f"Agent {agent_number}"
     
-    # Save the new mapping
+    # Save the new mapping (save both versions to prevent future lookups)
     mapping[agent_id_lower] = agent_name
+    mapping[agent_id_normalized] = agent_name
     save_agent_mapping(mapping)
     
     logger.info(f"Created new agent mapping: {agent_id_lower} -> {agent_name}")
