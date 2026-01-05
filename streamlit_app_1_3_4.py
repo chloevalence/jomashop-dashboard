@@ -8513,8 +8513,8 @@ with col_trend2:
                 )
                 .reset_index()
             )
-        daily_stats.columns = ["Date", "Total_Pass", "Total_Fail"]
-        daily_stats["Total"] = daily_stats["Total_Pass"] + daily_stats["Total_Fail"]
+            daily_stats.columns = ["Date", "Total_Pass", "Total_Fail"]
+            daily_stats["Total"] = daily_stats["Total_Pass"] + daily_stats["Total_Fail"]
             daily_stats["Pass_Rate"] = (
                 daily_stats["Total_Pass"] / daily_stats["Total"] * 100
             ).fillna(0)
