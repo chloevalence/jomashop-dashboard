@@ -8684,8 +8684,8 @@ if "Rubric Details" in filtered_df.columns:
             colors = [
                     "green" if x < 20 else "orange" if x < 40 else "red"
                     for x in category_df["Avg_Fail_Rate"]
-                ]
-                category_df.plot(
+            ]
+            category_df.plot(
                     x="Category",
                     y="Avg_Fail_Rate",
                     kind="bar",
