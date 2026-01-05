@@ -1807,10 +1807,6 @@ def load_all_calls_cached(cache_version=0):
     Performs one-time cache cleanup before loading to remove PDF-sourced calls.
 
     cache_version parameter forces cache refresh when incremented (used after refresh completes).
-    """
-    # Perform one-time cache cleanup to remove PDF-sourced calls
-    cleanup_pdf_sourced_calls()
-    
 
     Strategy:
         1. Always check S3 cache first (source of truth, shared across all users)
@@ -1820,6 +1816,8 @@ def load_all_calls_cached(cache_version=0):
 
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
+    # Perform one-time cache cleanup to remove PDF-sourced calls
+    cleanup_pdf_sourced_calls()
     import time
     from datetime import datetime
 
