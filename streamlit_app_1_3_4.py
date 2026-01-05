@@ -5218,10 +5218,10 @@ if is_super_admin():
                 logger.info("Reload ALL Data button clicked - starting full reload")
                 st.rerun()
             except Exception as e:
-            logger.exception(f"Error initiating reload: {e}")
-            st.error(f"❌ Failed to initiate reload: {str(e)}")
-            st.info("Please try again or contact support if the issue persists.")
-            # Clear the flag if there was an error
+                logger.exception(f"Error initiating reload: {e}")
+                st.error(f"❌ Failed to initiate reload: {str(e)}")
+                st.info("Please try again or contact support if the issue persists.")
+                # Clear the flag if there was an error
                 if "reload_all_triggered" in st.session_state:
                     st.session_state["reload_all_triggered"] = False
 
