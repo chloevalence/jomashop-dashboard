@@ -1685,10 +1685,12 @@ def generate_pdf_report(
         if (
             previous_metrics.get("excellent_pct") is not None
             and bpo_metrics.get("excellent_pct") is not None
+            and previous_metrics["excellent_pct"] != 0
         ):
             excellent_improvement = (
-                bpo_metrics["excellent_pct"] - previous_metrics["excellent_pct"]
-            )
+                (bpo_metrics["excellent_pct"] - previous_metrics["excellent_pct"])
+                / previous_metrics["excellent_pct"]
+            ) * 100
             if excellent_improvement > 0:
                 improvements["Excellent Scores (90+)"] = excellent_improvement
                 summary_lines.append(
