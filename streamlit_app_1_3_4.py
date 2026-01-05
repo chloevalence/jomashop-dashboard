@@ -436,204 +436,265 @@ except Exception as e:
     st.stop()
 
 
+# --- Normalize Agent IDs to bpagent## format ---
+def normalize_agent_id(agent_str):
+    """Normalize agent ID to bpagent## format (e.g., bpagent01, bpagent02)"""
+    if pd.isna(agent_str) or not agent_str:
+        return agent_str
+
+    agent_str = str(agent_str).lower().strip()
+
+    # Special case: "unknown" -> Agent 01 (Jesus)
+    if agent_str == "unknown":
+        return "bpagent01"
+
+    # Special case: bp016803073 and bp016803074 -> Agent 01 (Jesus)
+    if agent_str in ["bp016803073", "bp016803074"]:
+        return "bpagent01"
+
+    # Special case: Any string starting with "bp01" (first 4 chars) -> Agent 01 (Jesus)
+    if agent_str.startswith("bp01"):
+        return "bpagent01"
+
+    # Extract number from bpagent### pattern (could be bpagent01, bpagent030844482, etc.)
+    match = re.search(r"bpagent(\d+)", agent_str)
+    if match:
+        # Get the number and take only first 2 digits (or pad to 2 digits)
+        agent_num = match.group(1)
+        # If number is longer than 2 digits, take first 2; otherwise pad to 2 digits
+        if len(agent_num) >= 2:
+            agent_num = agent_num[:2]  # Take first 2 digits
+        else:
+            agent_num = agent_num.zfill(2)  # Pad to 2 digits
+        return f"bpagent{agent_num}"
+
+    # If no match, return as is
+    return agent_str
+
+
 def parse_csv_row(row, filename):
     """
     Parse a CSV row and convert it to the existing call data structure.
-    
+
     Args:
         row: pandas Series representing a CSV row
         filename: CSV filename (for metadata)
-    
+
     Returns:
         Dictionary with parsed call data matching PDF parser output format
     """
     data = {}
-    
+
     # Basic field mappings
-    data['call_id'] = str(row.get('call_id', '')) if pd.notna(row.get('call_id')) else None
-    data['qa_score'] = float(row.get('qa_score', 0)) if pd.notna(row.get('qa_score')) else None
-    data['label'] = str(row.get('label', '')) if pd.notna(row.get('label')) else None
-    data['strengths'] = str(row.get('strengths', '')) if pd.notna(row.get('strengths')) else None
-    data['challenges'] = str(row.get('challenges', '')) if pd.notna(row.get('challenges')) else None
-    data['reason'] = str(row.get('call_reason', '')) if pd.notna(row.get('call_reason')) else None
-    data['outcome'] = str(row.get('call_outcome', '')) if pd.notna(row.get('call_outcome')) else None
-    data['summary'] = str(row.get('call_summary', '')) if pd.notna(row.get('call_summary')) else None
-    data['call_direction'] = str(row.get('call_direction', '')) if pd.notna(row.get('call_direction')) else None
-    data['revenue_retention_amount'] = float(row.get('revenue_retention_amount', 0)) if pd.notna(row.get('revenue_retention_amount')) else 0.0
-    data['revenue_retention_summary'] = str(row.get('revenue_retention_summary', '')) if pd.notna(row.get('revenue_retention_summary')) else None
-    
+    data["call_id"] = (
+        str(row.get("call_id", "")) if pd.notna(row.get("call_id")) else None
+    )
+    data["qa_score"] = (
+        float(row.get("qa_score", 0)) if pd.notna(row.get("qa_score")) else None
+    )
+    data["label"] = str(row.get("label", "")) if pd.notna(row.get("label")) else None
+    data["strengths"] = (
+        str(row.get("strengths", "")) if pd.notna(row.get("strengths")) else None
+    )
+    data["challenges"] = (
+        str(row.get("challenges", "")) if pd.notna(row.get("challenges")) else None
+    )
+    data["reason"] = (
+        str(row.get("call_reason", "")) if pd.notna(row.get("call_reason")) else None
+    )
+    data["outcome"] = (
+        str(row.get("call_outcome", "")) if pd.notna(row.get("call_outcome")) else None
+    )
+    data["summary"] = (
+        str(row.get("call_summary", "")) if pd.notna(row.get("call_summary")) else None
+    )
+    data["call_direction"] = (
+        str(row.get("call_direction", ""))
+        if pd.notna(row.get("call_direction"))
+        else None
+    )
+    data["revenue_retention_amount"] = (
+        float(row.get("revenue_retention_amount", 0))
+        if pd.notna(row.get("revenue_retention_amount"))
+        else 0.0
+    )
+    data["revenue_retention_summary"] = (
+        str(row.get("revenue_retention_summary", ""))
+        if pd.notna(row.get("revenue_retention_summary"))
+        else None
+    )
+
     # Handle handle_time_minutes conversion
-    handle_time = row.get('handle_time_minutes')
+    handle_time = row.get("handle_time_minutes")
     if pd.notna(handle_time):
         try:
             minutes = float(handle_time)
-            data['speaking_time_per_speaker'] = {
-                'total': f"{int(minutes)}:{int((minutes % 1) * 60):02d}"
+            data["speaking_time_per_speaker"] = {
+                "total": f"{int(minutes)}:{int((minutes % 1) * 60):02d}"
             }
         except (ValueError, TypeError):
-            data['speaking_time_per_speaker'] = None
+            data["speaking_time_per_speaker"] = None
     else:
-        data['speaking_time_per_speaker'] = None
-    
+        data["speaking_time_per_speaker"] = None
+
     # Parse call_date (YYYYMMDD format)
-    call_date_str = row.get('call_date')
+    call_date_str = row.get("call_date")
     if pd.notna(call_date_str):
         try:
             call_date_str = str(call_date_str).strip()
             if len(call_date_str) == 8:  # YYYYMMDD
                 call_date = datetime.strptime(call_date_str, "%Y%m%d")
-                data['call_date'] = call_date
+                data["call_date"] = call_date
                 # Create date_raw in MMDDYYYY format for backward compatibility
-                data['date_raw'] = f"{call_date_str[4:6]}{call_date_str[6:8]}{call_date_str[0:4]}"
+                data["date_raw"] = (
+                    f"{call_date_str[4:6]}{call_date_str[6:8]}{call_date_str[0:4]}"
+                )
             else:
                 # Try parsing as datetime string
-                data['call_date'] = pd.to_datetime(call_date_str, errors='coerce')
-                if pd.notna(data['call_date']):
-                    data['date_raw'] = data['call_date'].strftime("%m%d%Y")
+                data["call_date"] = pd.to_datetime(call_date_str, errors="coerce")
+                if pd.notna(data["call_date"]):
+                    data["date_raw"] = data["call_date"].strftime("%m%d%Y")
                 else:
-                    data['call_date'] = None
-                    data['date_raw'] = None
+                    data["call_date"] = None
+                    data["date_raw"] = None
         except (ValueError, TypeError):
-            data['call_date'] = None
-            data['date_raw'] = None
+            data["call_date"] = None
+            data["date_raw"] = None
     else:
-        data['call_date'] = None
-        data['date_raw'] = None
-    
+        data["call_date"] = None
+        data["date_raw"] = None
+
     # Extract time from call_id if available (format: YYYYMMDD_HHMMSS_...)
-    if data.get('call_id'):
+    if data.get("call_id"):
         try:
-            call_id_parts = str(data['call_id']).split('_')
+            call_id_parts = str(data["call_id"]).split("_")
             if len(call_id_parts) >= 2:
                 time_str = call_id_parts[1]
                 if len(time_str) == 6:  # HHMMSS
-                    data['time'] = f"{time_str[0:2]}:{time_str[2:4]}:{time_str[4:6]}"
+                    data["time"] = f"{time_str[0:2]}:{time_str[2:4]}:{time_str[4:6]}"
                 else:
-                    data['time'] = None
+                    data["time"] = None
             else:
-                data['time'] = None
+                data["time"] = None
         except Exception:
-            data['time'] = None
+            data["time"] = None
     else:
-        data['time'] = None
-    
+        data["time"] = None
+
     # Normalize agent name
-    agent_name = row.get('agent_name')
+    agent_name = row.get("agent_name")
     if pd.notna(agent_name) and str(agent_name).strip():
-        data['agent'] = normalize_agent_id(str(agent_name).strip())
+        data["agent"] = normalize_agent_id(str(agent_name).strip())
     else:
-        data['agent'] = normalize_agent_id('Unknown')
-    
+        data["agent"] = normalize_agent_id("Unknown")
+
     # Build rubric_details dict
     rubric_details = {}
-    rubric_code_pattern = re.compile(r'^\d+\.\d+\.\d+$')
-    
+    rubric_code_pattern = re.compile(r"^\d+\.\d+\.\d+$")
+
     for col in row.index:
         if rubric_code_pattern.match(col):
             code = col
             status_value = row.get(code)
             reason_col = f"{code}__reason"
             reason_value = row.get(reason_col) if reason_col in row.index else None
-            
+
             # Convert status: True -> "Pass", False -> "Fail", N/A or NaN -> "N/A"
-            if pd.isna(status_value) or status_value == 'N/A' or str(status_value).upper() == 'N/A':
+            if (
+                pd.isna(status_value)
+                or status_value == "N/A"
+                or str(status_value).upper() == "N/A"
+            ):
                 status = "N/A"
-            elif status_value is True or str(status_value).lower() == 'true':
+            elif status_value is True or str(status_value).lower() == "true":
                 status = "Pass"
-            elif status_value is False or str(status_value).lower() == 'false':
+            elif status_value is False or str(status_value).lower() == "false":
                 status = "Fail"
             else:
                 # Try to parse as boolean
                 status_str = str(status_value).lower()
-                if status_str in ['true', 'pass']:
+                if status_str in ["true", "pass"]:
                     status = "Pass"
-                elif status_str in ['false', 'fail']:
+                elif status_str in ["false", "fail"]:
                     status = "Fail"
                 else:
                     status = "N/A"
-            
+
             # Get note (reason)
             note = None
             if pd.notna(reason_value) and str(reason_value).strip():
                 note = str(reason_value).strip()
-            
-            rubric_details[code] = {
-                'status': status,
-                'note': note
-            }
-    
-    data['rubric_details'] = rubric_details
-    
+
+            rubric_details[code] = {"status": status, "note": note}
+
+    data["rubric_details"] = rubric_details
+
     # Calculate rubric statistics
     total_rubric_items = len(rubric_details)
-    pass_count = sum(1 for r in rubric_details.values() if r['status'] == 'Pass')
-    fail_count = sum(1 for r in rubric_details.values() if r['status'] == 'Fail')
-    na_count = sum(1 for r in rubric_details.values() if r['status'] == 'N/A')
-    
-    data['rubric_pass_count'] = pass_count
-    data['rubric_fail_count'] = fail_count
-    data['rubric_na_count'] = na_count
-    data['rubric_total_count'] = total_rubric_items
-    
+    pass_count = sum(1 for r in rubric_details.values() if r["status"] == "Pass")
+    fail_count = sum(1 for r in rubric_details.values() if r["status"] == "Fail")
+    na_count = sum(1 for r in rubric_details.values() if r["status"] == "N/A")
+
+    data["rubric_pass_count"] = pass_count
+    data["rubric_fail_count"] = fail_count
+    data["rubric_na_count"] = na_count
+    data["rubric_total_count"] = total_rubric_items
+
     # Build coaching_suggestions list
     coaching_suggestions = []
     for i in range(1, 4):
-        coaching_col = f'coaching_{i}'
+        coaching_col = f"coaching_{i}"
         if coaching_col in row.index:
             coaching_value = row.get(coaching_col)
             if pd.notna(coaching_value) and str(coaching_value).strip():
                 coaching_suggestions.append(str(coaching_value).strip())
-    data['coaching_suggestions'] = coaching_suggestions
-    
+    data["coaching_suggestions"] = coaching_suggestions
+
     # Set metadata fields
     normalized_key = filename.strip("/")
-    data['_id'] = normalized_key
-    data['_s3_key'] = normalized_key
-    data['filename'] = filename
-    data['company'] = 'Jomashop'
-    
+    data["_id"] = normalized_key
+    data["_s3_key"] = normalized_key
+    data["filename"] = filename
+    data["company"] = "Jomashop"
+
     # Backward compatibility fields
-    if data.get('qa_score') is not None:
-        data['average_happiness_value'] = data['qa_score']
+    if data.get("qa_score") is not None:
+        data["average_happiness_value"] = data["qa_score"]
     else:
-        data['average_happiness_value'] = 0.0
-    
+        data["average_happiness_value"] = 0.0
+
     # Legacy emotion fields
-    data['happy'] = 0
-    data['angry'] = 0
-    data['sad'] = 0
-    data['neutral'] = 1 if data.get('label', '').lower() == 'neutral' else 0
-    
+    data["happy"] = 0
+    data["angry"] = 0
+    data["sad"] = 0
+    data["neutral"] = 1 if data.get("label", "").lower() == "neutral" else 0
+
     # Low confidences
-    data['low_confidences'] = 0.0
-    
+    data["low_confidences"] = 0.0
+
     return data
 
 
 def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
     """
     Load call data from CSV files in S3.
-    
+
     Args:
         s3_client: Boto3 S3 client
         s3_bucket: S3 bucket name
         s3_prefix: S3 prefix/folder path
-    
+
     Returns:
         Tuple: (list of call dictionaries, list of error messages)
     """
     all_calls = []
     errors = []
-    
+
     try:
         # List all CSV files in S3 bucket
         paginator = s3_client.get_paginator("list_objects_v2")
-        pages = paginator.paginate(
-            Bucket=s3_bucket,
-            Prefix=s3_prefix,
-            MaxKeys=1000
-        )
-        
+        pages = paginator.paginate(Bucket=s3_bucket, Prefix=s3_prefix, MaxKeys=1000)
+
         csv_keys = []
         for page in pages:
             if isinstance(page, dict) and "Contents" in page:
@@ -641,29 +702,29 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                     key = obj.get("Key")
                     if key and key.lower().endswith(".csv"):
                         csv_keys.append(key)
-        
+
         if not csv_keys:
             logger.info("No CSV files found in S3 bucket")
             return [], ["No CSV files found in S3 bucket"]
-        
+
         logger.info(f"Found {len(csv_keys)} CSV file(s) in S3 bucket")
-        
+
         # Process each CSV file
         for csv_key in csv_keys:
             try:
                 logger.debug(f"Processing CSV file: {csv_key}")
-                
+
                 # Download CSV from S3
                 response = s3_client.get_object(Bucket=s3_bucket, Key=csv_key)
                 csv_content = response["Body"].read().decode("utf-8")
-                
+
                 # Read CSV into DataFrame
                 csv_file = io.StringIO(csv_content)
                 df = pd.read_csv(csv_file)
-                
+
                 # Extract filename from key
                 filename = csv_key.split("/")[-1]
-                
+
                 # Process each row
                 for idx, row in df.iterrows():
                     try:
@@ -671,26 +732,30 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                         if parsed_data:
                             all_calls.append(parsed_data)
                     except Exception as e:
-                        error_msg = f"Error parsing row {idx + 1} in {filename}: {str(e)}"
+                        error_msg = (
+                            f"Error parsing row {idx + 1} in {filename}: {str(e)}"
+                        )
                         errors.append(error_msg)
                         logger.warning(error_msg)
                         continue
-                
+
                 logger.info(f"Processed {len(df)} rows from {filename}")
-                
+
             except Exception as e:
                 error_msg = f"Error processing CSV file {csv_key}: {str(e)}"
                 errors.append(error_msg)
                 logger.error(error_msg)
                 continue
-        
-        logger.info(f"Successfully loaded {len(all_calls)} calls from {len(csv_keys)} CSV file(s)")
-        
+
+        logger.info(
+            f"Successfully loaded {len(all_calls)} calls from {len(csv_keys)} CSV file(s)"
+        )
+
     except Exception as e:
         error_msg = f"Error listing CSV files in S3: {str(e)}"
         errors.append(error_msg)
         logger.error(error_msg)
-    
+
     return all_calls, errors
 
 
@@ -724,17 +789,19 @@ def load_all_calls_internal(max_files=None):
         csv_calls, csv_errors = load_calls_from_csv(
             s3_client_with_timeout, s3_bucket_name, s3_prefix
         )
-        
+
         if csv_errors:
-            logger.warning(f"Encountered {len(csv_errors)} error(s) while loading CSV files")
+            logger.warning(
+                f"Encountered {len(csv_errors)} error(s) while loading CSV files"
+            )
             for error in csv_errors[:10]:  # Log first 10 errors
                 logger.warning(f"  {error}")
-        
+
         if not csv_calls:
             return [], "No CSV files found in S3 bucket or no valid data loaded"
-        
+
         all_calls = csv_calls
-        
+
         # Sort calls by call_date (most recent first) if available
         try:
             all_calls.sort(
@@ -746,7 +813,7 @@ def load_all_calls_internal(max_files=None):
         except Exception:
             # If sorting fails, keep original order
             pass
-        
+
         # Track processed S3 keys in session state (for smart refresh)
         if "processed_s3_keys" not in st.session_state:
             st.session_state["processed_s3_keys"] = set()
@@ -754,7 +821,7 @@ def load_all_calls_internal(max_files=None):
             call.get("_s3_key") for call in all_calls if call.get("_s3_key")
         }
         st.session_state["processed_s3_keys"].update(processed_keys)
-        
+
         # Sort calls by call_date (most recent first) if available
         try:
             all_calls.sort(
@@ -766,7 +833,7 @@ def load_all_calls_internal(max_files=None):
         except Exception:
             # If sorting fails, keep original order
             pass
-        
+
         # Track processed S3 keys in session state (for smart refresh)
         if "processed_s3_keys" not in st.session_state:
             st.session_state["processed_s3_keys"] = set()
@@ -774,7 +841,7 @@ def load_all_calls_internal(max_files=None):
             call.get("_s3_key") for call in all_calls if call.get("_s3_key")
         }
         st.session_state["processed_s3_keys"].update(processed_keys)
-        
+
         # Return with error message if any
         error_message = None if not csv_errors else "; ".join(csv_errors[:5])
         return all_calls, error_message
@@ -986,10 +1053,10 @@ def cleanup_pdf_sourced_calls():
     try:
         # Check if cleanup has already been performed
         cleanup_flag_key = "cache_cleaned_pdf_calls"
-        
+
         # Check both disk and S3 cache for cleanup flag
         cleanup_performed = False
-        
+
         # Check disk cache first
         if CACHE_FILE.exists():
             try:
@@ -998,11 +1065,18 @@ def cleanup_pdf_sourced_calls():
                         cached_data = json.load(f)
                     if cached_data.get(cleanup_flag_key, False):
                         cleanup_performed = True
-                        logger.info("Cache cleanup already performed (found flag in disk cache)")
-            except (LockTimeoutError, json.JSONDecodeError, FileNotFoundError, Exception):
+                        logger.info(
+                            "Cache cleanup already performed (found flag in disk cache)"
+                        )
+            except (
+                LockTimeoutError,
+                json.JSONDecodeError,
+                FileNotFoundError,
+                Exception,
+            ):
                 # If we can't read the cache, assume cleanup not performed
                 pass
-        
+
         # Check S3 cache if disk check didn't find flag
         if not cleanup_performed:
             s3_client, s3_bucket = get_s3_client_and_bucket()
@@ -1016,28 +1090,32 @@ def cleanup_pdf_sourced_calls():
                     cached_data = json.loads(b"".join(chunks).decode("utf-8"))
                     if cached_data.get(cleanup_flag_key, False):
                         cleanup_performed = True
-                        logger.info("Cache cleanup already performed (found flag in S3 cache)")
+                        logger.info(
+                            "Cache cleanup already performed (found flag in S3 cache)"
+                        )
                 except ClientError as e:
                     error_code = e.response.get("Error", {}).get("Code", "")
                     if error_code == "NoSuchKey":
                         # No cache in S3, proceed with cleanup
                         pass
                     else:
-                        logger.warning(f"Could not check S3 cache for cleanup flag: {e}")
+                        logger.warning(
+                            f"Could not check S3 cache for cleanup flag: {e}"
+                        )
                 except Exception:
                     # If we can't read S3 cache, proceed with cleanup
                     pass
-        
+
         if cleanup_performed:
             return  # Cleanup already done, skip
-        
+
         logger.info("Starting one-time cache cleanup to remove PDF-sourced calls...")
-        
+
         # Load existing cache from disk and S3
         call_data = []
         errors = []
         cache_timestamp = None
-        
+
         # Try disk cache first
         if CACHE_FILE.exists():
             try:
@@ -1049,7 +1127,7 @@ def cleanup_pdf_sourced_calls():
                     cache_timestamp = cached_data.get("timestamp")
             except Exception as e:
                 logger.warning(f"Could not load disk cache for cleanup: {e}")
-        
+
         # If no disk cache or empty, try S3
         if not call_data:
             s3_client, s3_bucket = get_s3_client_and_bucket()
@@ -1070,7 +1148,7 @@ def cleanup_pdf_sourced_calls():
                         logger.warning(f"Could not load S3 cache for cleanup: {e}")
                 except Exception as e:
                     logger.warning(f"Error loading S3 cache for cleanup: {e}")
-        
+
         if not call_data:
             logger.info("No cache found to clean - marking cleanup as complete")
             # Mark cleanup as complete even if no cache exists
@@ -1099,30 +1177,32 @@ def cleanup_pdf_sourced_calls():
             except Exception:
                 pass
             return
-        
+
         # Identify PDF-sourced calls
         original_count = len(call_data)
         pdf_sourced_count = 0
-        
+
         cleaned_calls = []
         for call in call_data:
             s3_key = call.get("_s3_key", "")
             filename = call.get("filename", "")
-            
+
             # Check if call is PDF-sourced
             is_pdf_sourced = False
             if s3_key and str(s3_key).lower().endswith(".pdf"):
                 is_pdf_sourced = True
             elif filename and str(filename).lower().endswith(".pdf"):
                 is_pdf_sourced = True
-            
+
             if is_pdf_sourced:
                 pdf_sourced_count += 1
             else:
                 cleaned_calls.append(call)
-        
+
         if pdf_sourced_count == 0:
-            logger.info("No PDF-sourced calls found in cache - marking cleanup as complete")
+            logger.info(
+                "No PDF-sourced calls found in cache - marking cleanup as complete"
+            )
             # Mark cleanup as complete
             if CACHE_FILE.exists():
                 try:
@@ -1147,12 +1227,12 @@ def cleanup_pdf_sourced_calls():
                 except Exception:
                     pass
             return
-        
+
         logger.info(
             f"Removed {pdf_sourced_count} PDF-sourced calls from cache "
             f"({original_count} → {len(cleaned_calls)} calls, one-time cleanup)"
         )
-        
+
         # Update cache with cleaned data and cleanup flag
         cleaned_cache = {
             "call_data": cleaned_calls,
@@ -1160,7 +1240,7 @@ def cleanup_pdf_sourced_calls():
             "timestamp": cache_timestamp or datetime.now().isoformat(),
             cleanup_flag_key: True,  # Mark cleanup as complete
         }
-        
+
         # Preserve other metadata if it exists
         if CACHE_FILE.exists():
             try:
@@ -1173,7 +1253,7 @@ def cleanup_pdf_sourced_calls():
                             cleaned_cache[key] = old_cache[key]
             except Exception:
                 pass
-        
+
         # Save cleaned cache to disk
         try:
             with cache_file_lock(CACHE_FILE, timeout=10):
@@ -1181,7 +1261,7 @@ def cleanup_pdf_sourced_calls():
             logger.info(f"Saved cleaned cache to disk: {len(cleaned_calls)} calls")
         except Exception as e:
             logger.error(f"Failed to save cleaned cache to disk: {e}")
-        
+
         # Save cleaned cache to S3
         s3_client, s3_bucket = get_s3_client_and_bucket()
         if s3_client and s3_bucket:
@@ -1196,7 +1276,7 @@ def cleanup_pdf_sourced_calls():
                 logger.info(f"Saved cleaned cache to S3: {len(cleaned_calls)} calls")
             except Exception as e:
                 logger.warning(f"Failed to save cleaned cache to S3: {e}")
-        
+
     except Exception as e:
         logger.error(f"Error during cache cleanup: {e}")
         logger.exception("Cache cleanup failed")
@@ -2074,7 +2154,6 @@ def load_all_calls_cached(cache_version=0):
                             del st.session_state["_merged_cache_data"]
                             if "_merged_cache_errors" in st.session_state:
                                 del st.session_state["_merged_cache_errors"]
-
 
                     # Return disk cache (will update Streamlit cache with this value)
                     logger.info(
@@ -3269,14 +3348,14 @@ def load_new_calls_only():
                     Bucket=s3_bucket_name, Key=s3_key_to_use
                 )
                 csv_content = response["Body"].read().decode("utf-8")
-                
+
                 # Read CSV into DataFrame
                 csv_file = io.StringIO(csv_content)
                 df = pd.read_csv(csv_file)
-                
+
                 # Extract filename from key
                 filename = normalized_key.split("/")[-1]
-                
+
                 # Process each row
                 csv_calls = []
                 for idx, row in df.iterrows():
@@ -3288,11 +3367,13 @@ def load_new_calls_only():
                             parsed_data["_s3_key"] = normalized_key
                             csv_calls.append(parsed_data)
                     except Exception as e:
-                        error_msg = f"Error parsing row {idx + 1} in {filename}: {str(e)}"
+                        error_msg = (
+                            f"Error parsing row {idx + 1} in {filename}: {str(e)}"
+                        )
                         errors.append(error_msg)
                         logger.warning(error_msg)
                         continue
-                
+
                 return csv_calls, None
             except Exception as e:
                 logger.warning(f" Failed to process CSV '{normalized_key}': {e}")
@@ -3417,7 +3498,9 @@ def load_new_calls_only():
                             batch_calls.append(parsed_data)  # Track for this batch
 
                             # Check if this call is already in cache
-                            call_key = parsed_data.get("_s3_key") or parsed_data.get("_id")
+                            call_key = parsed_data.get("_s3_key") or parsed_data.get(
+                                "_id"
+                            )
                             if call_key and call_key in existing_cache_keys:
                                 # Already in cache - skip (already added to new_calls above)
                                 pass
@@ -4829,7 +4912,6 @@ try:
 
         elapsed = time.time() - t0
         status_text.empty()
-
 
     # Check if we got valid data
     if not call_data and not errors:
