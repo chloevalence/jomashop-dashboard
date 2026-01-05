@@ -1570,41 +1570,76 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
     """Create a heatmap showing agent performance across multiple metrics."""
     if bpo_df is None or len(bpo_df) == 0:
         fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(0.5, 0.5, "No agent data available", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            "No agent data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return fig
-    
+
     if "Agent" not in bpo_df.columns or "QA Score" not in bpo_df.columns:
         fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(0.5, 0.5, "Agent or QA Score column not found", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            "Agent or QA Score column not found",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return fig
-    
+
     # Calculate agent metrics
-    agent_metrics = bpo_df.groupby("Agent").agg({
-        "QA Score": ["mean", "count"],
-        "Rubric Pass Count": "sum" if "Rubric Pass Count" in bpo_df.columns else lambda x: 0,
-        "Rubric Fail Count": "sum" if "Rubric Fail Count" in bpo_df.columns else lambda x: 0,
-    }).reset_index()
-    
-    agent_metrics.columns = ["Agent", "Avg_Score", "Call_Count", "Pass_Count", "Fail_Count"]
-    
+    agent_metrics = (
+        bpo_df.groupby("Agent")
+        .agg(
+            {
+                "QA Score": ["mean", "count"],
+                "Rubric Pass Count": "sum"
+                if "Rubric Pass Count" in bpo_df.columns
+                else lambda x: 0,
+                "Rubric Fail Count": "sum"
+                if "Rubric Fail Count" in bpo_df.columns
+                else lambda x: 0,
+            }
+        )
+        .reset_index()
+    )
+
+    agent_metrics.columns = [
+        "Agent",
+        "Avg_Score",
+        "Call_Count",
+        "Pass_Count",
+        "Fail_Count",
+    ]
+
     # Calculate pass rate
     agent_metrics["Pass_Rate"] = (
-        agent_metrics["Pass_Count"] / 
-        (agent_metrics["Pass_Count"] + agent_metrics["Fail_Count"]) * 100
+        agent_metrics["Pass_Count"]
+        / (agent_metrics["Pass_Count"] + agent_metrics["Fail_Count"])
+        * 100
     ).fillna(0)
-    
+
     # Sort by average score
     agent_metrics = agent_metrics.sort_values("Avg_Score", ascending=False)
-    
+
     # Prepare data for heatmap
     heatmap_data = agent_metrics[["Avg_Score", "Pass_Rate", "Call_Count"]].copy()
     heatmap_data.index = agent_metrics["Agent"]
-    
+
     # Normalize data for better visualization (0-100 scale)
     heatmap_data["Avg_Score"] = heatmap_data["Avg_Score"]  # Already 0-100
     heatmap_data["Pass_Rate"] = heatmap_data["Pass_Rate"]  # Already 0-100
-    heatmap_data["Call_Count"] = (heatmap_data["Call_Count"] / heatmap_data["Call_Count"].max() * 100) if heatmap_data["Call_Count"].max() > 0 else 0
-    
+    heatmap_data["Call_Count"] = (
+        (heatmap_data["Call_Count"] / heatmap_data["Call_Count"].max() * 100)
+        if heatmap_data["Call_Count"].max() > 0
+        else 0
+    )
+
     fig, ax = plt.subplots(figsize=(14, max(8, len(agent_metrics) * 0.5)))
     sns.heatmap(
         heatmap_data.T,
@@ -1615,9 +1650,14 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
         vmax=100,
         cbar_kws={"label": "Score (0-100)"},
         linewidths=0.5,
-        ax=ax
+        ax=ax,
     )
-    ax.set_title("Agent Performance Heatmap\n(Average Score, Pass Rate, Call Volume)", fontsize=14, fontweight="bold", pad=20)
+    ax.set_title(
+        "Agent Performance Heatmap\n(Average Score, Pass Rate, Call Volume)",
+        fontsize=14,
+        fontweight="bold",
+        pad=20,
+    )
     ax.set_xlabel("Agent", fontsize=12, fontweight="bold")
     ax.set_ylabel("Metric", fontsize=12, fontweight="bold")
     plt.xticks(rotation=45, ha="right")
@@ -1629,64 +1669,124 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     """Create a comprehensive monthly trend analysis with multiple metrics."""
     if bpo_df is None or len(bpo_df) == 0 or "Call Date" not in bpo_df.columns:
         fig, ax = plt.subplots(figsize=(14, 8))
-        ax.text(0.5, 0.5, "No date data available for trend analysis", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            "No date data available for trend analysis",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return fig
-    
+
     # Ensure Call Date is datetime
     bpo_df = bpo_df.copy()
     bpo_df["Call Date"] = pd.to_datetime(bpo_df["Call Date"], errors="coerce")
     bpo_df = bpo_df[bpo_df["Call Date"].notna()]
-    
+
     if len(bpo_df) == 0:
         fig, ax = plt.subplots(figsize=(14, 8))
-        ax.text(0.5, 0.5, "No valid date data available", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            "No valid date data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return fig
-    
+
     # Create month-year column
     bpo_df["Month"] = bpo_df["Call Date"].dt.to_period("M")
-    
+
     # Calculate monthly metrics
-    monthly_metrics = bpo_df.groupby("Month").agg({
-        "QA Score": ["mean", "count"],
-        "Rubric Pass Count": "sum" if "Rubric Pass Count" in bpo_df.columns else lambda x: 0,
-        "Rubric Fail Count": "sum" if "Rubric Fail Count" in bpo_df.columns else lambda x: 0,
-    }).reset_index()
-    
-    monthly_metrics.columns = ["Month", "Avg_Score", "Call_Count", "Pass_Count", "Fail_Count"]
+    monthly_metrics = (
+        bpo_df.groupby("Month")
+        .agg(
+            {
+                "QA Score": ["mean", "count"],
+                "Rubric Pass Count": "sum"
+                if "Rubric Pass Count" in bpo_df.columns
+                else lambda x: 0,
+                "Rubric Fail Count": "sum"
+                if "Rubric Fail Count" in bpo_df.columns
+                else lambda x: 0,
+            }
+        )
+        .reset_index()
+    )
+
+    monthly_metrics.columns = [
+        "Month",
+        "Avg_Score",
+        "Call_Count",
+        "Pass_Count",
+        "Fail_Count",
+    ]
     monthly_metrics["Pass_Rate"] = (
-        monthly_metrics["Pass_Count"] / 
-        (monthly_metrics["Pass_Count"] + monthly_metrics["Fail_Count"]) * 100
+        monthly_metrics["Pass_Count"]
+        / (monthly_metrics["Pass_Count"] + monthly_metrics["Fail_Count"])
+        * 100
     ).fillna(0)
-    
+
     # Convert Month to string for plotting
     monthly_metrics["Month_Str"] = monthly_metrics["Month"].astype(str)
-    
+
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle("Monthly Performance Trends", fontsize=16, fontweight="bold", y=0.995)
-    
+
     # 1. Average QA Score Trend
     ax1 = axes[0, 0]
-    ax1.plot(monthly_metrics["Month_Str"], monthly_metrics["Avg_Score"], marker="o", linewidth=2, markersize=8, color="#2E86AB")
-    ax1.fill_between(monthly_metrics["Month_Str"], monthly_metrics["Avg_Score"], alpha=0.3, color="#2E86AB")
+    ax1.plot(
+        monthly_metrics["Month_Str"],
+        monthly_metrics["Avg_Score"],
+        marker="o",
+        linewidth=2,
+        markersize=8,
+        color="#2E86AB",
+    )
+    ax1.fill_between(
+        monthly_metrics["Month_Str"],
+        monthly_metrics["Avg_Score"],
+        alpha=0.3,
+        color="#2E86AB",
+    )
     ax1.set_title("Average QA Score Trend", fontsize=12, fontweight="bold")
     ax1.set_ylabel("QA Score", fontsize=10)
     ax1.grid(True, alpha=0.3)
     ax1.set_ylim(bottom=0, top=100)
     plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha="right")
-    
+
     # 2. Pass Rate Trend
     ax2 = axes[0, 1]
-    ax2.plot(monthly_metrics["Month_Str"], monthly_metrics["Pass_Rate"], marker="s", linewidth=2, markersize=8, color="#A23B72")
-    ax2.fill_between(monthly_metrics["Month_Str"], monthly_metrics["Pass_Rate"], alpha=0.3, color="#A23B72")
+    ax2.plot(
+        monthly_metrics["Month_Str"],
+        monthly_metrics["Pass_Rate"],
+        marker="s",
+        linewidth=2,
+        markersize=8,
+        color="#A23B72",
+    )
+    ax2.fill_between(
+        monthly_metrics["Month_Str"],
+        monthly_metrics["Pass_Rate"],
+        alpha=0.3,
+        color="#A23B72",
+    )
     ax2.set_title("Pass Rate Trend", fontsize=12, fontweight="bold")
     ax2.set_ylabel("Pass Rate (%)", fontsize=10)
     ax2.grid(True, alpha=0.3)
     ax2.set_ylim(bottom=0, top=100)
     plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha="right")
-    
+
     # 3. Call Volume Trend
     ax3 = axes[1, 0]
-    bars = ax3.bar(monthly_metrics["Month_Str"], monthly_metrics["Call_Count"], color="#F18F01", alpha=0.7)
+    bars = ax3.bar(
+        monthly_metrics["Month_Str"],
+        monthly_metrics["Call_Count"],
+        color="#F18F01",
+        alpha=0.7,
+    )
     ax3.set_title("Call Volume Trend", fontsize=12, fontweight="bold")
     ax3.set_ylabel("Number of Calls", fontsize=10)
     ax3.grid(True, alpha=0.3, axis="y")
@@ -1694,16 +1794,36 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     # Add value labels on bars
     for bar in bars:
         height = bar.get_height()
-        ax3.text(bar.get_x() + bar.get_width()/2., height,
-                f'{int(height)}', ha='center', va='bottom', fontsize=9)
-    
+        ax3.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height,
+            f"{int(height)}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+
     # 4. Combined Score and Pass Rate
     ax4 = axes[1, 1]
     ax4_twin = ax4.twinx()
-    line1 = ax4.plot(monthly_metrics["Month_Str"], monthly_metrics["Avg_Score"], 
-                     marker="o", linewidth=2, markersize=8, color="#2E86AB", label="Avg Score")
-    line2 = ax4_twin.plot(monthly_metrics["Month_Str"], monthly_metrics["Pass_Rate"], 
-                          marker="s", linewidth=2, markersize=8, color="#A23B72", label="Pass Rate")
+    line1 = ax4.plot(
+        monthly_metrics["Month_Str"],
+        monthly_metrics["Avg_Score"],
+        marker="o",
+        linewidth=2,
+        markersize=8,
+        color="#2E86AB",
+        label="Avg Score",
+    )
+    line2 = ax4_twin.plot(
+        monthly_metrics["Month_Str"],
+        monthly_metrics["Pass_Rate"],
+        marker="s",
+        linewidth=2,
+        markersize=8,
+        color="#A23B72",
+        label="Pass Rate",
+    )
     ax4.set_title("Score & Pass Rate Combined", fontsize=12, fontweight="bold")
     ax4.set_ylabel("QA Score", fontsize=10, color="#2E86AB")
     ax4_twin.set_ylabel("Pass Rate (%)", fontsize=10, color="#A23B72")
@@ -1711,12 +1831,12 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     ax4_twin.tick_params(axis="y", labelcolor="#A23B72")
     ax4.grid(True, alpha=0.3)
     plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45, ha="right")
-    
+
     # Combine legends
     lines = line1 + line2
     labels = [l.get_label() for l in lines]
     ax4.legend(lines, labels, loc="upper left")
-    
+
     plt.tight_layout()
     return fig
 
@@ -1725,76 +1845,190 @@ def create_top_failure_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
     """Create a chart showing top failure reasons with impact analysis."""
     if bpo_df is None or len(bpo_df) == 0:
         fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return fig
-    
+
     # Find rubric columns
     rubric_columns = [
-        col for col in bpo_df.columns
+        col
+        for col in bpo_df.columns
         if re.match(r"^\d+\.\d+\.\d+$", str(col)) and "__reason" not in str(col).lower()
     ]
-    
+
     if not rubric_columns:
         fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(0.5, 0.5, "No rubric data available", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            "No rubric data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return fig
-    
+
     # Calculate failure counts and percentages
     failure_data = []
     total_calls = len(bpo_df)
-    
+
     for col in rubric_columns:
         failures = 0
         for value in bpo_df[col]:
             value_str = str(value).strip().upper() if pd.notna(value) else ""
             if value is False or value_str == "FALSE" or value_str == "F":
                 failures += 1
-        
+
         if failures > 0:
             failure_pct = (failures / total_calls) * 100
-            failure_data.append({
-                "Code": col,
-                "Failures": failures,
-                "Failure_Pct": failure_pct
-            })
-    
+            failure_data.append(
+                {"Code": col, "Failures": failures, "Failure_Pct": failure_pct}
+            )
+
     if not failure_data:
         fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(0.5, 0.5, "No failures found", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            "No failures found",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return fig
-    
+
     failure_df = pd.DataFrame(failure_data)
     failure_df = failure_df.sort_values("Failures", ascending=False).head(10)
-    
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-    fig.suptitle("Top 10 Rubric Failure Codes - Impact Analysis", fontsize=14, fontweight="bold")
-    
+    fig.suptitle(
+        "Top 10 Rubric Failure Codes - Impact Analysis", fontsize=14, fontweight="bold"
+    )
+
     # Left: Bar chart of failure counts
-    bars = ax1.barh(failure_df["Code"], failure_df["Failures"], color="#C73E1D", alpha=0.7)
+    bars = ax1.barh(
+        failure_df["Code"], failure_df["Failures"], color="#C73E1D", alpha=0.7
+    )
     ax1.set_xlabel("Number of Failures", fontsize=11, fontweight="bold")
     ax1.set_title("Failure Count", fontsize=12, fontweight="bold")
     ax1.grid(True, alpha=0.3, axis="x")
     ax1.invert_yaxis()
-    
+
     # Add value labels
     for i, bar in enumerate(bars):
         width = bar.get_width()
-        ax1.text(width, bar.get_y() + bar.get_height()/2,
-                f'{int(width)}', ha='left', va='center', fontsize=9, fontweight="bold")
-    
+        ax1.text(
+            width,
+            bar.get_y() + bar.get_height() / 2,
+            f"{int(width)}",
+            ha="left",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
+
     # Right: Percentage impact
-    bars2 = ax2.barh(failure_df["Code"], failure_df["Failure_Pct"], color="#FF6B35", alpha=0.7)
+    bars2 = ax2.barh(
+        failure_df["Code"], failure_df["Failure_Pct"], color="#FF6B35", alpha=0.7
+    )
     ax2.set_xlabel("Failure Rate (%)", fontsize=11, fontweight="bold")
     ax2.set_title("Impact on Total Calls", fontsize=12, fontweight="bold")
     ax2.grid(True, alpha=0.3, axis="x")
     ax2.invert_yaxis()
-    
+
     # Add value labels
     for i, bar in enumerate(bars2):
         width = bar.get_width()
-        ax2.text(width, bar.get_y() + bar.get_height()/2,
-                f'{width:.1f}%', ha='left', va='center', fontsize=9, fontweight="bold")
-    
+        ax2.text(
+            width,
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:.1f}%",
+            ha="left",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    return fig
+
+
+def create_bpo_only_kpi_dashboard(bpo_metrics: Dict) -> plt.Figure:
+    """Create a KPI dashboard showing only BPO Centers metrics."""
+    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+    fig.suptitle(
+        "Key Performance Indicators (KPI) Dashboard - BPO Centers",
+        fontsize=16,
+        fontweight="bold",
+        y=0.995,
+    )
+
+    # Prepare data
+    metrics_to_show = [
+        ("avg_qa_score", "Average QA Score", "Score", 0, 100),
+        ("pass_rate", "Pass Rate", "%", 0, 100),
+        ("avg_aht", "Average Handle Time", "min", None, None),
+        ("total_calls", "Total Call Volume", "calls", None, None),
+        ("calls_per_day", "Calls Per Day", "calls/day", None, None),
+        ("excellent_pct", "Excellent Scores (90+)", "%", 0, 100),
+    ]
+
+    for idx, (metric_key, metric_name, unit, ymin, ymax) in enumerate(
+        metrics_to_show
+    ):
+        row = idx // 3
+        col = idx % 3
+        ax = axes[row, col]
+
+        bpo_val = bpo_metrics.get(metric_key)
+
+        if bpo_val is None:
+            ax.text(
+                0.5,
+                0.5,
+                f"{metric_name}\nData not available",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+            )
+            ax.set_title(metric_name, fontsize=11, fontweight="bold")
+            continue
+
+        # Create single bar
+        bars = ax.bar(
+            ["BPO Centers"],
+            [bpo_val],
+            color="#28A745",
+            alpha=0.7,
+            edgecolor="black",
+            linewidth=1.5,
+        )
+
+        # Add value label
+        height = bars[0].get_height()
+        label = f"{bpo_val:.1f}" if isinstance(bpo_val, float) else f"{int(bpo_val)}"
+        ax.text(
+            bars[0].get_x() + bars[0].get_width() / 2.0,
+            height,
+            f"{label} {unit}",
+            ha="center",
+            va="bottom",
+            fontsize=12,
+            fontweight="bold",
+        )
+
+        ax.set_title(metric_name, fontsize=11, fontweight="bold")
+        if ymin is not None and ymax is not None:
+            ax.set_ylim(ymin, ymax)
+        ax.grid(True, alpha=0.3, axis="y")
+
     plt.tight_layout()
     return fig
 
@@ -1802,8 +2036,13 @@ def create_top_failure_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
 def create_kpi_dashboard(previous_metrics: Dict, bpo_metrics: Dict) -> plt.Figure:
     """Create a KPI dashboard with key metrics comparison."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
-    fig.suptitle("Key Performance Indicators (KPI) Dashboard", fontsize=16, fontweight="bold", y=0.995)
-    
+    fig.suptitle(
+        "Key Performance Indicators (KPI) Dashboard",
+        fontsize=16,
+        fontweight="bold",
+        y=0.995,
+    )
+
     # Prepare data
     metrics_to_compare = [
         ("avg_qa_score", "Average QA Score", "Score", 0, 100),
@@ -1813,50 +2052,86 @@ def create_kpi_dashboard(previous_metrics: Dict, bpo_metrics: Dict) -> plt.Figur
         ("calls_per_day", "Calls Per Day", "calls/day", None, None),
         ("excellent_pct", "Excellent Scores (90+)", "%", 0, 100),
     ]
-    
-    for idx, (metric_key, metric_name, unit, ymin, ymax) in enumerate(metrics_to_compare):
+
+    for idx, (metric_key, metric_name, unit, ymin, ymax) in enumerate(
+        metrics_to_compare
+    ):
         row = idx // 3
         col = idx % 3
         ax = axes[row, col]
-        
+
         prev_val = previous_metrics.get(metric_key)
         bpo_val = bpo_metrics.get(metric_key)
-        
+
         if prev_val is None or bpo_val is None:
-            ax.text(0.5, 0.5, f"{metric_name}\nData not available", 
-                   ha="center", va="center", transform=ax.transAxes, fontsize=10)
+            ax.text(
+                0.5,
+                0.5,
+                f"{metric_name}\nData not available",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+            )
             ax.set_title(metric_name, fontsize=11, fontweight="bold")
             continue
-        
+
         # Create comparison bars
         categories = ["Previous\nCenter", "BPO\nCenters"]
         values = [prev_val, bpo_val]
         colors = ["#6C757D", "#28A745"]
-        
-        bars = ax.bar(categories, values, color=colors, alpha=0.7, edgecolor="black", linewidth=1.5)
-        
+
+        bars = ax.bar(
+            categories,
+            values,
+            color=colors,
+            alpha=0.7,
+            edgecolor="black",
+            linewidth=1.5,
+        )
+
         # Add value labels
         for bar, val in zip(bars, values):
             height = bar.get_height()
             label = f"{val:.1f}" if isinstance(val, float) else f"{int(val)}"
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{label} {unit}', ha='center', va='bottom', fontsize=10, fontweight="bold")
-        
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{label} {unit}",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+
         # Calculate and show improvement
         if prev_val != 0:
             improvement = ((bpo_val - prev_val) / prev_val) * 100
             improvement_color = "#28A745" if improvement > 0 else "#DC3545"
             improvement_text = f"{improvement:+.1f}%"
-            ax.text(0.5, 0.95, improvement_text, ha="center", va="top", 
-                   transform=ax.transAxes, fontsize=12, fontweight="bold", 
-                   color=improvement_color, bbox=dict(boxstyle="round,pad=0.3", 
-                   facecolor="white", edgecolor=improvement_color, linewidth=2))
-        
+            ax.text(
+                0.5,
+                0.95,
+                improvement_text,
+                ha="center",
+                va="top",
+                transform=ax.transAxes,
+                fontsize=12,
+                fontweight="bold",
+                color=improvement_color,
+                bbox=dict(
+                    boxstyle="round,pad=0.3",
+                    facecolor="white",
+                    edgecolor=improvement_color,
+                    linewidth=2,
+                ),
+            )
+
         ax.set_title(metric_name, fontsize=11, fontweight="bold")
         if ymin is not None and ymax is not None:
             ax.set_ylim(ymin, ymax)
         ax.grid(True, alpha=0.3, axis="y")
-    
+
     plt.tight_layout()
     return fig
 
@@ -1865,51 +2140,93 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
     """Create an agent leaderboard with rankings."""
     if bpo_df is None or len(bpo_df) == 0 or "Agent" not in bpo_df.columns:
         fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(0.5, 0.5, "No agent data available", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            "No agent data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
         return fig
-    
+
     # Calculate agent performance
-    agent_perf = bpo_df.groupby("Agent").agg({
-        "QA Score": ["mean", "count"],
-        "Rubric Pass Count": "sum" if "Rubric Pass Count" in bpo_df.columns else lambda x: 0,
-        "Rubric Fail Count": "sum" if "Rubric Fail Count" in bpo_df.columns else lambda x: 0,
-    }).reset_index()
-    
-    agent_perf.columns = ["Agent", "Avg_Score", "Call_Count", "Pass_Count", "Fail_Count"]
+    agent_perf = (
+        bpo_df.groupby("Agent")
+        .agg(
+            {
+                "QA Score": ["mean", "count"],
+                "Rubric Pass Count": "sum"
+                if "Rubric Pass Count" in bpo_df.columns
+                else lambda x: 0,
+                "Rubric Fail Count": "sum"
+                if "Rubric Fail Count" in bpo_df.columns
+                else lambda x: 0,
+            }
+        )
+        .reset_index()
+    )
+
+    agent_perf.columns = [
+        "Agent",
+        "Avg_Score",
+        "Call_Count",
+        "Pass_Count",
+        "Fail_Count",
+    ]
     agent_perf["Pass_Rate"] = (
-        agent_perf["Pass_Count"] / 
-        (agent_perf["Pass_Count"] + agent_perf["Fail_Count"]) * 100
+        agent_perf["Pass_Count"]
+        / (agent_perf["Pass_Count"] + agent_perf["Fail_Count"])
+        * 100
     ).fillna(0)
-    
+
     # Sort by average score
     agent_perf = agent_perf.sort_values("Avg_Score", ascending=False)
     agent_perf["Rank"] = range(1, len(agent_perf) + 1)
-    
+
     # Take top 15 agents
     top_agents = agent_perf.head(15)
-    
+
     fig, ax = plt.subplots(figsize=(14, 10))
-    
+
     # Create horizontal bar chart
     y_pos = np.arange(len(top_agents))
-    ax.barh(y_pos, top_agents["Avg_Score"], color=plt.cm.RdYlGn(top_agents["Avg_Score"] / 100), alpha=0.8)
-    
+    ax.barh(
+        y_pos,
+        top_agents["Avg_Score"],
+        color=plt.cm.RdYlGn(top_agents["Avg_Score"] / 100),
+        alpha=0.8,
+    )
+
     # Add value labels
     for i, (idx, row) in enumerate(top_agents.iterrows()):
         score = row["Avg_Score"]
-        ax.text(score + 1, i, f"{score:.1f}", va="center", fontsize=9, fontweight="bold")
+        ax.text(
+            score + 1, i, f"{score:.1f}", va="center", fontsize=9, fontweight="bold"
+        )
         # Add call count
-        ax.text(score + 1, i - 0.25, f"({int(row['Call_Count'])} calls)", 
-               va="center", fontsize=8, style="italic", color="gray")
-    
+        ax.text(
+            score + 1,
+            i - 0.25,
+            f"({int(row['Call_Count'])} calls)",
+            va="center",
+            fontsize=8,
+            style="italic",
+            color="gray",
+        )
+
     ax.set_yticks(y_pos)
-    ax.set_yticklabels([f"#{row['Rank']} {row['Agent']}" for _, row in top_agents.iterrows()])
+    ax.set_yticklabels(
+        [f"#{row['Rank']} {row['Agent']}" for _, row in top_agents.iterrows()]
+    )
     ax.set_xlabel("Average QA Score", fontsize=11, fontweight="bold")
-    ax.set_title("Agent Performance Leaderboard (Top 15)", fontsize=14, fontweight="bold", pad=20)
+    ax.set_title(
+        "Agent Performance Leaderboard (Top 15)", fontsize=14, fontweight="bold", pad=20
+    )
     ax.set_xlim(0, 100)
     ax.grid(True, alpha=0.3, axis="x")
     ax.invert_yaxis()
-    
+
     plt.tight_layout()
     return fig
 
@@ -1931,8 +2248,9 @@ def generate_pdf_report(
         ax = fig.add_subplot(111)
         ax.axis("off")
 
-        title_text = "Contact Center Performance Comparison Report"
-        subtitle_text = "Previous Contact Center vs BPO Centers"
+        has_previous_data = previous_data is not None and len(previous_data) > 0
+        title_text = "Contact Center Performance Report"
+        subtitle_text = "BPO Centers Performance Analysis" if not has_previous_data else "Previous Contact Center vs BPO Centers"
         date_text = (
             f"BPO Centers Data: From {bpo_start_date.strftime('%B %d, %Y')} onwards"
         )
@@ -1987,12 +2305,18 @@ def generate_pdf_report(
         ax = fig.add_subplot(111)
         ax.axis("off")
 
+        has_previous_data = previous_data is not None and len(previous_data) > 0
         summary_lines = ["EXECUTIVE SUMMARY", ""]
+        
+        if not has_previous_data:
+            summary_lines.append("BPO Centers Performance Overview")
+            summary_lines.append("")
 
-        # Calculate improvements
+        # Calculate improvements (only if we have previous data)
         improvements = {}
         if (
-            previous_metrics.get("avg_qa_score") is not None
+            has_previous_data
+            and previous_metrics.get("avg_qa_score") is not None
             and bpo_metrics.get("avg_qa_score") is not None
             and previous_metrics["avg_qa_score"] != 0
         ):
@@ -2060,10 +2384,11 @@ def generate_pdf_report(
                 )
 
         summary_lines.extend(["", "KEY METRICS"])
-        summary_lines.append(f"Previous Contact Center:")
-        summary_lines.append(
-            f"  • Total Calls: {previous_metrics.get('total_calls', 'N/A')}"
-        )
+        if has_previous_data:
+            summary_lines.append(f"Previous Contact Center:")
+            summary_lines.append(
+                f"  • Total Calls: {previous_metrics.get('total_calls', 'N/A')}"
+            )
         summary_lines.append(
             f"  • Avg QA Score: {previous_metrics.get('avg_qa_score', 'N/A'):.1f}"
             if previous_metrics.get("avg_qa_score") is not None
@@ -2095,7 +2420,8 @@ def generate_pdf_report(
             else "  • Excellent (90+): N/A"
         )
 
-        summary_lines.append("")
+        if has_previous_data:
+            summary_lines.append("")
         summary_lines.append(
             f"BPO Centers (from {bpo_start_date.strftime('%Y-%m-%d')}):"
         )
@@ -2149,9 +2475,11 @@ def generate_pdf_report(
         pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
 
-        # Page 3+: Metric Comparison Charts
+        # Page 3+: Metric Comparison Charts (only if we have previous data)
+        has_previous_data = previous_data is not None and len(previous_data) > 0
         if (
-            previous_metrics.get("avg_qa_score") is not None
+            has_previous_data
+            and previous_metrics.get("avg_qa_score") is not None
             and bpo_metrics.get("avg_qa_score") is not None
         ):
             fig = create_comparison_chart(
@@ -2196,14 +2524,14 @@ def generate_pdf_report(
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        # Improvement Summary Chart
-        if improvements:
+        # Improvement Summary Chart (only if we have previous data)
+        if improvements and has_previous_data:
             fig = create_improvement_summary_chart(improvements)
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        # Distribution Comparison
-        if previous_data is not None and bpo_data is not None:
+        # Distribution Comparison (only if we have previous data)
+        if has_previous_data and previous_data is not None and bpo_data is not None:
             if "QA Score" in previous_data.columns and "QA Score" in bpo_data.columns:
                 fig = create_distribution_comparison(
                     previous_data["QA Score"], bpo_data["QA Score"]
@@ -2211,9 +2539,10 @@ def generate_pdf_report(
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
 
-        # Quality Tier Comparison
+        # Quality Tier Comparison (only if we have previous data)
         if (
-            previous_metrics.get("excellent_pct") is not None
+            has_previous_data
+            and previous_metrics.get("excellent_pct") is not None
             and bpo_metrics.get("excellent_pct") is not None
         ):
             fig = create_quality_tier_chart(previous_metrics, bpo_metrics)
@@ -2226,8 +2555,8 @@ def generate_pdf_report(
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        # Rubric Improvements
-        if previous_data is not None and bpo_data is not None:
+        # Rubric Improvements (only if we have previous data)
+        if has_previous_data and previous_data is not None and bpo_data is not None:
             rubric_improvements = calculate_rubric_improvements(previous_data, bpo_data)
             if rubric_improvements.get("top_improvements"):
                 fig = create_rubric_improvement_chart(
@@ -2236,9 +2565,10 @@ def generate_pdf_report(
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
 
-        # Call Reasons Comparison
+        # Call Reasons Comparison (only if we have previous data)
         if (
-            previous_metrics.get("reason_distribution") is not None
+            has_previous_data
+            and previous_metrics.get("reason_distribution") is not None
             and bpo_metrics.get("reason_distribution") is not None
         ):
             fig = create_reason_comparison_chart(
@@ -2248,9 +2578,10 @@ def generate_pdf_report(
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        # Call Outcomes Comparison
+        # Call Outcomes Comparison (only if we have previous data)
         if (
-            previous_metrics.get("outcome_distribution") is not None
+            has_previous_data
+            and previous_metrics.get("outcome_distribution") is not None
             and bpo_metrics.get("outcome_distribution") is not None
         ):
             fig = create_outcome_comparison_chart(
@@ -2260,9 +2591,10 @@ def generate_pdf_report(
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        # Products Discussed Comparison
+        # Products Discussed Comparison (only if we have previous data)
         if (
-            previous_metrics.get("product_distribution") is not None
+            has_previous_data
+            and previous_metrics.get("product_distribution") is not None
             and bpo_metrics.get("product_distribution") is not None
         ):
             fig = create_product_comparison_chart(
@@ -2273,10 +2605,15 @@ def generate_pdf_report(
             plt.close(fig)
 
         # NEW IMPRESSIVE CHARTS FOR BPO REVIEW
-        
-        # KPI Dashboard
+
+        # KPI Dashboard (show BPO metrics, with comparison if available)
         print("  📊 Generating KPI Dashboard...")
-        fig = create_kpi_dashboard(previous_metrics, bpo_metrics)
+        has_previous_data = previous_data is not None and len(previous_data) > 0
+        if has_previous_data:
+            fig = create_kpi_dashboard(previous_metrics, bpo_metrics)
+        else:
+            # Create BPO-only KPI dashboard
+            fig = create_bpo_only_kpi_dashboard(bpo_metrics)
         pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
 
@@ -2356,23 +2693,26 @@ def main():
         print("   Use YYYY-MM-DD format (e.g., 2025-08-01)")
         sys.exit(1)
 
-    # Determine CSV file paths
+    # Determine CSV file paths (optional - can generate BPO-only report)
     csv_paths = []
+    previous_data = None
+    previous_metrics = {}
+    
     if args.previous_csv:
         csv_paths = [Path(p) for p in args.previous_csv]
     elif args.previous_csv_dir:
         csv_dir = Path(args.previous_csv_dir)
         if not csv_dir.exists():
-            print(f"❌ CSV directory not found: {csv_dir}")
-            sys.exit(1)
-        csv_paths = list(csv_dir.glob("*.csv"))
-        if not csv_paths:
-            print(f"❌ No CSV files found in directory: {csv_dir}")
-            sys.exit(1)
+            print(f"⚠️  Warning: CSV directory not found: {csv_dir}")
+            print("   Generating BPO-only report (no comparison data)")
+        else:
+            csv_paths = list(csv_dir.glob("*.csv"))
+            if not csv_paths:
+                print(f"⚠️  Warning: No CSV files found in directory: {csv_dir}")
+                print("   Generating BPO-only report (no comparison data)")
     else:
-        print("❌ Error: Must provide either --previous-csv or --previous-csv-dir")
-        parser.print_help()
-        sys.exit(1)
+        print("ℹ️  No previous CSV files provided - generating BPO-only report")
+        print("   (Use --previous-csv or --previous-csv-dir for comparison)")
 
     print("=" * 80)
     print("Contact Center Comparison Report Generator")
@@ -2382,12 +2722,20 @@ def main():
     try:
         # Load data
         print("📊 Loading data...")
-        previous_data = load_previous_center_data(csv_paths)
+        if csv_paths:
+            previous_data = load_previous_center_data(csv_paths)
+            print("\n📈 Calculating metrics...")
+            previous_metrics = calculate_all_metrics(previous_data)
+        else:
+            print("   (Skipping previous center data - BPO-only report)")
+            previous_metrics = {}
+        
         bpo_data = load_bpo_centers_data(Path(args.cache), bpo_start_date)
-
-        # Calculate metrics
-        print("\n📈 Calculating metrics...")
-        previous_metrics = calculate_all_metrics(previous_data)
+        
+        if not csv_paths:
+            print("\n📈 Calculating BPO metrics...")
+        else:
+            print("\n📈 Calculating BPO metrics...")
         bpo_metrics = calculate_all_metrics(bpo_data)
 
         # Generate report
