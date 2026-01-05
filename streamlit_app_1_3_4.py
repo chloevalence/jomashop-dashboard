@@ -4146,7 +4146,7 @@ else:
 
 # Logout button
 st.sidebar.markdown("---")
-if st.sidebar.button("🚪 Logout", help="Log out of your account", type="secondary"):
+if st.sidebar.button("Logout", help="Log out of your account", type="secondary"):
     try:
         authenticator.logout("Logout", "sidebar")
         st.session_state.authentication_status = None
@@ -6766,11 +6766,11 @@ if not user_agent_id:
             if pct >= 90:
                 return " Top 10%"
             elif pct >= 75:
-                return "🥇 Top 25%"
+                return " Top 25%"
             elif pct >= 50:
-                return "🥈 Top 50%"
+                return " Top 50%"
             elif pct >= 25:
-                return "🥉 Bottom 50%"
+                return " Bottom 50%"
             else:
                 return " Bottom 25%"
 
