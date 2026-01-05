@@ -5206,7 +5206,7 @@ if is_super_admin():
                 if "processed_s3_keys" in st.session_state:
                     del st.session_state["processed_s3_keys"]
                 
-        # Mark that full dataset should be cached after this reload
+                # Mark that full dataset should be cached after this reload
                 st.session_state["full_dataset_cached"] = (
                     False  # Will be set to True after load completes
                 )
@@ -5217,7 +5217,7 @@ if is_super_admin():
                 st.success(" Cache cleared! Reloading all data from S3...")
                 logger.info("Reload ALL Data button clicked - starting full reload")
                 st.rerun()
-        except Exception as e:
+            except Exception as e:
             logger.exception(f"Error initiating reload: {e}")
             st.error(f"❌ Failed to initiate reload: {str(e)}")
             st.info("Please try again or contact support if the issue persists.")
