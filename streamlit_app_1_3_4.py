@@ -2449,33 +2449,33 @@ def load_all_calls_cached(cache_version=0):
                         logger.info(
                             f" Found PARTIAL cache: {cache_count} calls ({progress_pct}% complete)"
                         )
-                    logger.info(
-                        "Will continue loading remaining files from S3 with incremental saves"
-                    )
-                    # Don't return early - continue to load remaining files
-                else:
-                    logger.info(
-                        f" USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss"
-                    )
+                        logger.info(
+                            "Will continue loading remaining files from S3 with incremental saves"
+                        )
+                        # Don't return early - continue to load remaining files
+                    else:
+                        logger.info(
+                            f" USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss"
+                        )
 
-                    # CRITICAL FIX: Clean up _merged_cache_data if Streamlit cache has correct count
-                    # This prevents keeping stale _merged_cache_data when Streamlit cache is already updated
-                    if "_merged_cache_data" in st.session_state:
-                        expected_count = len(st.session_state["_merged_cache_data"])
-                        if cache_count >= expected_count:
-                            # Streamlit cache has correct data (or more), safe to delete _merged_cache_data
-                            logger.info(
-                                f" Streamlit cache confirmed updated ({cache_count} >= {expected_count} calls), cleaning up _merged_cache_data"
-                            )
-                            del st.session_state["_merged_cache_data"]
-                            if "_merged_cache_errors" in st.session_state:
-                                del st.session_state["_merged_cache_errors"]
-                    
-                    # Return disk cache (will update Streamlit cache with this value)
-                    logger.info(
-                        f" USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss"
-                    )
-                    return disk_call_data, disk_errors if disk_errors else []
+                        # CRITICAL FIX: Clean up _merged_cache_data if Streamlit cache has correct count
+                        # This prevents keeping stale _merged_cache_data when Streamlit cache is already updated
+                        if "_merged_cache_data" in st.session_state:
+                            expected_count = len(st.session_state["_merged_cache_data"])
+                            if cache_count >= expected_count:
+                                # Streamlit cache has correct data (or more), safe to delete _merged_cache_data
+                                logger.info(
+                                    f" Streamlit cache confirmed updated ({cache_count} >= {expected_count} calls), cleaning up _merged_cache_data"
+                                )
+                                del st.session_state["_merged_cache_data"]
+                                if "_merged_cache_errors" in st.session_state:
+                                    del st.session_state["_merged_cache_errors"]
+                        
+                        # Return disk cache (will update Streamlit cache with this value)
+                        logger.info(
+                            f" USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss"
+                        )
+                        return disk_call_data, disk_errors if disk_errors else []
                 else:
                     logger.info(
                         f" Cache has only {cache_count} calls (< 100), will load from S3"
