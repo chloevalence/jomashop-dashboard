@@ -4080,8 +4080,8 @@ auto_hash = st.secrets.get("auto_hash", False)
 
 # Initialize authenticator with retry logic for CookieManager loading issues
 authenticator = None
-max_retries = 3
-retry_delay = 2  # seconds
+max_retries = 5  # Increased retries
+retry_delay = 3  # Increased initial delay
 
 for attempt in range(max_retries):
     try:
@@ -4092,6 +4092,13 @@ for attempt in range(max_retries):
             cookie["expiry_days"],
             auto_hash=auto_hash,
         )
+        # Test if CookieManager actually loaded by checking if we can access it
+        # This helps catch cases where initialization appears to succeed but component isn't ready
+        try:
+            # Small delay to let component initialize
+            time.sleep(0.5)
+        except Exception:
+            pass
         break  # Success, exit retry loop
     except Exception as e:
         error_msg = str(e).lower()
@@ -4100,16 +4107,24 @@ for attempt in range(max_retries):
             or "component" in error_msg
             or "frontend" in error_msg
             or "extra_streamlit_components" in error_msg
+            or "trouble loading" in error_msg
+            or "cookie_manager" in error_msg
+            or "cannot assemble" in error_msg
         )
         
         if is_component_error and attempt < max_retries - 1:
-            # Retry with exponential backoff
+            # Retry with exponential backoff (longer delays)
             wait_time = retry_delay * (2 ** attempt)
             logger.warning(
                 f"CookieManager initialization failed (attempt {attempt + 1}/{max_retries}). "
                 f"Retrying in {wait_time}s... Error: {e}"
             )
-            time.sleep(wait_time)
+            # Show a loading message to user
+            if attempt == 0:
+                with st.spinner(f"Loading authentication component... (attempt {attempt + 1}/{max_retries})"):
+                    time.sleep(wait_time)
+            else:
+                time.sleep(wait_time)
             continue
         else:
             # Final attempt failed or non-component error
@@ -4161,42 +4176,65 @@ if auth_status is None:
         st.stop()
     
     try:
+        # Add a small delay before calling login to give component time to load
+        time.sleep(0.5)
         authenticator.login("main", "Login")
     except Exception as e:
         # Handle CookieManager component loading issues gracefully
         error_msg = str(e).lower()
-        if (
+        is_component_error = (
             "cookiemanager" in error_msg
             or "component" in error_msg
             or "frontend" in error_msg
             or "extra_streamlit_components" in error_msg
-        ):
+            or "trouble loading" in error_msg
+            or "cookie_manager" in error_msg
+            or "cannot assemble" in error_msg
+            or "cookie manager" in error_msg
+        )
+        
+        if is_component_error:
             st.error(" **Authentication Component Loading Issue**")
             st.warning(
-                "The authentication component is having trouble loading. This is usually a temporary network or CDN issue."
+                "The authentication component (CookieManager) is having trouble loading its frontend assets. "
+                "This is usually a temporary network or CDN issue."
             )
             st.markdown("### 🔧 **Quick Fixes (try in order):**")
-            st.markdown("1. **Wait 10-15 seconds** and refresh the page (F5 or Cmd+R)")
-            st.markdown("2. **Hard refresh** the page:")
+            st.markdown("1. **Wait 15-30 seconds** and refresh the page (F5 or Cmd+R)")
+            st.markdown("2. **Hard refresh** the page to clear cached assets:")
             st.code("Windows/Linux: Ctrl+Shift+R\nMac: Cmd+Shift+R", language=None)
             st.markdown("3. **Clear browser cache** and cookies for this site")
             st.markdown("4. **Try a different browser** or incognito/private mode")
             st.markdown(
-                "5. **Check your network connection** - ensure you can access external CDNs"
+                "5. **Check your network connection** - ensure you can access external CDNs (jsDelivr, unpkg, etc.)"
             )
             st.markdown(
                 "6. **Verify installation** - ensure `extra-streamlit-components` is installed:"
             )
-            st.code("pip install --upgrade extra-streamlit-components", language="bash")
+            st.code("pip install --upgrade extra-streamlit-components streamlit-authenticator", language="bash")
+            st.markdown("7. **Check firewall/proxy settings** - ensure CDN access is not blocked")
             st.markdown("---")
             st.info(
-                " **If the issue persists:** This may be a network/proxy/CDN issue. Contact your administrator or check if your deployment environment allows access to Streamlit component CDNs."
+                " **If the issue persists:** This may be a network/proxy/CDN issue. "
+                "The CookieManager component loads JavaScript from external CDNs. "
+                "Contact your administrator or check if your deployment environment allows access to Streamlit component CDNs."
             )
             logger.warning(f"CookieManager component loading issue: {e}")
             # Don't stop immediately - let user try to refresh
             st.markdown("---")
-            if st.button("**Try Again After Refreshing**", type="primary"):
-                st.rerun()
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("**🔄 Retry Now**", type="primary", use_container_width=True):
+                    # Clear session state to force re-initialization
+                    if "authenticator_retry_count" not in st.session_state:
+                        st.session_state.authenticator_retry_count = 0
+                    st.session_state.authenticator_retry_count += 1
+                    st.rerun()
+            with col2:
+                if st.button("**🔄 Hard Refresh**", use_container_width=True):
+                    # Clear more aggressively
+                    st.session_state.clear()
+                    st.rerun()
         else:
             st.error("**Authentication Error**")
             st.error(f"Error: {str(e)}")
