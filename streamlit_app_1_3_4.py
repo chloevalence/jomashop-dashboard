@@ -8489,7 +8489,7 @@ with col_trend1:
         ax_trend.set_ylabel("Average QA Score (%)")
         ax_trend.set_title("QA Score Trend Over Time")
         ax_trend.grid(True, alpha=0.3)
-            ax_trend.axhline(
+        ax_trend.axhline(
                 y=alert_threshold,
                 color="r",
                 linestyle="--",
