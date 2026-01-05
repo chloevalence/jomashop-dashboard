@@ -2463,6 +2463,10 @@ def load_all_calls_cached(cache_version=0):
                 f" Returning {len(final_call_data) if final_call_data else 0} calls"
             )
 
+        # Migrate old cache format to new format before returning
+        if final_call_data:
+            final_call_data = migrate_old_cache_format(final_call_data)
+
         # Return the data - Streamlit's @st.cache_data automatically caches this return value
         # This ensures both caches are in sync with the most recent data
         return final_call_data, final_errors
