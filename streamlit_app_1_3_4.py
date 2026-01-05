@@ -2592,8 +2592,8 @@ def load_all_calls_cached(cache_version=0):
             # Determine which cache is better (more recent or more complete)
             use_streamlit_cache = False
             use_disk_cache = False
-        
-        if streamlit_call_data and len(streamlit_call_data) > 0:
+
+            if streamlit_call_data and len(streamlit_call_data) > 0:
             # Streamlit cache has data - check if it's better than disk cache
             if load_duration < 2.0:
                 # Fast load = likely from Streamlit's in-memory cache
