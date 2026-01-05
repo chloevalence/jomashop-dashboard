@@ -9205,7 +9205,7 @@ else:
 
 # --- QA Score Distribution and Label Distribution ---
 with st.expander("Score & Label Distribution Analysis", expanded=False):
-col_left, col_right = st.columns(2)
+    col_left, col_right = st.columns(2)
 
 with col_left:
         st.subheader("QA Score Distribution")
