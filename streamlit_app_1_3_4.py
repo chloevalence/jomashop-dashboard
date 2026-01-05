@@ -664,10 +664,13 @@ def parse_csv_row(row, filename):
     else:
         # CRITICAL FIX: If no call_id, use row index to ensure uniqueness
         # Get row index from the row if available, otherwise use a timestamp
-        row_index = getattr(row, 'name', None)
+        row_index = getattr(row, "name", None)
         if row_index is None:
             import time
-            row_index = int(time.time() * 1000000) % 1000000  # Use microsecond timestamp as fallback
+
+            row_index = (
+                int(time.time() * 1000000) % 1000000
+            )  # Use microsecond timestamp as fallback
         # Fallback: use filename + row index to ensure uniqueness
         data["_id"] = f"{normalized_filename}:row_{row_index}"
         data["_s3_key"] = normalized_filename
@@ -1046,10 +1049,21 @@ def extract_cache_key(call):
     _id = call.get("_id", "")
     _s3_key = call.get("_s3_key", "")
 
-    # If _id or _s3_key contains a colon, it's from a CSV (format: filename:call_id)
-    # Use call_id as the unique key for CSV rows
-    if call_id and (":" in str(_id) or ":" in str(_s3_key)):
-        return str(call_id)
+    # If _id contains a colon, it's from a CSV (format: filename:call_id or filename:row_X)
+    # Use the part after the colon as the unique key for CSV rows
+    if ":" in str(_id):
+        # Extract the unique part after the colon (call_id or row_X)
+        parts = str(_id).split(":", 1)
+        if len(parts) == 2:
+            return parts[1]  # Return call_id or row_X
+        # Fallback: return _id if split fails
+        return str(_id)
+    elif ":" in str(_s3_key):
+        # Same logic for _s3_key (shouldn't happen with new format, but handle legacy)
+        parts = str(_s3_key).split(":", 1)
+        if len(parts) == 2:
+            return parts[1]
+        return str(_s3_key)
     else:
         # For PDFs or legacy format, use _s3_key or _id
         return _s3_key or _id or (str(call_id) if call_id else None)
@@ -1096,7 +1110,7 @@ def migrate_old_cache_format(call_data):
             normalized_filename = filename.strip("/")
             # Check if _id is just the filename (old format)
             # Compare against both full filename and base filename
-            if (_id == filename or _id == filename_base or _id == normalized_filename):
+            if _id == filename or _id == filename_base or _id == normalized_filename:
                 if filename.lower().endswith(".csv") and ":" not in str(_id):
                     is_old_format = True
 
@@ -3143,10 +3157,14 @@ def load_new_calls_only():
                 filename = call.get("filename", "")
                 _s3_key = call.get("_s3_key", "")
                 _id = call.get("_id", "")
-                
+
                 # Determine if this is a CSV file
-                is_csv = ":" in str(_id) or ":" in str(_s3_key) or (filename and filename.lower().endswith(".csv"))
-                
+                is_csv = (
+                    ":" in str(_id)
+                    or ":" in str(_s3_key)
+                    or (filename and filename.lower().endswith(".csv"))
+                )
+
                 if is_csv and filename:
                     # For CSV files, use filename as the file key
                     file_key = filename.strip("/")
@@ -3631,11 +3649,11 @@ def load_new_calls_only():
                                 # Already in cache - skip this call
                                 duplicate_count += 1
                                 continue
-                            
+
                             # Not in cache - add to new calls
                             new_calls.append(parsed_data)
                             batch_calls.append(parsed_data)  # Track for this batch
-                        
+
                         if duplicate_count > 0:
                             logger.debug(
                                 f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
