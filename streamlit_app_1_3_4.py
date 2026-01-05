@@ -1046,6 +1046,66 @@ def extract_cache_key(call):
         return _s3_key or _id or (str(call_id) if call_id else None)
 
 
+def migrate_old_cache_format(call_data):
+    """
+    Migrate old cache format calls to new format.
+    
+    Old format: _id = filename (causes all rows from same CSV to be treated as duplicates)
+    New format: _id = "filename:call_id" (each row is unique)
+    
+    Args:
+        call_data: List of call dictionaries
+        
+    Returns:
+        List of migrated call dictionaries
+    """
+    if not call_data:
+        return call_data
+    
+    migrated_count = 0
+    migrated_calls = []
+    
+    for call in call_data:
+        if not isinstance(call, dict):
+            migrated_calls.append(call)
+            continue
+        
+        _id = call.get("_id", "")
+        _s3_key = call.get("_s3_key", "")
+        call_id = call.get("call_id")
+        filename = call.get("filename", "")
+        
+        # Check if this is an old format call (CSV row with _id = filename, not "filename:call_id")
+        # Old format indicators:
+        # 1. _id doesn't contain a colon but filename ends with .csv
+        # 2. _id equals filename (or filename without path)
+        # 3. call_id exists but _id doesn't contain call_id
+        
+        is_old_format = False
+        if call_id and filename:
+            filename_base = filename.split("/")[-1]  # Get just filename, not path
+            # Check if _id is just the filename (old format)
+            if _id == filename or _id == filename_base:
+                if filename.lower().endswith(".csv") and ":" not in str(_id):
+                    is_old_format = True
+        
+        if is_old_format and call_id:
+            # Migrate to new format: _id = "filename:call_id"
+            call["_id"] = f"{filename}:{call_id}"
+            if not _s3_key or _s3_key == filename or _s3_key == filename_base:
+                call["_s3_key"] = f"{filename}:{call_id}"
+            migrated_count += 1
+        
+        migrated_calls.append(call)
+    
+    if migrated_count > 0:
+        logger.info(
+            f" Migrated {migrated_count} calls from old cache format to new format"
+        )
+    
+    return migrated_calls
+
+
 def deduplicate_calls(call_data):
     """Remove duplicate calls based on _s3_key or _id. Keeps the first occurrence.
 
