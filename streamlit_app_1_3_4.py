@@ -8881,8 +8881,8 @@ if user_agent_id:
                 trend_comparison = pd.merge(
                     agent_daily, overall_daily, on="Date", how="outer"
                 ).sort_values("Date")
-            
-            fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
+                
+                fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
                 ax_agent.plot(
                     trend_comparison["Date"],
                     trend_comparison["My_Score"],
