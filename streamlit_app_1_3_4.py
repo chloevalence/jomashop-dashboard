@@ -8820,44 +8820,176 @@ with st.expander("Score & Label Distribution Analysis", expanded=False):
 # --- Coaching Insights Aggregation ---
 with st.expander("Coaching Insights", expanded=False):
     st.subheader("Coaching Insights")
-if "Coaching Suggestions" in filtered_df.columns:
-    all_coaching = []
-    for idx, row in filtered_df.iterrows():
-        coaching = row.get("Coaching Suggestions", [])
-        if isinstance(coaching, list):
-            all_coaching.extend(coaching)
-        elif isinstance(coaching, str) and coaching:
-            all_coaching.append(coaching)
+    
+    if "Coaching Suggestions" in filtered_df.columns:
+        # Collect all coaching suggestions
+        all_coaching = []
+        for idx, row in filtered_df.iterrows():
+            coaching = row.get("Coaching Suggestions", [])
+            if isinstance(coaching, list):
+                all_coaching.extend([c for c in coaching if c and str(c).strip()])
+            elif isinstance(coaching, str) and coaching:
+                all_coaching.append(coaching)
 
-    if all_coaching:
-        from collections import Counter
+        if all_coaching:
+            from collections import Counter
 
-        coaching_counts = Counter(all_coaching)
-        top_coaching = pd.DataFrame(
-            coaching_counts.most_common(10),
-            columns=["Coaching Suggestion", "Frequency"],
-        )
+            # Function to categorize coaching suggestions (matches the logic from AHT analysis)
+            def categorize_coaching(text, text_type="coaching"):
+                """Categorize coaching suggestions into themes using scoring system"""
+                if not text or pd.isna(text):
+                    return "Other"
+                
+                text_lower = str(text).lower()
+                
+                # Product knowledge keywords
+                product_keywords = [
+                    "product", "item", "inventory", "stock", "availability",
+                    "specification", "feature", "model", "brand", "catalog",
+                    "knowledge", "unfamiliar", "unaware", "doesn't know"
+                ]
+                
+                # Communication keywords
+                communication_keywords = [
+                    "communication", "clarity", "explain", "understand",
+                    "confusing", "unclear", "misunderstand", "listening",
+                    "tone", "empathy", "rapport", "connection", "interrupt"
+                ]
+                
+                # Hold time keywords
+                hold_keywords = [
+                    "hold", "wait", "transfer", "escalate", "supervisor",
+                    "on hold", "put on hold", "long hold", "excessive hold"
+                ]
+                
+                # System/Technical keywords
+                system_keywords = [
+                    "system", "technical", "error", "bug", "glitch",
+                    "software", "platform", "tool", "database", "slow",
+                    "loading", "crash", "down", "issue", "problem"
+                ]
+                
+                # Process/Procedure keywords
+                process_keywords = [
+                    "process", "procedure", "policy", "protocol", "workflow",
+                    "step", "order", "sequence", "method", "approach",
+                    "guideline", "standard", "compliance"
+                ]
+                
+                # Efficiency keywords
+                efficiency_keywords = [
+                    "efficient", "quick", "fast", "speed", "time",
+                    "streamline", "optimize", "reduce time", "faster"
+                ]
+                
+                # Count matches for each category
+                product_score = sum(1 for kw in product_keywords if kw in text_lower)
+                comm_score = sum(1 for kw in communication_keywords if kw in text_lower)
+                hold_score = sum(1 for kw in hold_keywords if kw in text_lower)
+                system_score = sum(1 for kw in system_keywords if kw in text_lower)
+                process_score = sum(1 for kw in process_keywords if kw in text_lower)
+                efficiency_score = sum(1 for kw in efficiency_keywords if kw in text_lower)
+                
+                # Return category with highest score
+                scores = {
+                    "Product Knowledge": product_score,
+                    "Communication": comm_score,
+                    "Hold Time": hold_score,
+                    "System/Technical": system_score,
+                    "Process/Procedure": process_score,
+                    "Efficiency": efficiency_score,
+                }
+                
+                max_score = max(scores.values())
+                if max_score > 0:
+                    return max(scores, key=scores.get)
+                return "Other"
 
-        col_coach1, col_coach2 = st.columns(2)
-        with col_coach1:
-            st.write("**Most Common Coaching Suggestions**")
-            st.dataframe(top_coaching)
-
-        with col_coach2:
-            fig_coach, ax_coach = plt.subplots(figsize=(8, 6))
-            top_coaching.plot(
-                x="Coaching Suggestion",
-                y="Frequency",
-                kind="barh",
-                ax=ax_coach,
-                color="orange",
+            # Create coaching insights options
+            coaching_insights_options = [
+                "Most Common Coaching Suggestions",
+                "Coaching by Category",
+                "Top 10 Coaching Suggestions (Chart)",
+                "All Coaching Suggestions"
+            ]
+            
+            # Dropdown to select coaching insights view
+            selected_insight = st.selectbox(
+                "Select Coaching Insights View:",
+                coaching_insights_options,
+                key="coaching_insights_select"
             )
-            ax_coach.set_xlabel("Frequency")
-            ax_coach.set_title("Top 10 Coaching Suggestions")
-            plt.tight_layout()
-            st_pyplot_safe(fig_coach)
+
+            coaching_counts = Counter(all_coaching)
+            
+            if selected_insight == "Most Common Coaching Suggestions":
+                top_coaching = pd.DataFrame(
+                    coaching_counts.most_common(10),
+                    columns=["Coaching Suggestion", "Frequency"],
+                )
+                st.write("**Most Common Coaching Suggestions**")
+                st.dataframe(top_coaching, use_container_width=True)
+                
+            elif selected_insight == "Coaching by Category":
+                # Categorize all coaching suggestions
+                categorized_coaching = [categorize_coaching(c) for c in all_coaching]
+                category_counts = Counter(categorized_coaching)
+                
+                category_df = pd.DataFrame(
+                    category_counts.most_common(),
+                    columns=["Category", "Frequency"]
+                )
+                category_df["Percentage"] = (category_df["Frequency"] / len(all_coaching) * 100).round(1)
+                
+                col_cat1, col_cat2 = st.columns(2)
+                with col_cat1:
+                    st.write("**Coaching Suggestions by Category**")
+                    st.dataframe(category_df, use_container_width=True)
+                
+                with col_cat2:
+                    fig_cat, ax_cat = plt.subplots(figsize=(8, 6))
+                    category_df.plot(
+                        x="Category",
+                        y="Frequency",
+                        kind="barh",
+                        ax=ax_cat,
+                        color="steelblue",
+                    )
+                    ax_cat.set_xlabel("Frequency")
+                    ax_cat.set_title("Coaching Suggestions by Category")
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_cat)
+                    
+            elif selected_insight == "Top 10 Coaching Suggestions (Chart)":
+                top_coaching = pd.DataFrame(
+                    coaching_counts.most_common(10),
+                    columns=["Coaching Suggestion", "Frequency"],
+                )
+                fig_coach, ax_coach = plt.subplots(figsize=(10, 6))
+                top_coaching.plot(
+                    x="Coaching Suggestion",
+                    y="Frequency",
+                    kind="barh",
+                    ax=ax_coach,
+                    color="orange",
+                )
+                ax_coach.set_xlabel("Frequency")
+                ax_coach.set_title("Top 10 Coaching Suggestions")
+                plt.tight_layout()
+                st_pyplot_safe(fig_coach)
+                
+            elif selected_insight == "All Coaching Suggestions":
+                all_coaching_df = pd.DataFrame(
+                    coaching_counts.most_common(),
+                    columns=["Coaching Suggestion", "Frequency"],
+                )
+                all_coaching_df["Percentage"] = (all_coaching_df["Frequency"] / len(all_coaching) * 100).round(1)
+                st.write(f"**All Coaching Suggestions ({len(all_coaching_df)} unique suggestions)**")
+                st.dataframe(all_coaching_df, use_container_width=True)
+        else:
+            st.info("No coaching suggestions found in the filtered data.")
     else:
-        st.info("No coaching suggestions found in the filtered data.")
+        st.info("Coaching Suggestions column not found in the data.")
 
 # --- Full Rubric Reference ---
 with st.expander("QA Rubric Reference", expanded=False):
