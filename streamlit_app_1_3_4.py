@@ -654,7 +654,7 @@ def parse_csv_row(row, filename):
     # This ensures each row in a CSV is treated as a separate call
     call_id = data.get("call_id", "")
     normalized_filename = filename.strip("/")
-    if call_id:
+    if call_id and str(call_id).strip():
         # Create unique _id from call_id and filename to ensure uniqueness
         # _id should be "filename:call_id" for CSV rows
         data["_id"] = f"{normalized_filename}:{call_id}"
@@ -662,8 +662,14 @@ def parse_csv_row(row, filename):
         # This allows extract_cache_key to detect CSV format by checking if _id contains colon
         data["_s3_key"] = normalized_filename
     else:
-        # Fallback: use filename + row index if no call_id
-        data["_id"] = normalized_filename
+        # CRITICAL FIX: If no call_id, use row index to ensure uniqueness
+        # Get row index from the row if available, otherwise use a timestamp
+        row_index = getattr(row, 'name', None)
+        if row_index is None:
+            import time
+            row_index = int(time.time() * 1000000) % 1000000  # Use microsecond timestamp as fallback
+        # Fallback: use filename + row index to ensure uniqueness
+        data["_id"] = f"{normalized_filename}:row_{row_index}"
         data["_s3_key"] = normalized_filename
     data["filename"] = filename
     data["company"] = "Jomashop"
@@ -1087,8 +1093,10 @@ def migrate_old_cache_format(call_data):
         is_old_format = False
         if call_id and filename:
             filename_base = filename.split("/")[-1]  # Get just filename, not path
+            normalized_filename = filename.strip("/")
             # Check if _id is just the filename (old format)
-            if _id == filename or _id == filename_base:
+            # Compare against both full filename and base filename
+            if (_id == filename or _id == filename_base or _id == normalized_filename):
                 if filename.lower().endswith(".csv") and ":" not in str(_id):
                     is_old_format = True
 
@@ -3634,17 +3642,25 @@ def load_new_calls_only():
 
                     if csv_calls_list:
                         # Extend with list of calls from CSV
+                        duplicate_count = 0
                         for parsed_data in csv_calls_list:
-                            new_calls.append(parsed_data)
-                            batch_calls.append(parsed_data)  # Track for this batch
-
-                            # Check if this call is already in cache
+                            # Check if this call is already in cache BEFORE adding
                             # Use consistent key extraction logic
                             call_key = extract_cache_key(parsed_data)
 
                             if call_key and call_key in existing_cache_keys:
-                                # Already in cache - skip (already added to new_calls above)
-                                pass
+                                # Already in cache - skip this call
+                                duplicate_count += 1
+                                continue
+                            
+                            # Not in cache - add to new calls
+                            new_calls.append(parsed_data)
+                            batch_calls.append(parsed_data)  # Track for this batch
+                        
+                        if duplicate_count > 0:
+                            logger.debug(
+                                f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
+                            )
                     elif error:
                         errors.append(error)
 
