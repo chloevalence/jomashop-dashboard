@@ -2078,45 +2078,6 @@ def load_all_calls_cached(cache_version=0):
                                 del st.session_state["_merged_cache_errors"]
 
 
-                    if not st.session_state.auto_refresh_checked:
-                        # OPTIMIZATION: Only run lightweight check if S3 cache is older than threshold
-                        # This prevents unnecessary S3 pagination when cache is fresh
-                        should_check = True
-                        cache_age_minutes = None
-
-                        if "_s3_cache_timestamp" in st.session_state:
-                            try:
-                                from datetime import datetime
-
-                                s3_timestamp_str = st.session_state[
-                                    "_s3_cache_timestamp"
-                                ]
-                                s3_timestamp = datetime.fromisoformat(
-                                    s3_timestamp_str.replace("Z", "+00:00")
-                                )
-                                current_time = (
-                                    datetime.now(s3_timestamp.tzinfo)
-                                    if s3_timestamp.tzinfo
-                                    else datetime.now()
-                                )
-                                age_seconds = (
-                                    current_time - s3_timestamp
-                                ).total_seconds()
-                                cache_age_minutes = age_seconds / 60
-
-                                # Only check if cache is older than 5 minutes
-                                CHECK_THRESHOLD_MINUTES = 5
-                                if cache_age_minutes < CHECK_THRESHOLD_MINUTES:
-                                    should_check = False
-                                    logger.info(
-                                        f" Skipping lightweight check - S3 cache is fresh ({cache_age_minutes:.1f} minutes old, threshold: {CHECK_THRESHOLD_MINUTES} minutes)"
-                                    )
-                            except Exception as e:
-                                logger.debug(
-                                    f"Could not parse S3 cache timestamp: {e}, will run check anyway"
-                                )
-
-
                     # Return disk cache (will update Streamlit cache with this value)
                     logger.info(
                         f" USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss"
