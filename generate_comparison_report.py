@@ -44,38 +44,95 @@ plt.rcParams["figure.figsize"] = (10, 6)
 plt.rcParams["font.size"] = 10
 
 
+# Known agent mappings (from user specification)
+KNOWN_AGENT_MAPPINGS = {
+    # Agent 1: Jesus
+    "unknown": "Agent 1",
+    "bp016803073": "Agent 1",
+    "bp016803074": "Agent 1",
+    # Agent 2: Gerardo
+    "bpagent024577540": "Agent 2",
+    # Agent 3: Edgar
+    "bpagent030844482": "Agent 3",
+    # Agent 4: Osiris
+    "bpagent047779576": "Agent 4",
+    # Agent 6: Daniela
+    "bpagent065185612": "Agent 6",
+    # Agent 7: Yasmin
+    "bpagent072229421": "Agent 7",
+    # Agent 8: Moises
+    "bpagent089724913": "Agent 8",
+    # Agent 9: Marcos
+    "bpagent093540654": "Agent 9",
+    # Agent 10: Angel
+    "bpagent102256681": "Agent 10",
+}
+
+
+def load_agent_mapping():
+    """Load agent ID mapping from file, or return known mappings if file doesn't exist."""
+    mapping_file = PROJECT_ROOT / "logs" / "agent_id_mapping.json"
+    if mapping_file.exists():
+        try:
+            with open(mapping_file, "r", encoding="utf-8") as f:
+                mapping = json.load(f)
+                # Merge with known mappings (known mappings take precedence)
+                merged_mapping = {**mapping, **KNOWN_AGENT_MAPPINGS}
+                return merged_mapping
+        except Exception as e:
+            print(f"Warning: Failed to load agent mapping file: {e}, using known mappings only")
+            return KNOWN_AGENT_MAPPINGS.copy()
+    return KNOWN_AGENT_MAPPINGS.copy()
+
+
+def get_or_create_agent_mapping(agent_id_lower):
+    """Get agent number for an agent ID, or create a new mapping deterministically."""
+    mapping = load_agent_mapping()
+    
+    # Check if already mapped
+    if agent_id_lower in mapping:
+        return mapping[agent_id_lower]
+    
+    # Check if already in normalized format (e.g., "agent 1", "agent 2")
+    # This handles cases where cache already has normalized values
+    if agent_id_lower.startswith("agent "):
+        # Already normalized, return as-is (with proper capitalization)
+        agent_num_str = agent_id_lower.replace("agent ", "").strip()
+        try:
+            agent_num = int(agent_num_str)
+            return f"Agent {agent_num}"
+        except ValueError:
+            pass  # Not a valid number, continue with mapping logic
+    
+    # Check special cases first
+    if agent_id_lower == "unknown":
+        return "Agent 1"
+    if agent_id_lower in ["bp016803073", "bp016803074"]:
+        return "Agent 1"
+    if agent_id_lower.startswith("bp01"):
+        return "Agent 1"
+    
+    # For new agent IDs, assign deterministically based on hash
+    # This ensures the same agent ID always gets the same number
+    import hashlib
+    hash_value = int(hashlib.md5(agent_id_lower.encode()).hexdigest(), 16)
+    # Use modulo to get a number between 1 and 99, but skip 5 (no agent 5 per user spec)
+    agent_number = (hash_value % 99) + 1
+    if agent_number == 5:
+        agent_number = 11  # Skip 5, use 11 instead
+    
+    return f"Agent {agent_number}"
+
+
 def normalize_agent_id(agent_str):
-    """Normalize agent ID to Agent ## format (e.g., Agent 1, Agent 2)"""
+    """Normalize agent ID to Agent ## format using stable mapping system."""
     if pd.isna(agent_str) or not agent_str:
         return agent_str
 
-    agent_str = str(agent_str).lower().strip()
-
-    # Special case: "unknown" -> Agent 1
-    if agent_str == "unknown":
-        return "Agent 1"
-
-    # Special case: bp016803073 and bp016803074 -> Agent 1
-    if agent_str in ["bp016803073", "bp016803074"]:
-        return "Agent 1"
-
-    # Special case: Any string starting with "bp01" (first 4 chars) -> Agent 1
-    if agent_str.startswith("bp01"):
-        return "Agent 1"
-
-    # Extract number from bpagent### pattern
-    match = re.search(r"bpagent(\d+)", agent_str)
-    if match:
-        agent_num = match.group(1)
-        if len(agent_num) >= 2:
-            agent_num = agent_num[:2]
-        else:
-            agent_num = agent_num.zfill(2)
-        # Convert to integer to remove leading zeros, then format as "Agent X"
-        agent_number = int(agent_num)
-        return f"Agent {agent_number}"
-
-    return agent_str
+    agent_str_lower = str(agent_str).lower().strip()
+    
+    # Use mapping system
+    return get_or_create_agent_mapping(agent_str_lower)
 
 
 def extract_products_from_text(text):
@@ -344,17 +401,21 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
                 if col != "Agent":
                     df.rename(columns={col: "Agent"}, inplace=True)
                 break
-        
+
         if "Agent" in df.columns:
             # Apply normalization to all agent IDs
             original_sample = df["Agent"].head(5).tolist() if len(df) > 0 else []
             df["Agent"] = df["Agent"].apply(normalize_agent_id)
             normalized_sample = df["Agent"].head(5).tolist() if len(df) > 0 else []
             if original_sample:
-                print(f"   Agent ID normalization: {original_sample[0]} -> {normalized_sample[0]}")
+                print(
+                    f"   Agent ID normalization: {original_sample[0]} -> {normalized_sample[0]}"
+                )
                 # Verify normalization worked
                 unique_agents = df["Agent"].unique()[:10]
-                print(f"   Sample normalized agent IDs: {', '.join(map(str, unique_agents))}")
+                print(
+                    f"   Sample normalized agent IDs: {', '.join(map(str, unique_agents))}"
+                )
         else:
             print("   ⚠️  Warning: No 'Agent' column found in data")
 
