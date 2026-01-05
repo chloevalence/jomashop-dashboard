@@ -8681,7 +8681,7 @@ if "Rubric Details" in filtered_df.columns:
 
                 st.write("**Fail Rate by Rubric Category**")
             fig_heat, ax_heat = plt.subplots(figsize=(8, 6))
-                colors = [
+            colors = [
                     "green" if x < 20 else "orange" if x < 40 else "red"
                     for x in category_df["Avg_Fail_Rate"]
                 ]
