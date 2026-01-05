@@ -3130,60 +3130,29 @@ def load_new_calls_only():
                 f" Loaded {len(cached_calls)} calls from disk cache - extracting S3 keys..."
             )
 
-            # Extract all S3 keys from cached calls
+            # Extract all processed keys from cached calls
+            # CRITICAL: Use extract_cache_key to get consistent keys (call_id for CSV rows, _s3_key for PDFs)
             keys_found = 0
             keys_missing = 0
-            keys_from_s3_key = 0
-            keys_from_id = 0
-            keys_from_filename = 0
+            csv_keys = 0
+            pdf_keys = 0
             sample_keys = []
             for call in cached_calls:
-                # For CSV files, use call_id as the key (since _s3_key is filename)
-                # For PDF files, use _s3_key
-                call_id = call.get("call_id")
-                _id = call.get("_id", "")
-                _s3_key = call.get("_s3_key", "")
-
-                # If _id contains a colon, it's from a CSV (format: filename:call_id)
-                if call_id and (":" in str(_id) or ":" in str(_s3_key)):
-                    # For CSV files, use call_id as the unique key
-                    s3_key = str(call_id)
-                    keys_from_s3_key += 1  # Track as call_id-based key
-                else:
-                    # For PDFs or legacy format, use _s3_key
-                    s3_key = _s3_key
-                    if s3_key:
-                        keys_from_s3_key += 1
-                    else:
-                        s3_key = call.get("_id")
-                        if s3_key:
-                            keys_from_id += 1
-
-                # If still no key, try to get from filename (legacy PDF format)
-                if not s3_key:
-                    filename = call.get("Filename") or call.get("Call ID")
-                    if filename:
-                        # Reconstruct S3 key from filename
-                        if s3_prefix:
-                            # Handle both cases: filename with or without prefix
-                            if filename.startswith(s3_prefix):
-                                s3_key = filename
-                            else:
-                                s3_key = f"{s3_prefix.rstrip('/')}/{filename}"
-                        else:
-                            s3_key = filename
-                        # Ensure it ends with .csv
-                        if not s3_key.lower().endswith(".csv"):
-                            s3_key = f"{s3_key}.csv"
-                        keys_from_filename += 1
-
-                # Normalize the key (remove leading/trailing slashes for comparison)
-                if s3_key:
-                    s3_key = s3_key.strip("/")
-                    processed_keys.add(s3_key)
+                # Use extract_cache_key for consistent key extraction
+                cache_key = extract_cache_key(call)
+                
+                if cache_key:
+                    processed_keys.add(cache_key)
                     keys_found += 1
+                    # Track CSV vs PDF keys for debugging
+                    _id = call.get("_id", "")
+                    _s3_key = call.get("_s3_key", "")
+                    if ":" in str(_id) or ":" in str(_s3_key):
+                        csv_keys += 1
+                    else:
+                        pdf_keys += 1
                     if len(sample_keys) < 5:
-                        sample_keys.append(s3_key)
+                        sample_keys.append(cache_key)
                 else:
                     keys_missing += 1
 
