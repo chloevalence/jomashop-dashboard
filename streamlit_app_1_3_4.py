@@ -8948,10 +8948,10 @@ if user_agent_id:
                 team_pass_daily["Team_Pass_Rate"] = (
                     team_pass_daily["Total_Pass"] / team_pass_daily["Total"] * 100
                 ).fillna(0)
-            
-            pass_comparison = pd.merge(
-                agent_pass_daily[["Call Date", "My_Pass_Rate"]],
-                team_pass_daily[["Call Date", "Team_Pass_Rate"]],
+                
+                pass_comparison = pd.merge(
+                    agent_pass_daily[["Call Date", "My_Pass_Rate"]],
+                    team_pass_daily[["Call Date", "Team_Pass_Rate"]],
                 on="Call Date",
                     how="outer",
             ).sort_values("Call Date")
