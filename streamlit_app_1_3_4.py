@@ -2124,11 +2124,21 @@ def load_all_calls_cached(cache_version=0):
 
     start_time = time.time()
 
-    # Check if user explicitly requested full reload - MUST check BEFORE loading cache
-    reload_all_triggered = st.session_state.get("reload_all_triggered", False)
+    # Prevent concurrent loads - check if a load is already in progress
+    load_in_progress_key = "_data_load_in_progress"
+    if st.session_state.get(load_in_progress_key, False):
+        logger.warning("Data load already in progress, skipping duplicate load")
+        # Return empty data to prevent crash, will retry on next run
+        return pd.DataFrame(), []
+    
+    # Mark load as in progress
+    st.session_state[load_in_progress_key] = True
+    try:
+        # Check if user explicitly requested full reload - MUST check BEFORE loading cache
+        reload_all_triggered = st.session_state.get("reload_all_triggered", False)
 
-    # CRITICAL: If reload_all_triggered, delete ALL caches BEFORE trying to load
-    if reload_all_triggered:
+        # CRITICAL: If reload_all_triggered, delete ALL caches BEFORE trying to load
+        if reload_all_triggered:
         logger.info("Reload ALL Data triggered - clearing all caches before loading")
 
         # Delete disk cache file
@@ -2175,8 +2185,8 @@ def load_all_calls_cached(cache_version=0):
             del st.session_state["_merged_cache_data_timestamp"]
         logger.info(" Cleared session state cache")
 
-        # Clear the flag so we don't delete again
-        st.session_state["reload_all_triggered"] = False
+        # DON'T clear the flag here - keep it set so the load knows to load ALL files
+        # The flag will be cleared after the load completes successfully
         # Skip S3 cache check - we just deleted it, need fresh load
         s3_cache_result = None
         s3_cache_timestamp = None
@@ -2708,6 +2718,10 @@ def load_all_calls_cached(cache_version=0):
         if final_call_data:
             final_call_data = migrate_old_cache_format(final_call_data)
 
+        # Clear load in progress flag
+        if load_in_progress_key in st.session_state:
+            del st.session_state[load_in_progress_key]
+
         # Return the data - Streamlit's @st.cache_data automatically caches this return value
         # This ensures both caches are in sync with the most recent data
         return final_call_data, final_errors
@@ -2721,6 +2735,10 @@ def load_all_calls_cached(cache_version=0):
         if reload_all_triggered:
             st.session_state["reload_all_triggered"] = False
             logger.error("Reload ALL Data failed - cleared flag to prevent retry loop")
+        
+        # Clear load in progress flag
+        if load_in_progress_key in st.session_state:
+            del st.session_state[load_in_progress_key]
         
         # Try to return disk cache if available as fallback
         if disk_call_data and len(disk_call_data) > 0:
@@ -4373,14 +4391,35 @@ else:
 st.sidebar.markdown("---")
 if st.sidebar.button("Logout", help="Log out of your account", type="secondary"):
     try:
-        authenticator.logout("Logout", "sidebar")
+        # Clear authentication state first
         st.session_state.authentication_status = None
         st.session_state.username = None
         st.session_state.name = None
+        st.session_state.user_agent_id = None
+        
+        # Clear data-related session state to prevent issues
+        if "reload_all_triggered" in st.session_state:
+            del st.session_state["reload_all_triggered"]
+        if "_s3_cache_result" in st.session_state:
+            del st.session_state["_s3_cache_result"]
+        if "_s3_cache_timestamp" in st.session_state:
+            del st.session_state["_s3_cache_timestamp"]
+        
+        # Call authenticator logout (may fail if CookieManager has issues, but that's OK)
+        try:
+            authenticator.logout("Logout", "sidebar")
+        except Exception as logout_error:
+            logger.warning(f"Authenticator logout had an issue (non-critical): {logout_error}")
+        
+        # Use rerun to refresh the page
         st.rerun()
     except Exception as e:
-        logger.error(f"Logout error: {e}")
-        st.sidebar.error("Error logging out. Please refresh the page.")
+        logger.exception(f"Logout error: {e}")
+        st.sidebar.error("Error logging out. Please refresh the page manually.")
+        # Force clear authentication state even on error
+        st.session_state.authentication_status = None
+        st.session_state.username = None
+        st.session_state.name = None
 
 
 def check_for_new_csvs_lightweight():
@@ -7165,6 +7204,62 @@ if not user_agent_id:
             "Avg_QA_Score", ascending=False
         )
         st.dataframe(agent_performance.round(1), hide_index=True)
+
+# --- At-Risk Agent Detection (Predictive Analytics) ---
+if not user_agent_id:  # Admin view only
+    with st.expander("At-Risk Agent Detection", expanded=False):
+        st.markdown("### Early Warning System for Agents at Risk")
+        st.caption(
+            "Identifies agents who may drop below threshold based on recent trends, volatility, and proximity to threshold"
+        )
+
+        at_risk_agents = identify_at_risk_agents(filtered_df, threshold=alert_threshold)
+
+        if at_risk_agents:
+            st.warning(f" Found {len(at_risk_agents)} agent(s) at risk")
+
+            risk_data = []
+            for agent_info in at_risk_agents:
+                risk_data.append(
+                    {
+                        "Agent": agent_info["agent"],
+                        "Risk Score": f"{agent_info['risk_score']:.0f}/100",
+                        "Recent Avg Score": f"{agent_info['recent_avg']:.1f}%",
+                        "Trend": " Declining"
+                        if agent_info["trend_slope"] < 0
+                        else " Improving",
+                        "Volatility": f"{agent_info['volatility']:.1f}",
+                        "Distance to Threshold": f"{agent_info['proximity_to_threshold']:.1f}%",
+                        "Recent Calls": agent_info["recent_calls"],
+                    }
+                )
+
+            risk_df = pd.DataFrame(risk_data)
+            st.dataframe(risk_df, hide_index=True)
+
+            # Show risk factors for top at-risk agent
+            if at_risk_agents:
+                top_risk = at_risk_agents[0]
+                st.markdown(f"**Why is {top_risk['agent']} at risk?**")
+                risk_factors = []
+                if top_risk["trend_slope"] < -0.5:
+                    risk_factors.append(
+                        f" Declining trend (slope: {top_risk['trend_slope']:.2f})"
+                    )
+                if top_risk["volatility"] > 10:
+                    risk_factors.append(
+                        f" High volatility ({top_risk['volatility']:.1f})"
+                    )
+                if top_risk["proximity_to_threshold"] <= 10:
+                    risk_factors.append(
+                        f" Close to threshold ({top_risk['proximity_to_threshold']:.1f}% away)"
+                    )
+
+                if risk_factors:
+                    for factor in risk_factors:
+                        st.write(f"- {factor}")
+        else:
+            st.success(" No agents currently identified as at risk")
 else:
     # Agent view - show only their performance summary
     st.subheader("My Performance Summary")
@@ -8332,62 +8427,6 @@ if (
 
         else:
             st.info("No calls found above the 75th percentile threshold")
-
-# --- At-Risk Agent Detection (Predictive Analytics) ---
-if not user_agent_id:  # Admin view only
-    with st.expander("At-Risk Agent Detection", expanded=False):
-        st.markdown("### Early Warning System for Agents at Risk")
-        st.caption(
-            "Identifies agents who may drop below threshold based on recent trends, volatility, and proximity to threshold"
-        )
-
-        at_risk_agents = identify_at_risk_agents(filtered_df, threshold=alert_threshold)
-
-        if at_risk_agents:
-            st.warning(f" Found {len(at_risk_agents)} agent(s) at risk")
-
-            risk_data = []
-            for agent_info in at_risk_agents:
-                risk_data.append(
-                    {
-                        "Agent": agent_info["agent"],
-                        "Risk Score": f"{agent_info['risk_score']:.0f}/100",
-                        "Recent Avg Score": f"{agent_info['recent_avg']:.1f}%",
-                        "Trend": " Declining"
-                        if agent_info["trend_slope"] < 0
-                        else " Improving",
-                        "Volatility": f"{agent_info['volatility']:.1f}",
-                        "Distance to Threshold": f"{agent_info['proximity_to_threshold']:.1f}%",
-                        "Recent Calls": agent_info["recent_calls"],
-                    }
-                )
-
-            risk_df = pd.DataFrame(risk_data)
-            st.dataframe(risk_df, hide_index=True)
-
-            # Show risk factors for top at-risk agent
-            if at_risk_agents:
-                top_risk = at_risk_agents[0]
-                st.markdown(f"**Why is {top_risk['agent']} at risk?**")
-                risk_factors = []
-                if top_risk["trend_slope"] < -0.5:
-                    risk_factors.append(
-                        f" Declining trend (slope: {top_risk['trend_slope']:.2f})"
-                    )
-                if top_risk["volatility"] > 10:
-                    risk_factors.append(
-                        f" High volatility ({top_risk['volatility']:.1f})"
-                    )
-                if top_risk["proximity_to_threshold"] <= 10:
-                    risk_factors.append(
-                        f" Close to threshold ({top_risk['proximity_to_threshold']:.1f}% away)"
-                    )
-
-                if risk_factors:
-                    for factor in risk_factors:
-                        st.write(f"- {factor}")
-        else:
-            st.success(" No agents currently identified as at risk")
 
 # --- QA Score Trends Over Time ---
 with st.expander("QA Score Trends Over Time", expanded=False):
