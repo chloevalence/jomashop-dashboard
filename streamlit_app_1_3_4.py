@@ -2563,11 +2563,11 @@ def load_all_calls_cached(cache_version=0):
                     )
                     return disk_call_data, disk_errors if disk_errors else []
         else:
-        # No substantial cache - load ALL files from S3
+            # No substantial cache - load ALL files from S3
             logger.info("No substantial cache found - loading ALL files from S3")
-        max_files = None  # Load all files
-    
-    try:
+            max_files = None  # Load all files
+
+        try:
         load_start = time.time()
         result = load_all_calls_internal(max_files=max_files)
         load_duration = time.time() - load_start
