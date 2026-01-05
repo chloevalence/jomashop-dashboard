@@ -8478,7 +8478,7 @@ with col_trend1:
         daily_scores.columns = ["Date", "Avg QA Score"]
         
         fig_trend, ax_trend = plt.subplots(figsize=(10, 5))
-            ax_trend.plot(
+        ax_trend.plot(
                 daily_scores["Date"],
                 daily_scores["Avg QA Score"],
                 marker="o",
