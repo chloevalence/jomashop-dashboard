@@ -2649,9 +2649,9 @@ def load_all_calls_cached(cache_version=0):
                     logger.info(f" Using disk cache ({len(disk_call_data)} calls)")
                     use_disk_cache = True
         
-        # Use the best cache
-        if use_streamlit_cache:
-            final_call_data, final_errors = streamlit_call_data, streamlit_errors
+            # Use the best cache
+            if use_streamlit_cache:
+                final_call_data, final_errors = streamlit_call_data, streamlit_errors
             # Deduplicate Streamlit cache data
             if final_call_data:
                 original_count = len(final_call_data)
