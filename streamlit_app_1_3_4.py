@@ -1240,6 +1240,10 @@ def cleanup_pdf_sourced_calls():
                 pdf_sourced_count += 1
             else:
                 cleaned_calls.append(call)
+        
+        # Migrate old cache format calls to new format
+        if cleaned_calls:
+            cleaned_calls = migrate_old_cache_format(cleaned_calls)
 
         if pdf_sourced_count == 0:
             logger.info(
@@ -2301,6 +2305,9 @@ def load_all_calls_cached(cache_version=0):
             result = (result if isinstance(result, list) else [], [])
 
         streamlit_call_data, streamlit_errors = result
+        # Migrate old cache format to new format
+        if streamlit_call_data:
+            streamlit_call_data = migrate_old_cache_format(streamlit_call_data)
 
         # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
         streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
