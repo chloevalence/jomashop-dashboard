@@ -2550,19 +2550,19 @@ def load_all_calls_cached(cache_version=0):
                     # Fallback to disk cache if new load fails
                     return disk_call_data, disk_errors if disk_errors else []
                 else:
-            # Too many files remaining - return partial cache and let user manually refresh
-            # This prevents crashes from long-running operations during page load
-                logger.info(
-                    f" Found PARTIAL cache: {partial_processed}/{partial_total} files ({remaining_files} remaining)"
-                )
-                logger.info(
-                    f" Returning partial cache immediately - use 'Refresh New Data' button to load remaining {remaining_files} files"
-                )
-                logger.info(
-                    f" Auto-continuation skipped to prevent crashes (>{1000} files remaining)"
-                )
-            return disk_call_data, disk_errors if disk_errors else []
-    else:
+                    # Too many files remaining - return partial cache and let user manually refresh
+                    # This prevents crashes from long-running operations during page load
+                    logger.info(
+                        f" Found PARTIAL cache: {partial_processed}/{partial_total} files ({remaining_files} remaining)"
+                    )
+                    logger.info(
+                        f" Returning partial cache immediately - use 'Refresh New Data' button to load remaining {remaining_files} files"
+                    )
+                    logger.info(
+                        f" Auto-continuation skipped to prevent crashes (>{1000} files remaining)"
+                    )
+                    return disk_call_data, disk_errors if disk_errors else []
+        else:
         # No substantial cache - load ALL files from S3
             logger.info("No substantial cache found - loading ALL files from S3")
         max_files = None  # Load all files
