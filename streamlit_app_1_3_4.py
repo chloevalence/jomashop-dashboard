@@ -2038,8 +2038,61 @@ def load_all_calls_cached(cache_version=0):
 
     start_time = time.time()
 
-    # Check if user explicitly requested full reload
+    # Check if user explicitly requested full reload - MUST check BEFORE loading cache
     reload_all_triggered = st.session_state.get("reload_all_triggered", False)
+    
+    # CRITICAL: If reload_all_triggered, delete ALL caches BEFORE trying to load
+    if reload_all_triggered:
+        logger.info(
+            "Reload ALL Data triggered - clearing all caches before loading"
+        )
+        
+        # Delete disk cache file
+        try:
+            if CACHE_FILE.exists():
+                with cache_file_lock(CACHE_FILE, timeout=5):
+                    CACHE_FILE.unlink()
+                    logger.info(f" Deleted disk cache file: {CACHE_FILE}")
+        except Exception as e:
+            logger.warning(f" Could not delete disk cache: {e}")
+        
+        # Delete S3 cache
+        try:
+            s3_client, s3_bucket = get_s3_client_and_bucket()
+            if s3_client and s3_bucket:
+                try:
+                    s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                    logger.info(f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") != "NoSuchKey":
+                        logger.warning(f" Could not delete S3 cache: {e}")
+                    else:
+                        logger.info(" S3 cache does not exist (already deleted)")
+        except Exception as e:
+            logger.warning(f" Could not delete S3 cache: {e}")
+        
+        # Clear Streamlit cache
+        try:
+            load_all_calls_cached.clear()
+            logger.info(" Cleared Streamlit cache")
+        except Exception as e:
+            logger.warning(f" Could not clear Streamlit cache: {e}")
+        
+        # Clear session state cache
+        if "_s3_cache_result" in st.session_state:
+            del st.session_state["_s3_cache_result"]
+        if "_s3_cache_timestamp" in st.session_state:
+            del st.session_state["_s3_cache_timestamp"]
+        if "_merged_cache_data" in st.session_state:
+            del st.session_state["_merged_cache_data"]
+        if "_merged_cache_errors" in st.session_state:
+            del st.session_state["_merged_cache_errors"]
+        if "_merged_cache_data_timestamp" in st.session_state:
+            del st.session_state["_merged_cache_data_timestamp"]
+        logger.info(" Cleared session state cache")
+        
+        # Clear the flag so we don't delete again
+        st.session_state["reload_all_triggered"] = False
 
     # CRITICAL: Always check S3 cache first (source of truth, shared across all users)
     # This ensures all users get the same up-to-date data
@@ -2325,7 +2378,7 @@ def load_all_calls_cached(cache_version=0):
         logger.info(
             "Reload ALL Data triggered - clearing all caches and loading ALL files from S3 (this will take 10-20 minutes)"
         )
-        
+
         # CRITICAL: Delete disk cache file
         try:
             if CACHE_FILE.exists():
@@ -2334,7 +2387,7 @@ def load_all_calls_cached(cache_version=0):
                     logger.info(f" Deleted disk cache file: {CACHE_FILE}")
         except Exception as e:
             logger.warning(f" Could not delete disk cache: {e}")
-        
+
         # CRITICAL: Delete S3 cache
         try:
             s3_client, s3_bucket = get_s3_client_and_bucket()
@@ -2343,14 +2396,14 @@ def load_all_calls_cached(cache_version=0):
                 logger.info(f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
         except Exception as e:
             logger.warning(f" Could not delete S3 cache: {e}")
-        
+
         # CRITICAL: Clear Streamlit cache
         try:
             load_all_calls_cached.clear()
             logger.info(" Cleared Streamlit cache")
         except Exception as e:
             logger.warning(f" Could not clear Streamlit cache: {e}")
-        
+
         # CRITICAL: Clear session state cache
         if "_s3_cache_result" in st.session_state:
             del st.session_state["_s3_cache_result"]
@@ -2363,7 +2416,7 @@ def load_all_calls_cached(cache_version=0):
         if "_merged_cache_data_timestamp" in st.session_state:
             del st.session_state["_merged_cache_data_timestamp"]
         logger.info(" Cleared session state cache")
-        
+
         max_files = None  # Load all files
         st.session_state["reload_all_triggered"] = False  # Clear flag after use
     elif is_partial and partial_total > 0 and partial_processed < partial_total:
