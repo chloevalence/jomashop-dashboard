@@ -769,7 +769,7 @@ def parse_csv_row(row, filename):
         # _s3_key should be just the filename (for CSV files, this is the file path)
         # This allows extract_cache_key to detect CSV format by checking if _id contains colon
         data["_s3_key"] = normalized_filename
-                    else:
+    else:
         # CRITICAL FIX: If no call_id, use row index to ensure uniqueness
         # Get row index from the row if available, otherwise use a timestamp
         row_index = getattr(row, "name", None)
