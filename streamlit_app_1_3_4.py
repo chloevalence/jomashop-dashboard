@@ -8954,9 +8954,9 @@ if user_agent_id:
                     team_pass_daily[["Call Date", "Team_Pass_Rate"]],
                 on="Call Date",
                     how="outer",
-            ).sort_values("Call Date")
-            
-            fig_pass_trend, ax_pass_trend = plt.subplots(figsize=(10, 5))
+                ).sort_values("Call Date")
+                
+                fig_pass_trend, ax_pass_trend = plt.subplots(figsize=(10, 5))
                 ax_pass_trend.plot(
                     pass_comparison["Call Date"],
                     pass_comparison["My_Pass_Rate"],
