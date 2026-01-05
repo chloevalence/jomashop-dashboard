@@ -1240,7 +1240,7 @@ def cleanup_pdf_sourced_calls():
                 pdf_sourced_count += 1
             else:
                 cleaned_calls.append(call)
-        
+
         # Migrate old cache format calls to new format
         if cleaned_calls:
             cleaned_calls = migrate_old_cache_format(cleaned_calls)
@@ -2061,10 +2061,12 @@ def load_all_calls_cached(cache_version=0):
     refresh_in_progress = st.session_state.get("refresh_in_progress", False)
     if refresh_in_progress:
         if s3_cache_result and s3_cache_result[0]:
+            # Migrate old cache format to new format
+            migrated_calls = migrate_old_cache_format(s3_cache_result[0])
             logger.info(
-                f" Refresh in progress - using S3 cache directly: {len(s3_cache_result[0])} calls"
+                f" Refresh in progress - using S3 cache directly: {len(migrated_calls)} calls"
             )
-            return s3_cache_result
+            return (migrated_calls, s3_cache_result[1] if len(s3_cache_result) > 1 else [])
         else:
             logger.info(
                 " Refresh in progress but no S3 cache found - continuing with normal load"
@@ -2092,6 +2094,8 @@ def load_all_calls_cached(cache_version=0):
                 # Use merged cache data (it's still current)
                 merged_data = st.session_state["_merged_cache_data"]
                 merged_errors = st.session_state.get("_merged_cache_errors", [])
+                # Migrate old cache format to new format
+                merged_data = migrate_old_cache_format(merged_data)
                 logger.info(
                     f" Using merged cache data from refresh: {len(merged_data)} calls"
                 )
@@ -2148,6 +2152,8 @@ def load_all_calls_cached(cache_version=0):
     # CRITICAL FIX: Check if disk_result is None before accessing its elements
     if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
         disk_call_data, disk_errors = disk_result
+        # Migrate old cache format to new format
+        disk_call_data = migrate_old_cache_format(disk_call_data)
         cache_count = len(disk_call_data)
 
         # Get cache metadata
