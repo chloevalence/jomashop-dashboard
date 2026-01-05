@@ -3785,7 +3785,7 @@ def load_new_calls_only():
                 for idx, row in df.iterrows():
                     try:
                         parsed_data = parse_csv_row(row, filename)
-                if parsed_data:
+                        if parsed_data:
                             # _id and _s3_key are already set in parse_csv_row based on call_id
                             # No need to override them here - each row should have unique _id
                             csv_calls.append(parsed_data)
