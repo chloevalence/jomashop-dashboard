@@ -2116,38 +2116,6 @@ def load_all_calls_cached(cache_version=0):
                                     f"Could not parse S3 cache timestamp: {e}, will run check anyway"
                                 )
 
-                        if should_check:
-                            # Check for new files (lightweight check)
-                            logger.info(
-                                f" Checking for new files in background...{f' (cache age: {cache_age_minutes:.1f} min)' if cache_age_minutes else ''}"
-                            )
-                        try:
-                            # Background refresh removed - manual refresh only
-                            new_count, check_error = 0, None
-                            if check_error:
-                                logger.warning(f"Background check error: {check_error}")
-                            elif new_count > 0:
-                                logger.info(
-                                    f"Found {new_count} new PDF(s) - will load in background"
-                                )
-                                # Set flag to trigger background load
-                                st.session_state.auto_refresh_pending = new_count
-                                st.session_state.new_csvs_notification_count = new_count
-                            else:
-                                logger.info("No new files found - cache is up to date")
-                                # Clear notification count since there are no new files
-                                st.session_state.new_csvs_notification_count = 0
-                        except Exception as e:
-                            # CRITICAL FIX: Log full exception details to help diagnose crashes
-                            logger.warning(f"Failed to check for new files: {e}")
-                            import traceback
-
-                            logger.debug(
-                                f"Background check traceback: {traceback.format_exc()}"
-                            )
-                            # Don't crash the app - just mark as checked so we don't retry immediately
-
-                        st.session_state.auto_refresh_checked = True
 
                     # Return disk cache (will update Streamlit cache with this value)
                     logger.info(
@@ -4550,8 +4518,6 @@ if is_super_admin():
                 st.warning(f" {len(new_errors)} file(s) had errors")
             # Clear notification count after successful refresh
             st.session_state.new_csvs_notification_count = 0
-            # Reset auto_refresh_checked so startup check runs again to verify 0 new files
-            st.session_state.auto_refresh_checked = False
 
             # CRITICAL FIX: Increment cache version and clear Streamlit cache before rerun
             # This forces Streamlit cache to reload from S3 cache (source of truth) on next call
@@ -4905,91 +4871,6 @@ try:
         elapsed = time.time() - t0
         status_text.empty()
 
-    # Auto-load new files if detected during startup
-    # OPTIMIZATION: Skip auto-refresh if manual refresh is in progress to prevent conflicts
-    if (
-        "auto_refresh_pending" in st.session_state
-        and st.session_state.auto_refresh_pending > 0
-    ):
-        if st.session_state.get("refresh_in_progress", False):
-            logger.info(" Skipping auto-refresh - manual refresh in progress")
-            # Clear the pending flag so it doesn't retry immediately
-            del st.session_state.auto_refresh_pending
-        else:
-            new_count = st.session_state.auto_refresh_pending
-            logger.info(
-                f" Auto-loading {new_count} new files detected during startup..."
-            )
-            with st.spinner(f" Loading {new_count} new PDF(s) in background..."):
-                new_calls, new_errors, actual_new_count = load_new_calls_only()
-
-                if isinstance(new_errors, str):
-                    logger.error(f" Error auto-loading new files: {new_errors}")
-                    st.warning(f" Could not auto-load new files: {new_errors}")
-                elif actual_new_count > 0:
-                    # Merge with existing data
-                    disk_result = load_cached_data_from_disk()
-                    # CRITICAL FIX: Check if disk_result is None before accessing its elements
-                    existing_calls = (
-                        disk_result[0]
-                        if (disk_result and disk_result[0] is not None)
-                        else []
-                    )
-                    all_calls_merged = existing_calls + new_calls
-                    all_calls_merged = deduplicate_calls(all_calls_merged)
-
-                    # CRITICAL FIX: Use safe save function instead of direct file write
-                    # This provides atomic writes, file locking, and proper error handling
-                    # CRITICAL FIX: Wrap in try-except since save_cached_data_to_disk() re-raises exceptions
-                    try:
-                        save_cached_data_to_disk(
-                            all_calls_merged,
-                            new_errors if new_errors else [],
-                            partial=False,
-                        )
-                        logger.info(
-                            f" Auto-loaded {actual_new_count} new files. Total: {len(all_calls_merged)} calls"
-                        )
-                        st.success(
-                            f" Auto-loaded {actual_new_count} new file(s)! Total: {len(all_calls_merged)} calls"
-                        )
-                    except Exception as save_error:
-                        logger.error(
-                            f" CRITICAL: Failed to save auto-loaded cache: {save_error}"
-                        )
-                        logger.error(
-                            "Auto-loaded data will be lost on next restart - continuing anyway"
-                        )
-                        # Still show success message since files were loaded, just not saved
-                        logger.info(
-                            f" Auto-loaded {actual_new_count} new files. Total: {len(all_calls_merged)} calls (NOT SAVED)"
-                        )
-                        st.success(
-                            f" Auto-loaded {actual_new_count} new file(s)! Total: {len(all_calls_merged)} calls"
-                        )
-                        st.warning(
-                            "Warning: Failed to save cache - data may be lost on restart"
-                        )
-
-                    # Update call_data to include new files
-                    call_data = all_calls_merged
-                    errors = new_errors if new_errors else []
-
-                    # Clear Streamlit cache to force reload
-                    load_all_calls_cached.clear()
-
-                    # Clear flags
-                    del st.session_state.auto_refresh_pending
-                    st.session_state.new_csvs_notification_count = 0
-
-                    # Rerun to show updated data
-                    st.rerun()
-                else:
-                    logger.info(
-                        "No new files to load (may have been processed already)"
-                    )
-                    del st.session_state.auto_refresh_pending
-                    st.session_state.new_csvs_notification_count = 0
 
     # Check if we got valid data
     if not call_data and not errors:
