@@ -282,6 +282,9 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             "agent": "Agent",
             "qa_score": "QA Score",
             "label": "Label",
+            "reason": "Reason",
+            "outcome": "Outcome",
+            "summary": "Summary",
             "rubric_pass_count": "Rubric Pass Count",
             "rubric_fail_count": "Rubric Fail Count",
         }
@@ -289,17 +292,17 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
         # Create rename dictionary by checking all columns (case-insensitive)
         rename_dict = {}
         columns_lower = {col.lower(): col for col in df.columns}
-        
+
         for old_col_lower, new_col in column_mapping.items():
             if old_col_lower in columns_lower:
                 old_col = columns_lower[old_col_lower]
                 # Only rename if the new name doesn't already exist or if it's different
                 if new_col not in df.columns or old_col != new_col:
                     rename_dict[old_col] = new_col
-        
+
         if rename_dict:
             df.rename(columns=rename_dict, inplace=True)
-        
+
         # Handle date_raw as fallback if Call Date doesn't exist yet
         if "Call Date" not in df.columns:
             if "date_raw" in df.columns:
@@ -321,7 +324,7 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
                 if col.lower() in ["date_raw", "call_date"]:
                     date_col = col
                     break
-            
+
             if date_col:
                 df["Call Date"] = pd.to_datetime(df[date_col], errors="coerce")
             else:
@@ -365,9 +368,7 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
         print(f"📊 BPO Centers data loaded:")
         print(f"   Total calls: {len(df)}")
         if len(df) > 0 and "Call Date" in df.columns:
-            print(
-                f"   Date range: {df['Call Date'].min()} to {df['Call Date'].max()}"
-            )
+            print(f"   Date range: {df['Call Date'].min()} to {df['Call Date'].max()}")
 
         return df
 
@@ -2253,6 +2254,307 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
     return fig
 
 
+def create_top_call_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
+    """Create a chart showing top call reasons."""
+    if bpo_df is None or len(bpo_df) == 0:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    # Check for Reason column (case-insensitive)
+    reason_col = None
+    for col in bpo_df.columns:
+        if col.lower() == "reason":
+            reason_col = col
+            break
+
+    if reason_col is None:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No reason data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    # Get top reasons
+    reason_counts = bpo_df[reason_col].value_counts().head(10)
+    total_calls = bpo_df[reason_col].notna().sum()
+
+    if len(reason_counts) == 0:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No reason data found",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig.suptitle("Top 10 Call Reasons", fontsize=14, fontweight="bold")
+
+    # Left: Count chart
+    bars1 = ax1.barh(reason_counts.index, reason_counts.values, color="#3498DB", alpha=0.7)
+    ax1.set_xlabel("Number of Calls", fontsize=11, fontweight="bold")
+    ax1.set_title("Call Count", fontsize=12, fontweight="bold")
+    ax1.grid(True, alpha=0.3, axis="x")
+    ax1.invert_yaxis()
+
+    # Add value labels
+    for i, bar in enumerate(bars1):
+        width = bar.get_width()
+        ax1.text(
+            width,
+            bar.get_y() + bar.get_height() / 2,
+            f"{int(width)}",
+            ha="left",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    # Right: Percentage chart
+    reason_pct = (reason_counts / total_calls * 100).round(1)
+    bars2 = ax2.barh(reason_pct.index, reason_pct.values, color="#9B59B6", alpha=0.7)
+    ax2.set_xlabel("Percentage of Calls (%)", fontsize=11, fontweight="bold")
+    ax2.set_title("Percentage Distribution", fontsize=12, fontweight="bold")
+    ax2.grid(True, alpha=0.3, axis="x")
+    ax2.invert_yaxis()
+
+    # Add value labels
+    for i, bar in enumerate(bars2):
+        width = bar.get_width()
+        ax2.text(
+            width,
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:.1f}%",
+            ha="left",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    return fig
+
+
+def create_top_call_outcomes_chart(bpo_df: pd.DataFrame) -> plt.Figure:
+    """Create a chart showing top call outcomes."""
+    if bpo_df is None or len(bpo_df) == 0:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    # Check for Outcome column (case-insensitive)
+    outcome_col = None
+    for col in bpo_df.columns:
+        if col.lower() == "outcome":
+            outcome_col = col
+            break
+
+    if outcome_col is None:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No outcome data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    # Get top outcomes
+    outcome_counts = bpo_df[outcome_col].value_counts().head(10)
+    total_calls = bpo_df[outcome_col].notna().sum()
+
+    if len(outcome_counts) == 0:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No outcome data found",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig.suptitle("Top 10 Call Outcomes", fontsize=14, fontweight="bold")
+
+    # Left: Count chart
+    bars1 = ax1.barh(outcome_counts.index, outcome_counts.values, color="#E74C3C", alpha=0.7)
+    ax1.set_xlabel("Number of Calls", fontsize=11, fontweight="bold")
+    ax1.set_title("Call Count", fontsize=12, fontweight="bold")
+    ax1.grid(True, alpha=0.3, axis="x")
+    ax1.invert_yaxis()
+
+    # Add value labels
+    for i, bar in enumerate(bars1):
+        width = bar.get_width()
+        ax1.text(
+            width,
+            bar.get_y() + bar.get_height() / 2,
+            f"{int(width)}",
+            ha="left",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    # Right: Percentage chart
+    outcome_pct = (outcome_counts / total_calls * 100).round(1)
+    bars2 = ax2.barh(outcome_pct.index, outcome_pct.values, color="#F39C12", alpha=0.7)
+    ax2.set_xlabel("Percentage of Calls (%)", fontsize=11, fontweight="bold")
+    ax2.set_title("Percentage Distribution", fontsize=12, fontweight="bold")
+    ax2.grid(True, alpha=0.3, axis="x")
+    ax2.invert_yaxis()
+
+    # Add value labels
+    for i, bar in enumerate(bars2):
+        width = bar.get_width()
+        ax2.text(
+            width,
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:.1f}%",
+            ha="left",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    return fig
+
+
+def create_top_products_chart(bpo_df: pd.DataFrame) -> plt.Figure:
+    """Create a chart showing top products discussed."""
+    if bpo_df is None or len(bpo_df) == 0:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No data available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    # Extract products from text fields
+    product_data = []
+    text_fields = []
+
+    for col in bpo_df.columns:
+        col_lower = col.lower()
+        if col_lower in ["summary", "reason", "outcome"]:
+            text_fields.append(col)
+
+    if not text_fields:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No text fields available for product extraction",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    # Extract products from all text fields
+    for idx, row in bpo_df.iterrows():
+        combined_text = " ".join(
+            [str(row.get(field, "") or "") for field in text_fields]
+        )
+        products = extract_products_from_text(combined_text)
+        product_data.extend(products)
+
+    if len(product_data) == 0:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No products found in call data",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
+    # Get top products
+    product_counts = pd.Series(product_data).value_counts().head(10)
+    total_mentions = len(product_data)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig.suptitle("Top 10 Products Discussed", fontsize=14, fontweight="bold")
+
+    # Left: Count chart
+    bars1 = ax1.barh(product_counts.index, product_counts.values, color="#27AE60", alpha=0.7)
+    ax1.set_xlabel("Number of Mentions", fontsize=11, fontweight="bold")
+    ax1.set_title("Mention Count", fontsize=12, fontweight="bold")
+    ax1.grid(True, alpha=0.3, axis="x")
+    ax1.invert_yaxis()
+
+    # Add value labels
+    for i, bar in enumerate(bars1):
+        width = bar.get_width()
+        ax1.text(
+            width,
+            bar.get_y() + bar.get_height() / 2,
+            f"{int(width)}",
+            ha="left",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    # Right: Percentage chart
+    product_pct = (product_counts / total_mentions * 100).round(1)
+    bars2 = ax2.barh(product_pct.index, product_pct.values, color="#16A085", alpha=0.7)
+    ax2.set_xlabel("Percentage of Mentions (%)", fontsize=11, fontweight="bold")
+    ax2.set_title("Percentage Distribution", fontsize=12, fontweight="bold")
+    ax2.grid(True, alpha=0.3, axis="x")
+    ax2.invert_yaxis()
+
+    # Add value labels
+    for i, bar in enumerate(bars2):
+        width = bar.get_width()
+        ax2.text(
+            width,
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:.1f}%",
+            ha="left",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    return fig
+
+
 def generate_pdf_report(
     previous_metrics: Dict,
     bpo_metrics: Dict,
@@ -2446,7 +2748,7 @@ def generate_pdf_report(
                 else "  • Excellent (90+): N/A"
             )
             summary_lines.append("")
-        
+
         summary_lines.append("BPO Centers:")
         summary_lines.append(
             f"  • Total Calls: {bpo_metrics.get('total_calls', 'N/A')}"
@@ -2665,6 +2967,27 @@ def generate_pdf_report(
         if bpo_data is not None and len(bpo_data) > 0:
             print("  📊 Generating Top Failure Reasons Analysis...")
             fig = create_top_failure_reasons_chart(bpo_data)
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        # Top Call Reasons
+        if bpo_data is not None and len(bpo_data) > 0:
+            print("  📊 Generating Top Call Reasons Chart...")
+            fig = create_top_call_reasons_chart(bpo_data)
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        # Top Call Outcomes
+        if bpo_data is not None and len(bpo_data) > 0:
+            print("  📊 Generating Top Call Outcomes Chart...")
+            fig = create_top_call_outcomes_chart(bpo_data)
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        # Top Products Discussed
+        if bpo_data is not None and len(bpo_data) > 0:
+            print("  📊 Generating Top Products Chart...")
+            fig = create_top_products_chart(bpo_data)
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
