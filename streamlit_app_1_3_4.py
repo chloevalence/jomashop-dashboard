@@ -865,7 +865,7 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                         )
                         errors.append(error_msg)
                         logger.warning(error_msg)
-                            continue
+                        continue
 
                 logger.info(f"Processed {len(df)} rows from {filename}")
 
