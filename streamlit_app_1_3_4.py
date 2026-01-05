@@ -4136,7 +4136,7 @@ retry_delay = 3  # Increased initial delay
 
 for attempt in range(max_retries):
     try:
-authenticator = stauth.Authenticate(
+        authenticator = stauth.Authenticate(
     credentials,
     cookie["name"],
     cookie["key"],
