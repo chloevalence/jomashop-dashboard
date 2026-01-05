@@ -8562,8 +8562,8 @@ if "Rubric Details" in filtered_df.columns:
                 if isinstance(details, dict):
                         status = details.get("status", "N/A")
                         note = details.get("note", "")
-                    
-                    if code not in code_stats:
+                        
+                        if code not in code_stats:
                             code_stats[code] = {
                                 "total": 0,
                                 "pass": 0,
