@@ -2393,20 +2393,20 @@ def load_all_calls_cached(cache_version=0):
         # NOTE: We don't call load_cached_data_from_disk() here because it also loads from S3
         # We'll call it later only if needed, and it will check session state first
         # Disk cache is just a local backup, not the source of truth
-    
-    # Strategy: Always use the most up-to-date cache
-    # 1. Check disk cache first (if not reloading)
-    # 2. Try to load (will use Streamlit cache if available, or load from S3)
-    # 3. Compare and use the best/most recent data
-    # 4. Update disk cache with the best data
-    
-    # CRITICAL: Always check disk cache FIRST to prevent restart loops
-    # The app keeps restarting during loads, losing progress. We MUST use partial caches.
-    disk_call_data = None
-    disk_errors = None
-    is_partial = False
-    partial_processed = 0
-    partial_total = 0
+
+        # Strategy: Always use the most up-to-date cache
+        # 1. Check disk cache first (if not reloading)
+        # 2. Try to load (will use Streamlit cache if available, or load from S3)
+        # 3. Compare and use the best/most recent data
+        # 4. Update disk cache with the best data
+
+        # CRITICAL: Always check disk cache FIRST to prevent restart loops
+        # The app keeps restarting during loads, losing progress. We MUST use partial caches.
+        disk_call_data = None
+        disk_errors = None
+        is_partial = False
+        partial_processed = 0
+        partial_total = 0
     
         # NOTE: Removed duplicate check for _merged_cache_data - it's already checked earlier at line 1271
         # and returns immediately, making this check unreachable dead code
