@@ -1019,24 +1019,24 @@ def recover_partial_json(filepath):
 def extract_cache_key(call):
     """
     Extract a consistent cache key from a call object.
-    
+
     For CSV rows: Returns call_id (detected by colon in _id or _s3_key format)
     For PDF rows: Returns _s3_key or _id
     Handles both old format (_id = filename) and new format (_id = "filename:call_id")
-    
+
     Args:
         call: Dictionary representing a call
-        
+
     Returns:
         String key for cache lookup, or None if no valid key found
     """
     if not isinstance(call, dict):
         return None
-    
+
     call_id = call.get("call_id")
     _id = call.get("_id", "")
     _s3_key = call.get("_s3_key", "")
-    
+
     # If _id or _s3_key contains a colon, it's from a CSV (format: filename:call_id)
     # Use call_id as the unique key for CSV rows
     if call_id and (":" in str(_id) or ":" in str(_s3_key)):
@@ -1048,7 +1048,7 @@ def extract_cache_key(call):
 
 def deduplicate_calls(call_data):
     """Remove duplicate calls based on _s3_key or _id. Keeps the first occurrence.
-    
+
     For CSV files, uses call_id as the primary identifier since multiple rows
     can come from the same CSV file.
     """
@@ -2109,13 +2109,15 @@ def load_all_calls_cached(cache_version=0):
 
     # CRITICAL: Use S3 cache if available (source of truth)
     if s3_cache_result and s3_cache_result[0]:
+        # Migrate old cache format to new format
+        migrated_calls = migrate_old_cache_format(s3_cache_result[0])
         logger.info(
-            f" Using S3 cache (source of truth): {len(s3_cache_result[0])} calls"
+            f" Using S3 cache (source of truth): {len(migrated_calls)} calls"
         )
         # Store timestamp for future comparison
         if s3_cache_timestamp:
             st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
-        return s3_cache_result
+        return (migrated_calls, s3_cache_result[1] if len(s3_cache_result) > 1 else [])
 
     # Fall back to disk cache only if S3 unavailable (backup only)
     # NOTE: We don't call load_cached_data_from_disk() here because it also loads from S3
@@ -3557,7 +3559,7 @@ def load_new_calls_only():
                             # Check if this call is already in cache
                             # Use consistent key extraction logic
                             call_key = extract_cache_key(parsed_data)
-                            
+
                             if call_key and call_key in existing_cache_keys:
                                 # Already in cache - skip (already added to new_calls above)
                                 pass
@@ -3595,10 +3597,11 @@ def load_new_calls_only():
             # This modifies the list in-place (O(k)) instead of creating a new list (O(n))
             existing_calls.extend(batch_calls)
             # Update existing_cache_keys to include new batch keys
+            # Use consistent key extraction logic
             batch_keys_set = {
-                call.get("_s3_key") or call.get("_id")
+                key
                 for call in batch_calls
-                if call.get("_s3_key") or call.get("_id")
+                if (key := extract_cache_key(call)) is not None
             }
             existing_cache_keys.update(batch_keys_set)
 
