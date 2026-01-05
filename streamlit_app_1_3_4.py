@@ -8499,7 +8499,7 @@ with col_trend1:
         ax_trend.legend()
         plt.xticks(rotation=45)
         plt.tight_layout()
-            st_pyplot_safe(fig_trend)
+        st_pyplot_safe(fig_trend)
 
 with col_trend2:
     # Pass/Fail Rate Trends
