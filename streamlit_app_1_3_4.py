@@ -5566,12 +5566,12 @@ try:
                     f" Loaded {len(call_data)} calls (from cache, originally processed in {time_str})"
                 )
         else:
-        st.error(" No call data found!")
-        st.error("Possible issues:")
-        st.error("1. No CSV files in S3 bucket (check bucket name and prefix)")
-        st.error("2. CSV files couldn't be parsed")
-        st.error("3. Check the prefix path if CSV files are in a subfolder")
-        st.stop()
+            st.error(" No call data found!")
+            st.error("Possible issues:")
+            st.error("1. No CSV files in S3 bucket (check bucket name and prefix)")
+            st.error("2. CSV files couldn't be parsed")
+            st.error("3. Check the prefix path if CSV files are in a subfolder")
+            st.stop()
 except Exception as e:
     status_text.empty()
     st.error(f" Error loading data: {e}")
