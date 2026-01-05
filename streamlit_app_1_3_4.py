@@ -506,7 +506,7 @@ def parse_csv_row(row, filename):
         str(row.get("call_reason", "")) if pd.notna(row.get("call_reason")) else None
     )
     data["reason"] = normalize_category(reason_raw) if reason_raw else None
-    
+
     outcome_raw = (
         str(row.get("call_outcome", "")) if pd.notna(row.get("call_outcome")) else None
     )
@@ -2046,7 +2046,6 @@ def load_all_calls_cached(cache_version=0):
     # Perform one-time cache cleanup to remove PDF-sourced calls
     cleanup_pdf_sourced_calls()
     import time
-    from datetime import datetime
 
     start_time = time.time()
 
@@ -2785,11 +2784,43 @@ def calculate_historical_baselines(df, current_start_date, current_end_date):
 
     baselines = {}
 
+    # Get the earliest and latest dates in the dataset
+    if df.empty or "Call Date" not in df.columns:
+        return baselines
+
+    df_min_date = df["Call Date"].min()
+    df_max_date = df["Call Date"].max()
+
     # Last 30 days baseline
+    # First try: data before current period
     last_30_start = current_end_date - timedelta(days=30)
     last_30_data = df[
         (df["Call Date"] >= last_30_start) & (df["Call Date"] < current_start_date)
     ]
+
+    # Fallback: if no data before current period, use earlier 30 days from within dataset
+    if last_30_data.empty:
+        # Use 30 days ending just before current period, or if that's not possible,
+        # use the earliest 30 days in the dataset
+        if current_start_date > df_min_date:
+            # Try to get 30 days before current_start_date
+            fallback_end = current_start_date - timedelta(days=1)
+            fallback_start = fallback_end - timedelta(days=30)
+            if fallback_start < df_min_date:
+                fallback_start = df_min_date
+            last_30_data = df[
+                (df["Call Date"] >= fallback_start) & (df["Call Date"] <= fallback_end)
+            ]
+        else:
+            # Current period starts at beginning, use earliest 30 days
+            last_30_data = df[
+                (df["Call Date"] >= df_min_date)
+                & (
+                    df["Call Date"]
+                    <= min(df_min_date + timedelta(days=30), df_max_date)
+                )
+            ]
+
     if not last_30_data.empty:
         baselines["last_30_days"] = {
             "avg_score": last_30_data["QA Score"].mean()
@@ -2797,14 +2828,40 @@ def calculate_historical_baselines(df, current_start_date, current_end_date):
             else None,
             "pass_rate": calculate_pass_rate(last_30_data),
             "total_calls": len(last_30_data),
-            "period": (last_30_start, current_start_date),
+            "period": (
+                last_30_data["Call Date"].min(),
+                last_30_data["Call Date"].max(),
+            ),
         }
 
     # Last 90 days baseline
+    # First try: data before current period
     last_90_start = current_end_date - timedelta(days=90)
     last_90_data = df[
         (df["Call Date"] >= last_90_start) & (df["Call Date"] < current_start_date)
     ]
+
+    # Fallback: if no data before current period, use earlier 90 days from within dataset
+    if last_90_data.empty:
+        if current_start_date > df_min_date:
+            # Try to get 90 days before current_start_date
+            fallback_end = current_start_date - timedelta(days=1)
+            fallback_start = fallback_end - timedelta(days=90)
+            if fallback_start < df_min_date:
+                fallback_start = df_min_date
+            last_90_data = df[
+                (df["Call Date"] >= fallback_start) & (df["Call Date"] <= fallback_end)
+            ]
+        else:
+            # Current period starts at beginning, use earliest 90 days
+            last_90_data = df[
+                (df["Call Date"] >= df_min_date)
+                & (
+                    df["Call Date"]
+                    <= min(df_min_date + timedelta(days=90), df_max_date)
+                )
+            ]
+
     if not last_90_data.empty:
         baselines["last_90_days"] = {
             "avg_score": last_90_data["QA Score"].mean()
@@ -2812,7 +2869,10 @@ def calculate_historical_baselines(df, current_start_date, current_end_date):
             else None,
             "pass_rate": calculate_pass_rate(last_90_data),
             "total_calls": len(last_90_data),
-            "period": (last_90_start, current_start_date),
+            "period": (
+                last_90_data["Call Date"].min(),
+                last_90_data["Call Date"].max(),
+            ),
         }
 
     # Year-over-year (if data available)
@@ -7817,90 +7877,241 @@ if not user_agent_id:  # Admin view only
             st.success(" No agents currently identified as at risk")
 
 # --- QA Score Trends Over Time ---
-st.subheader("QA Score Trends Over Time")
-col_trend1, col_trend2 = st.columns(2)
+with st.expander("QA Score Trends Over Time", expanded=False):
+    st.subheader("QA Score Trends Over Time")
+    col_trend1, col_trend2 = st.columns(2)
 
-with col_trend1:
-    st.write("**QA Score Trend**")
-    if len(filtered_df) > 0 and "QA Score" in filtered_df.columns:
-        # Daily average QA scores
-        daily_scores = (
-            filtered_df.groupby(filtered_df["Call Date"].dt.date)["QA Score"]
-            .mean()
-            .reset_index()
-        )
-        daily_scores.columns = ["Date", "Avg QA Score"]
-
-        fig_trend, ax_trend = plt.subplots(figsize=(10, 5))
-        ax_trend.plot(
-            daily_scores["Date"],
-            daily_scores["Avg QA Score"],
-            marker="o",
-            linewidth=2,
-            color="steelblue",
-        )
-        ax_trend.set_xlabel("Date")
-        ax_trend.set_ylabel("Average QA Score (%)")
-        ax_trend.set_title("QA Score Trend Over Time")
-        ax_trend.grid(True, alpha=0.3)
-        ax_trend.axhline(
-            y=alert_threshold,
-            color="r",
-            linestyle="--",
-            alpha=0.5,
-            label=f"Threshold ({alert_threshold}%)",
-        )
-        ax_trend.legend()
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        st_pyplot_safe(fig_trend)
-
-with col_trend2:
-    # Pass/Fail Rate Trends
-    st.write("**Pass/Fail Rate Trends**")
-    if len(filtered_df) > 0:
-        daily_stats = (
-            filtered_df.groupby(filtered_df["Call Date"].dt.date)
-            .agg(
-                Total_Pass=("Rubric Pass Count", "sum"),
-                Total_Fail=("Rubric Fail Count", "sum"),
+    with col_trend1:
+        st.write("**QA Score Trend**")
+        if len(filtered_df) > 0 and "QA Score" in filtered_df.columns:
+            # Daily average QA scores
+            daily_scores = (
+                filtered_df.groupby(filtered_df["Call Date"].dt.date)["QA Score"]
+                .mean()
+                .reset_index()
             )
-            .reset_index()
-        )
-        daily_stats.columns = ["Date", "Total_Pass", "Total_Fail"]
-        daily_stats["Total"] = daily_stats["Total_Pass"] + daily_stats["Total_Fail"]
-        daily_stats["Pass_Rate"] = (
-            daily_stats["Total_Pass"] / daily_stats["Total"] * 100
-        ).fillna(0)
-        daily_stats["Fail_Rate"] = (
-            daily_stats["Total_Fail"] / daily_stats["Total"] * 100
-        ).fillna(0)
+            daily_scores.columns = ["Date", "Avg QA Score"]
 
-        fig_pf, ax_pf = plt.subplots(figsize=(10, 5))
-        ax_pf.plot(
-            daily_stats["Date"],
-            daily_stats["Pass_Rate"],
-            marker="o",
-            linewidth=2,
-            label="Pass Rate",
-            color="green",
-        )
-        ax_pf.plot(
-            daily_stats["Date"],
-            daily_stats["Fail_Rate"],
-            marker="s",
-            linewidth=2,
-            label="Fail Rate",
-            color="red",
-        )
-        ax_pf.set_xlabel("Date")
-        ax_pf.set_ylabel("Rate (%)")
-        ax_pf.set_title("Pass/Fail Rate Trends Over Time")
-        ax_pf.grid(True, alpha=0.3)
-        ax_pf.legend()
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        st_pyplot_safe(fig_pf)
+            fig_trend, ax_trend = plt.subplots(figsize=(10, 5))
+            ax_trend.plot(
+                daily_scores["Date"],
+                daily_scores["Avg QA Score"],
+                marker="o",
+                linewidth=2,
+                color="steelblue",
+            )
+            ax_trend.set_xlabel("Date")
+            ax_trend.set_ylabel("Average QA Score (%)")
+            ax_trend.set_title("QA Score Trend Over Time")
+            ax_trend.grid(True, alpha=0.3)
+            ax_trend.axhline(
+                y=alert_threshold,
+                color="r",
+                linestyle="--",
+                alpha=0.5,
+                label=f"Threshold ({alert_threshold}%)",
+            )
+            ax_trend.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st_pyplot_safe(fig_trend)
+
+    with col_trend2:
+        # Pass/Fail Rate Trends
+        st.write("**Pass/Fail Rate Trends**")
+        if len(filtered_df) > 0:
+            daily_stats = (
+                filtered_df.groupby(filtered_df["Call Date"].dt.date)
+                .agg(
+                    Total_Pass=("Rubric Pass Count", "sum"),
+                    Total_Fail=("Rubric Fail Count", "sum"),
+                )
+                .reset_index()
+            )
+            daily_stats.columns = ["Date", "Total_Pass", "Total_Fail"]
+            daily_stats["Total"] = daily_stats["Total_Pass"] + daily_stats["Total_Fail"]
+            daily_stats["Pass_Rate"] = (
+                daily_stats["Total_Pass"] / daily_stats["Total"] * 100
+            ).fillna(0)
+            daily_stats["Fail_Rate"] = (
+                daily_stats["Total_Fail"] / daily_stats["Total"] * 100
+            ).fillna(0)
+
+            fig_pf, ax_pf = plt.subplots(figsize=(10, 5))
+            ax_pf.plot(
+                daily_stats["Date"],
+                daily_stats["Pass_Rate"],
+                marker="o",
+                linewidth=2,
+                label="Pass Rate",
+                color="green",
+            )
+            ax_pf.plot(
+                daily_stats["Date"],
+                daily_stats["Fail_Rate"],
+                marker="s",
+                linewidth=2,
+                label="Fail Rate",
+                color="red",
+            )
+            ax_pf.set_xlabel("Date")
+            ax_pf.set_ylabel("Rate (%)")
+            ax_pf.set_title("Pass/Fail Rate Trends Over Time")
+            ax_pf.grid(True, alpha=0.3)
+            ax_pf.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st_pyplot_safe(fig_pf)
+
+# --- Rubric Code Analysis ---
+with st.expander("Rubric Code Analysis", expanded=False):
+    st.subheader("Rubric Code Analysis")
+    if "Rubric Details" in filtered_df.columns:
+        # Collect all rubric code statistics
+        code_stats = {}
+        for idx, row in filtered_df.iterrows():
+            rubric_details = row.get("Rubric Details", {})
+            if isinstance(rubric_details, dict):
+                for code, details in rubric_details.items():
+                    if isinstance(details, dict):
+                        status = details.get("status", "N/A")
+                        note = details.get("note", "")
+
+                        if code not in code_stats:
+                            code_stats[code] = {
+                                "total": 0,
+                                "pass": 0,
+                                "fail": 0,
+                                "na": 0,
+                                "fail_notes": [],
+                            }
+
+                        code_stats[code]["total"] += 1
+                        if status == "Pass":
+                            code_stats[code]["pass"] += 1
+                        elif status == "Fail":
+                            code_stats[code]["fail"] += 1
+                            if note:
+                                code_stats[code]["fail_notes"].append(note)
+                        elif status == "N/A":
+                            code_stats[code]["na"] += 1
+
+        if code_stats:
+            rubric_analysis = pd.DataFrame(
+                [
+                    {
+                        "Code": code,
+                        "Total": stats["total"],
+                        "Pass": stats["pass"],
+                        "Fail": stats["fail"],
+                        "N/A": stats["na"],
+                        "Pass_Rate": (stats["pass"] / stats["total"] * 100)
+                        if stats["total"] > 0
+                        else 0,
+                        "Fail_Rate": (stats["fail"] / stats["total"] * 100)
+                        if stats["total"] > 0
+                        else 0,
+                        "Most_Common_Fail_Reason": max(
+                            set(stats["fail_notes"]), key=stats["fail_notes"].count
+                        )
+                        if stats["fail_notes"]
+                        else "N/A",
+                    }
+                    for code, stats in code_stats.items()
+                ]
+            )
+            rubric_analysis = rubric_analysis.sort_values("Fail_Rate", ascending=False)
+
+            rubric_col1, rubric_col2 = st.columns(2)
+
+            with rubric_col1:
+                st.write("**Top 10 Failed Rubric Codes**")
+                top_failed = rubric_analysis.head(10)
+                st.dataframe(
+                    top_failed[
+                        [
+                            "Code",
+                            "Total",
+                            "Fail",
+                            "Fail_Rate",
+                            "Most_Common_Fail_Reason",
+                        ]
+                    ],
+                    hide_index=True,
+                )
+
+            with rubric_col2:
+                st.write("**Fail Rate Distribution**")
+                fig_rubric, ax_rubric = plt.subplots(figsize=(8, 6))
+                top_failed.plot(
+                    x="Code", y="Fail_Rate", kind="bar", ax=ax_rubric, color="red"
+                )
+                ax_rubric.set_ylabel("Fail Rate (%)")
+                ax_rubric.set_xlabel("Rubric Code")
+                ax_rubric.set_title("Top 10 Failed Rubric Codes")
+                plt.xticks(rotation=45, ha="right")
+                plt.tight_layout()
+                st_pyplot_safe(fig_rubric)
+
+        # Category-level analysis
+        if code_stats:
+            category_stats = {}
+            for code, stats in code_stats.items():
+                # Extract category from code (e.g., "A1" from "A1.1")
+                category = (
+                    code.split(".")[0] if "." in code else code[0] if code else "Other"
+                )
+
+                if category not in category_stats:
+                    category_stats[category] = {
+                        "total": 0,
+                        "fail": 0,
+                        "fail_rates": [],
+                    }
+
+                category_stats[category]["total"] += stats["total"]
+                category_stats[category]["fail"] += stats["fail"]
+                if stats["total"] > 0:
+                    fail_rate = (stats["fail"] / stats["total"]) * 100
+                    category_stats[category]["fail_rates"].append(fail_rate)
+
+            if category_stats:
+                category_df = pd.DataFrame(
+                    [
+                        {
+                            "Category": cat,
+                            "Total": stats["total"],
+                            "Total_Fail": stats["fail"],
+                            "Avg_Fail_Rate": (
+                                sum(stats["fail_rates"]) / len(stats["fail_rates"])
+                                if stats["fail_rates"]
+                                else 0
+                            ),
+                        }
+                        for cat, stats in category_stats.items()
+                    ]
+                )
+                category_df = category_df.sort_values("Avg_Fail_Rate", ascending=False)
+
+                st.write("**Fail Rate by Rubric Category**")
+                fig_heat, ax_heat = plt.subplots(figsize=(8, 6))
+                colors = [
+                    "green" if x < 20 else "orange" if x < 40 else "red"
+                    for x in category_stats["Avg_Fail_Rate"]
+                ]
+                category_stats.plot(
+                    x="Category",
+                    y="Avg_Fail_Rate",
+                    kind="bar",
+                    ax=ax_heat,
+                    color=colors,
+                )
+                ax_heat.set_ylabel("Average Fail Rate (%)")
+                ax_heat.set_xlabel("Rubric Category")
+                ax_heat.set_title("Fail Rate by Rubric Category")
+                plt.xticks(rotation=0)
+                plt.tight_layout()
+                st_pyplot_safe(fig_heat)
 
 # --- Trend Forecasting (Predictive Analytics) ---
 with st.expander("Trend Forecasting", expanded=False):
@@ -8117,12 +8328,13 @@ if "Rubric Details" in filtered_df.columns:
 # --- Agent-Specific Trends ---
 if user_agent_id:
     # Agent view - show their trend with team comparison
-    st.subheader("My Performance Trend vs Team Average")
+    with st.expander("My Performance Trend vs Team Average", expanded=False):
+        st.subheader("My Performance Trend vs Team Average")
 
-    # Add trajectory analysis
-    agent_data = filtered_df[filtered_df["Agent"] == user_agent_id]
-    if len(agent_data) > 0:
-        trajectory = classify_trajectory(filtered_df, agent=user_agent_id)
+        # Add trajectory analysis
+        agent_data = filtered_df[filtered_df["Agent"] == user_agent_id]
+        if len(agent_data) > 0:
+            trajectory = classify_trajectory(filtered_df, agent=user_agent_id)
 
         traj_col1, traj_col2, traj_col3, traj_col4 = st.columns(4)
         with traj_col1:
@@ -8142,210 +8354,213 @@ if user_agent_id:
             }.get(trajectory["trajectory"], "Unknown")
             st.metric("Trajectory", f"{traj_icon} {traj_label}")
 
-        with traj_col2:
-            st.metric("Current Score", f"{trajectory.get('current_score', 0):.1f}%")
+            with traj_col2:
+                st.metric("Current Score", f"{trajectory.get('current_score', 0):.1f}%")
 
-        with traj_col3:
-            projected = trajectory.get("projected_score", 0)
-            delta = projected - trajectory.get("current_score", 0) if projected else 0
-            st.metric(
-                "Projected (7 days)",
-                f"{projected:.1f}%",
-                delta=f"{delta:+.1f}%",
-                delta_color="normal" if delta >= 0 else "inverse",
-                help="Projected score if current trend continues",
-            )
-
-        with traj_col4:
-            st.metric(
-                "Volatility",
-                f"{trajectory.get('volatility', 0):.1f}",
-                help="Standard deviation of scores (lower is more consistent)",
-            )
-
-    agent_trends_col1, agent_trends_col2 = st.columns(2)
-
-    with agent_trends_col1:
-        st.write("**My QA Score Trend**")
-        if len(agent_data) > 0:
-            agent_daily = (
-                agent_data.groupby(agent_data["Call Date"].dt.date)
-                .agg(Avg_QA_Score=("QA Score", "mean"))
-                .reset_index()
-            )
-            agent_daily.columns = ["Date", "My_Score"]
-
-            # Get team average for same dates
-            overall_daily = (
-                overall_df.groupby(overall_df["Call Date"].dt.date)
-                .agg(Avg_QA_Score=("QA Score", "mean"))
-                .reset_index()
-            )
-            overall_daily.columns = ["Date", "Team_Avg"]
-
-            # Merge on date
-            trend_comparison = pd.merge(
-                agent_daily, overall_daily, on="Date", how="outer"
-            ).sort_values("Date")
-
-            fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
-            ax_agent.plot(
-                trend_comparison["Date"],
-                trend_comparison["My_Score"],
-                marker="o",
-                linewidth=2,
-                label="My Score",
-                color="steelblue",
-            )
-            ax_agent.plot(
-                trend_comparison["Date"],
-                trend_comparison["Team_Avg"],
-                marker="s",
-                linewidth=2,
-                label="Team Average",
-                color="orange",
-                linestyle="--",
-            )
-            ax_agent.set_xlabel("Date")
-            ax_agent.set_ylabel("Average QA Score (%)")
-            ax_agent.set_title("My Performance Trend vs Team Average")
-            ax_agent.grid(True, alpha=0.3)
-            ax_agent.axhline(
-                y=alert_threshold,
-                color="r",
-                linestyle="--",
-                alpha=0.5,
-                label=f"Threshold ({alert_threshold}%)",
-            )
-            ax_agent.legend()
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            st_pyplot_safe(fig_agent)
-
-    with agent_trends_col2:
-        st.write("**My Pass Rate Trend vs Team**")
-        if len(agent_data) > 0:
-            agent_pass_daily = (
-                agent_data.groupby(agent_data["Call Date"].dt.date)
-                .agg(
-                    Total_Pass=("Rubric Pass Count", "sum"),
-                    Total_Fail=("Rubric Fail Count", "sum"),
+            with traj_col3:
+                projected = trajectory.get("projected_score", 0)
+                delta = (
+                    projected - trajectory.get("current_score", 0) if projected else 0
                 )
-                .reset_index()
-            )
-            agent_pass_daily["Total"] = (
-                agent_pass_daily["Total_Pass"] + agent_pass_daily["Total_Fail"]
-            )
-            agent_pass_daily["My_Pass_Rate"] = (
-                agent_pass_daily["Total_Pass"] / agent_pass_daily["Total"] * 100
-            ).fillna(0)
-
-            team_pass_daily = (
-                overall_df.groupby(overall_df["Call Date"].dt.date)
-                .agg(
-                    Total_Pass=("Rubric Pass Count", "sum"),
-                    Total_Fail=("Rubric Fail Count", "sum"),
+                st.metric(
+                    "Projected (7 days)",
+                    f"{projected:.1f}%",
+                    delta=f"{delta:+.1f}%",
+                    delta_color="normal" if delta >= 0 else "inverse",
+                    help="Projected score if current trend continues",
                 )
-                .reset_index()
-            )
-            team_pass_daily["Total"] = (
-                team_pass_daily["Total_Pass"] + team_pass_daily["Total_Fail"]
-            )
-            team_pass_daily["Team_Pass_Rate"] = (
-                team_pass_daily["Total_Pass"] / team_pass_daily["Total"] * 100
-            ).fillna(0)
 
-            pass_comparison = pd.merge(
-                agent_pass_daily[["Call Date", "My_Pass_Rate"]],
-                team_pass_daily[["Call Date", "Team_Pass_Rate"]],
-                on="Call Date",
-                how="outer",
-            ).sort_values("Call Date")
+            with traj_col4:
+                st.metric(
+                    "Volatility",
+                    f"{trajectory.get('volatility', 0):.1f}",
+                    help="Standard deviation of scores (lower is more consistent)",
+                )
 
-            fig_pass_trend, ax_pass_trend = plt.subplots(figsize=(10, 5))
-            ax_pass_trend.plot(
-                pass_comparison["Call Date"],
-                pass_comparison["My_Pass_Rate"],
-                marker="o",
-                linewidth=2,
-                label="My Pass Rate",
-                color="green",
-            )
-            ax_pass_trend.plot(
-                pass_comparison["Call Date"],
-                pass_comparison["Team_Pass_Rate"],
-                marker="s",
-                linewidth=2,
-                label="Team Pass Rate",
-                color="lightgreen",
-                linestyle="--",
-            )
-            ax_pass_trend.set_xlabel("Date")
-            ax_pass_trend.set_ylabel("Pass Rate (%)")
-            ax_pass_trend.set_title("My Pass Rate Trend vs Team Average")
-            ax_pass_trend.grid(True, alpha=0.3)
-            ax_pass_trend.legend()
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            st_pyplot_safe(fig_pass_trend)
+            agent_trends_col1, agent_trends_col2 = st.columns(2)
 
-        # AHT Trend
-        st.write("**My AHT Trend vs Team**")
-        if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
-            agent_aht_daily = (
-                agent_data.groupby(agent_data["Call Date"].dt.date)
-                .agg(Avg_AHT=("Call Duration (min)", "mean"))
-                .reset_index()
-            )
-            agent_aht_daily.columns = ["Call Date", "My_AHT"]
+        with agent_trends_col1:
+            st.write("**My QA Score Trend**")
+            if len(agent_data) > 0:
+                agent_daily = (
+                    agent_data.groupby(agent_data["Call Date"].dt.date)
+                    .agg(Avg_QA_Score=("QA Score", "mean"))
+                    .reset_index()
+                )
+                agent_daily.columns = ["Date", "My_Score"]
 
-            team_aht_daily = (
-                overall_df.groupby(overall_df["Call Date"].dt.date)
-                .agg(Avg_AHT=("Call Duration (min)", "mean"))
-                .reset_index()
-            )
-            team_aht_daily.columns = ["Call Date", "Team_AHT"]
+                # Get team average for same dates
+                overall_daily = (
+                    overall_df.groupby(overall_df["Call Date"].dt.date)
+                    .agg(Avg_QA_Score=("QA Score", "mean"))
+                    .reset_index()
+                )
+                overall_daily.columns = ["Date", "Team_Avg"]
 
-            aht_comparison = pd.merge(
-                agent_aht_daily[["Call Date", "My_AHT"]],
-                team_aht_daily[["Call Date", "Team_AHT"]],
-                on="Call Date",
-                how="outer",
-            ).sort_values("Call Date")
+                # Merge on date
+                trend_comparison = pd.merge(
+                    agent_daily, overall_daily, on="Date", how="outer"
+                ).sort_values("Date")
 
-            if len(aht_comparison) > 0 and aht_comparison["My_AHT"].notna().any():
-                fig_aht_trend, ax_aht_trend = plt.subplots(figsize=(10, 5))
-                ax_aht_trend.plot(
-                    aht_comparison["Call Date"],
-                    aht_comparison["My_AHT"],
+                fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
+                ax_agent.plot(
+                    trend_comparison["Date"],
+                    trend_comparison["My_Score"],
                     marker="o",
                     linewidth=2,
-                    label="My AHT",
-                    color="purple",
+                    label="My Score",
+                    color="steelblue",
                 )
-                ax_aht_trend.plot(
-                    aht_comparison["Call Date"],
-                    aht_comparison["Team_AHT"],
+                ax_agent.plot(
+                    trend_comparison["Date"],
+                    trend_comparison["Team_Avg"],
                     marker="s",
                     linewidth=2,
-                    label="Team AHT",
-                    color="lavender",
+                    label="Team Average",
+                    color="orange",
                     linestyle="--",
                 )
-                ax_aht_trend.set_xlabel("Date")
-                ax_aht_trend.set_ylabel("Average Handle Time (min)")
-                ax_aht_trend.set_title("My AHT Trend vs Team Average")
-                ax_aht_trend.grid(True, alpha=0.3)
-                ax_aht_trend.legend()
+                ax_agent.set_xlabel("Date")
+                ax_agent.set_ylabel("Average QA Score (%)")
+                ax_agent.set_title("My Performance Trend vs Team Average")
+                ax_agent.grid(True, alpha=0.3)
+                ax_agent.axhline(
+                    y=alert_threshold,
+                    color="r",
+                    linestyle="--",
+                    alpha=0.5,
+                    label=f"Threshold ({alert_threshold}%)",
+                )
+                ax_agent.legend()
                 plt.xticks(rotation=45)
                 plt.tight_layout()
-                st_pyplot_safe(fig_aht_trend)
-            else:
-                st.info("AHT trend data not available")
+                st_pyplot_safe(fig_agent)
+
+        with agent_trends_col2:
+            st.write("**My Pass Rate Trend vs Team**")
+            if len(agent_data) > 0:
+                agent_pass_daily = (
+                    agent_data.groupby(agent_data["Call Date"].dt.date)
+                    .agg(
+                        Total_Pass=("Rubric Pass Count", "sum"),
+                        Total_Fail=("Rubric Fail Count", "sum"),
+                    )
+                    .reset_index()
+                )
+                agent_pass_daily["Total"] = (
+                    agent_pass_daily["Total_Pass"] + agent_pass_daily["Total_Fail"]
+                )
+                agent_pass_daily["My_Pass_Rate"] = (
+                    agent_pass_daily["Total_Pass"] / agent_pass_daily["Total"] * 100
+                ).fillna(0)
+
+                team_pass_daily = (
+                    overall_df.groupby(overall_df["Call Date"].dt.date)
+                    .agg(
+                        Total_Pass=("Rubric Pass Count", "sum"),
+                        Total_Fail=("Rubric Fail Count", "sum"),
+                    )
+                    .reset_index()
+                )
+                team_pass_daily["Total"] = (
+                    team_pass_daily["Total_Pass"] + team_pass_daily["Total_Fail"]
+                )
+                team_pass_daily["Team_Pass_Rate"] = (
+                    team_pass_daily["Total_Pass"] / team_pass_daily["Total"] * 100
+                ).fillna(0)
+
+                pass_comparison = pd.merge(
+                    agent_pass_daily[["Call Date", "My_Pass_Rate"]],
+                    team_pass_daily[["Call Date", "Team_Pass_Rate"]],
+                    on="Call Date",
+                    how="outer",
+                ).sort_values("Call Date")
+
+                fig_pass_trend, ax_pass_trend = plt.subplots(figsize=(10, 5))
+                ax_pass_trend.plot(
+                    pass_comparison["Call Date"],
+                    pass_comparison["My_Pass_Rate"],
+                    marker="o",
+                    linewidth=2,
+                    label="My Pass Rate",
+                    color="green",
+                )
+                ax_pass_trend.plot(
+                    pass_comparison["Call Date"],
+                    pass_comparison["Team_Pass_Rate"],
+                    marker="s",
+                    linewidth=2,
+                    label="Team Pass Rate",
+                    color="lightgreen",
+                    linestyle="--",
+                )
+                ax_pass_trend.set_xlabel("Date")
+                ax_pass_trend.set_ylabel("Pass Rate (%)")
+                ax_pass_trend.set_title("My Pass Rate Trend vs Team Average")
+                ax_pass_trend.grid(True, alpha=0.3)
+                ax_pass_trend.legend()
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st_pyplot_safe(fig_pass_trend)
+
+            # AHT Trend
+            st.write("**My AHT Trend vs Team**")
+            if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
+                agent_aht_daily = (
+                    agent_data.groupby(agent_data["Call Date"].dt.date)
+                    .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                    .reset_index()
+                )
+                agent_aht_daily.columns = ["Call Date", "My_AHT"]
+
+                team_aht_daily = (
+                    overall_df.groupby(overall_df["Call Date"].dt.date)
+                    .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                    .reset_index()
+                )
+                team_aht_daily.columns = ["Call Date", "Team_AHT"]
+
+                aht_comparison = pd.merge(
+                    agent_aht_daily[["Call Date", "My_AHT"]],
+                    team_aht_daily[["Call Date", "Team_AHT"]],
+                    on="Call Date",
+                    how="outer",
+                ).sort_values("Call Date")
+
+                if len(aht_comparison) > 0 and aht_comparison["My_AHT"].notna().any():
+                    fig_aht_trend, ax_aht_trend = plt.subplots(figsize=(10, 5))
+                    ax_aht_trend.plot(
+                        aht_comparison["Call Date"],
+                        aht_comparison["My_AHT"],
+                        marker="o",
+                        linewidth=2,
+                        label="My AHT",
+                        color="purple",
+                    )
+                    ax_aht_trend.plot(
+                        aht_comparison["Call Date"],
+                        aht_comparison["Team_AHT"],
+                        marker="s",
+                        linewidth=2,
+                        label="Team AHT",
+                        color="lavender",
+                        linestyle="--",
+                    )
+                    ax_aht_trend.set_xlabel("Date")
+                    ax_aht_trend.set_ylabel("Average Handle Time (min)")
+                    ax_aht_trend.set_title("My AHT Trend vs Team Average")
+                    ax_aht_trend.grid(True, alpha=0.3)
+                    ax_aht_trend.legend()
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_aht_trend)
+                else:
+                    st.info("AHT trend data not available")
 
 else:
     # Admin view - agent selection and comparison
-    st.subheader("Agent-Specific Performance Trends")
+    with st.expander("Agent-Specific Performance Trends", expanded=False):
+        st.subheader("Agent-Specific Performance Trends")
     if len(filtered_df) > 0 and len(selected_agents) > 0:
         agent_trends_col1, agent_trends_col2 = st.columns(2)
 
@@ -8507,44 +8722,46 @@ else:
                         st_pyplot_safe(fig_aht_compare)
 
 # --- QA Score Distribution and Label Distribution ---
-col_left, col_right = st.columns(2)
+with st.expander("Score & Label Distribution Analysis", expanded=False):
+    col_left, col_right = st.columns(2)
 
-with col_left:
-    st.subheader("QA Score Distribution")
-    if "QA Score" in filtered_df.columns:
-        fig_dist, ax_dist = plt.subplots(figsize=(8, 5))
-        filtered_df["QA Score"].hist(
-            bins=20, ax=ax_dist, edgecolor="black", color="steelblue"
-        )
-        ax_dist.set_xlabel("QA Score (%)")
-        ax_dist.set_ylabel("Number of Calls")
-        ax_dist.set_title("Distribution of QA Scores")
-        ax_dist.axvline(
-            x=alert_threshold,
-            color="r",
-            linestyle="--",
-            alpha=0.5,
-            label=f"Threshold ({alert_threshold}%)",
-        )
-        ax_dist.legend()
-        plt.tight_layout()
-        st_pyplot_safe(fig_dist)
+    with col_left:
+        st.subheader("QA Score Distribution")
+        if "QA Score" in filtered_df.columns:
+            fig_dist, ax_dist = plt.subplots(figsize=(8, 5))
+            filtered_df["QA Score"].hist(
+                bins=20, ax=ax_dist, edgecolor="black", color="steelblue"
+            )
+            ax_dist.set_xlabel("QA Score (%)")
+            ax_dist.set_ylabel("Number of Calls")
+            ax_dist.set_title("Distribution of QA Scores")
+            ax_dist.axvline(
+                x=alert_threshold,
+                color="r",
+                linestyle="--",
+                alpha=0.5,
+                label=f"Threshold ({alert_threshold}%)",
+            )
+            ax_dist.legend()
+            plt.tight_layout()
+            st_pyplot_safe(fig_dist)
 
-with col_right:
-    st.subheader("Label Distribution")
-    if "Label" in filtered_df.columns:
-        label_counts = filtered_df["Label"].value_counts()
-        fig_label, ax_label = plt.subplots(figsize=(8, 5))
-        label_counts.plot(kind="bar", ax=ax_label, color="steelblue")
-        ax_label.set_xlabel("Label")
-        ax_label.set_ylabel("Number of Calls")
-        ax_label.set_title("Call Labels Distribution")
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        st_pyplot_safe(fig_label)
+    with col_right:
+        st.subheader("Label Distribution")
+        if "Label" in filtered_df.columns:
+            label_counts = filtered_df["Label"].value_counts()
+            fig_label, ax_label = plt.subplots(figsize=(8, 5))
+            label_counts.plot(kind="bar", ax=ax_label, color="steelblue")
+            ax_label.set_xlabel("Label")
+            ax_label.set_ylabel("Number of Calls")
+            ax_label.set_title("Call Labels Distribution")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st_pyplot_safe(fig_label)
 
 # --- Coaching Insights Aggregation ---
-st.subheader("Coaching Insights")
+with st.expander("Coaching Insights", expanded=False):
+    st.subheader("Coaching Insights")
 if "Coaching Suggestions" in filtered_df.columns:
     all_coaching = []
     for idx, row in filtered_df.iterrows():
@@ -8585,155 +8802,97 @@ if "Coaching Suggestions" in filtered_df.columns:
         st.info("No coaching suggestions found in the filtered data.")
 
 # --- Full Rubric Reference ---
-st.subheader("QA Rubric Reference")
-if rubric_data:
-    col_rubric_header1, col_rubric_header2 = st.columns([3, 1])
-    with col_rubric_header1:
-        st.info(
-            f" Complete rubric with {len(rubric_data)} items. Use the tabs below to browse by section or search all items."
-        )
-    with col_rubric_header2:
-        # Load and serve the pre-formatted Excel rubric file
-        try:
-            import os
-
-            rubric_excel_path = os.path.join(
-                os.path.dirname(__file__), "Separatetab-rubric33.xlsx"
+with st.expander("QA Rubric Reference", expanded=False):
+    st.subheader("QA Rubric Reference")
+    if rubric_data:
+        col_rubric_header1, col_rubric_header2 = st.columns([3, 1])
+        with col_rubric_header1:
+            st.info(
+                f" Complete rubric with {len(rubric_data)} items. Use the tabs below to browse by section or search all items."
             )
-            if os.path.exists(rubric_excel_path):
-                with open(rubric_excel_path, "rb") as f:
-                    rubric_excel_bytes = f.read()
+        with col_rubric_header2:
+            # Load and serve the pre-formatted Excel rubric file
+            try:
+                import os
 
-                st.download_button(
-                    label=" Download Rubric (Excel)",
-                    data=rubric_excel_bytes,
-                    file_name="QA_Rubric_v33.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                rubric_excel_path = os.path.join(
+                    os.path.dirname(__file__), "Separatetab-rubric33.xlsx"
                 )
+                if os.path.exists(rubric_excel_path):
+                    with open(rubric_excel_path, "rb") as f:
+                        rubric_excel_bytes = f.read()
+
+                    st.download_button(
+                        label=" Download Rubric (Excel)",
+                        data=rubric_excel_bytes,
+                        file_name="QA_Rubric_v33.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                else:
+                    st.warning(" Rubric Excel file not found")
+                    st.info(
+                        "Place 'Separatetab-rubric33.xlsx' in the dashboard directory"
+                    )
+            except Exception as e:
+                st.error(f"Error loading rubric Excel: {e}")
+
+        rubric_tab1, rubric_tab2 = st.tabs([" Search All Items", " Browse by Section"])
+
+        with rubric_tab1:
+            # Search interface
+            col_search1, col_search2 = st.columns([3, 1])
+            with col_search1:
+                rubric_search = st.text_input(
+                    " Search rubric",
+                    placeholder="Enter code (e.g., 1.1.0), section, item, or criterion...",
+                    key="full_rubric_search",
+                )
+            with col_search2:
+                show_all = st.checkbox(
+                    "Show all", value=not bool(rubric_search), key="show_all_rubric"
+                )
+
+            if rubric_search and not show_all:
+                search_lower = rubric_search.lower()
+                filtered_items = [
+                    item
+                    for item in rubric_data
+                    if (
+                        search_lower in item.get("code", "").lower()
+                        or search_lower in item.get("section", "").lower()
+                        or search_lower in item.get("item", "").lower()
+                        or search_lower in item.get("criterion", "").lower()
+                    )
+                ]
+                st.write(f"**Found {len(filtered_items)} matching items**")
             else:
-                st.warning(" Rubric Excel file not found")
-                st.info("Place 'Separatetab-rubric33.xlsx' in the dashboard directory")
-        except Exception as e:
-            st.error(f"Error loading rubric Excel: {e}")
+                filtered_items = rubric_data
+                st.write(f"**All {len(rubric_data)} rubric items**")
 
-    rubric_tab1, rubric_tab2 = st.tabs([" Search All Items", " Browse by Section"])
-
-    with rubric_tab1:
-        # Search interface
-        col_search1, col_search2 = st.columns([3, 1])
-        with col_search1:
-            rubric_search = st.text_input(
-                " Search rubric",
-                placeholder="Enter code (e.g., 1.1.0), section, item, or criterion...",
-                key="full_rubric_search",
-            )
-        with col_search2:
-            show_all = st.checkbox(
-                "Show all", value=not bool(rubric_search), key="show_all_rubric"
-            )
-
-        if rubric_search and not show_all:
-            search_lower = rubric_search.lower()
-            filtered_items = [
-                item
-                for item in rubric_data
-                if (
-                    search_lower in item.get("code", "").lower()
-                    or search_lower in item.get("section", "").lower()
-                    or search_lower in item.get("item", "").lower()
-                    or search_lower in item.get("criterion", "").lower()
-                )
-            ]
-            st.write(f"**Found {len(filtered_items)} matching items**")
-        else:
-            filtered_items = rubric_data
-            st.write(f"**All {len(rubric_data)} rubric items**")
-
-        # Display filtered items with pagination
-        items_per_page = 20
-        if len(filtered_items) > items_per_page:
-            total_pages = (len(filtered_items) - 1) // items_per_page + 1
-            page_num = st.number_input(
-                f"Page (1-{total_pages})",
-                min_value=1,
-                max_value=total_pages,
-                value=1,
-                key="rubric_page",
-            )
-            start_idx = (page_num - 1) * items_per_page
-            end_idx = start_idx + items_per_page
-            display_items = filtered_items[start_idx:end_idx]
-            st.caption(
-                f"Showing items {start_idx + 1}-{min(end_idx, len(filtered_items))} of {len(filtered_items)}"
-            )
-        else:
-            display_items = filtered_items
-
-        # Display items
-        for item in display_items:
-            with st.expander(
-                f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | {item.get('section', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
-                expanded=False,
-            ):
-                st.write(f"**Section:** {item.get('section', 'N/A')}")
-                st.write(f"**Item:** {item.get('item', 'N/A')}")
-                st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
-                st.write(f"**Weight:** {item.get('weight', 'N/A')}")
-
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.markdown("** Pass Criteria:**")
-                    st.info(item.get("pass", "N/A"))
-                with col2:
-                    st.markdown("** Fail Criteria:**")
-                    st.error(item.get("fail", "N/A"))
-                with col3:
-                    st.markdown("**N/A Criteria:**")
-                    st.warning(item.get("na", "N/A"))
-
-                if item.get("agent_script_example"):
-                    st.markdown("**Agent Script Example:**")
-                    st.code(item.get("agent_script_example"), language=None)
-
-    with rubric_tab2:
-        # Group by section
-        sections = {}
-        for item in rubric_data:
-            section = item.get("section", "Other")
-            if section not in sections:
-                sections[section] = []
-            sections[section].append(item)
-
-        selected_section = st.selectbox(
-            "Select Section", sorted(sections.keys()), key="rubric_section"
-        )
-
-        if selected_section:
-            section_items = sections[selected_section]
-            st.write(f"**{len(section_items)} items in {selected_section}**")
-
-            # Pagination for section items too
-            if len(section_items) > items_per_page:
-                section_total_pages = (len(section_items) - 1) // items_per_page + 1
-                section_page_num = st.number_input(
-                    f"Page (1-{section_total_pages})",
+            # Display filtered items with pagination
+            items_per_page = 20
+            if len(filtered_items) > items_per_page:
+                total_pages = (len(filtered_items) - 1) // items_per_page + 1
+                page_num = st.number_input(
+                    f"Page (1-{total_pages})",
                     min_value=1,
-                    max_value=section_total_pages,
+                    max_value=total_pages,
                     value=1,
-                    key="section_page",
+                    key="rubric_page",
                 )
-                section_start_idx = (section_page_num - 1) * items_per_page
-                section_end_idx = section_start_idx + items_per_page
-                display_section_items = section_items[section_start_idx:section_end_idx]
+                start_idx = (page_num - 1) * items_per_page
+                end_idx = start_idx + items_per_page
+                display_items = filtered_items[start_idx:end_idx]
                 st.caption(
-                    f"Showing items {section_start_idx + 1}-{min(section_end_idx, len(section_items))} of {len(section_items)}"
+                    f"Showing items {start_idx + 1}-{min(end_idx, len(filtered_items))} of {len(filtered_items)}"
                 )
             else:
-                display_section_items = section_items
+                display_items = filtered_items
 
-            for item in display_section_items:
+            # Display items
+            for item in display_items:
                 with st.expander(
-                    f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
+                    f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | {item.get('section', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
                     expanded=False,
                 ):
                     st.write(f"**Section:** {item.get('section', 'N/A')}")
@@ -8755,17 +8914,81 @@ if rubric_data:
                     if item.get("agent_script_example"):
                         st.markdown("**Agent Script Example:**")
                         st.code(item.get("agent_script_example"), language=None)
-else:
-    st.warning(
-        " Rubric file not found. Please ensure 'Rubric_v33.json' is in the dashboard directory."
-    )
+
+        with rubric_tab2:
+            # Group by section
+            sections = {}
+            for item in rubric_data:
+                section = item.get("section", "Other")
+                if section not in sections:
+                    sections[section] = []
+                sections[section].append(item)
+
+            selected_section = st.selectbox(
+                "Select Section", sorted(sections.keys()), key="rubric_section"
+            )
+
+            if selected_section:
+                section_items = sections[selected_section]
+                st.write(f"**{len(section_items)} items in {selected_section}**")
+
+                # Pagination for section items too
+                if len(section_items) > items_per_page:
+                    section_total_pages = (len(section_items) - 1) // items_per_page + 1
+                    section_page_num = st.number_input(
+                        f"Page (1-{section_total_pages})",
+                        min_value=1,
+                        max_value=section_total_pages,
+                        value=1,
+                        key="section_page",
+                    )
+                    section_start_idx = (section_page_num - 1) * items_per_page
+                    section_end_idx = section_start_idx + items_per_page
+                    display_section_items = section_items[
+                        section_start_idx:section_end_idx
+                    ]
+                    st.caption(
+                        f"Showing items {section_start_idx + 1}-{min(section_end_idx, len(section_items))} of {len(section_items)}"
+                    )
+                else:
+                    display_section_items = section_items
+
+                for item in display_section_items:
+                    with st.expander(
+                        f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
+                        expanded=False,
+                    ):
+                        st.write(f"**Section:** {item.get('section', 'N/A')}")
+                        st.write(f"**Item:** {item.get('item', 'N/A')}")
+                        st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
+                        st.write(f"**Weight:** {item.get('weight', 'N/A')}")
+
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.markdown("** Pass Criteria:**")
+                            st.info(item.get("pass", "N/A"))
+                        with col2:
+                            st.markdown("** Fail Criteria:**")
+                            st.error(item.get("fail", "N/A"))
+                        with col3:
+                            st.markdown("**N/A Criteria:**")
+                            st.warning(item.get("na", "N/A"))
+
+                        if item.get("agent_script_example"):
+                            st.markdown("**Agent Script Example:**")
+                            st.code(item.get("agent_script_example"), language=None)
+    else:
+        st.warning(
+            " Rubric file not found. Please ensure 'Rubric_v33.json' is in the dashboard directory."
+        )
 
 st.markdown("---")
 
 # --- Individual Call Details ---
-st.subheader("Individual Call Details")
-if len(filtered_df) > 0:
-    call_options = filtered_df["Call ID"].tolist()
+with st.expander("Individual Call Details", expanded=False):
+    st.subheader("Individual Call Details")
+    if len(filtered_df) > 0:
+        call_options = filtered_df["Call ID"].tolist()
     if call_options:
         # Call selection for export
         st.markdown("### Select Calls for Export")
@@ -8941,113 +9164,122 @@ Generated by QA Dashboard • {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                 st.write("No rubric details available")
 
 # --- Call Volume Analysis ---
-st.subheader("Call Volume Analysis")
-if len(filtered_df) > 0:
-    vol_col1, vol_col2 = st.columns(2)
+with st.expander("Call Volume Analysis", expanded=False):
+    st.subheader("Call Volume Analysis")
+    if len(filtered_df) > 0:
+        vol_col1, vol_col2 = st.columns(2)
 
-    with vol_col1:
-        st.write("**Call Volume by Agent**")
-        agent_volume = (
-            filtered_df.groupby("Agent")
-            .agg(Total_Calls=("Call ID", "count"), Avg_QA_Score=("QA Score", "mean"))
-            .reset_index()
-            .sort_values("Total_Calls", ascending=False)
-        )
+        with vol_col1:
+            st.write("**Call Volume by Agent**")
+            agent_volume = (
+                filtered_df.groupby("Agent")
+                .agg(
+                    Total_Calls=("Call ID", "count"), Avg_QA_Score=("QA Score", "mean")
+                )
+                .reset_index()
+                .sort_values("Total_Calls", ascending=False)
+            )
 
-        fig_vol, ax_vol = plt.subplots(figsize=(10, 6))
-        agent_volume.plot(
-            x="Agent", y="Total_Calls", kind="bar", ax=ax_vol, color="steelblue"
-        )
-        ax_vol.set_ylabel("Number of Calls")
-        ax_vol.set_xlabel("Agent")
-        ax_vol.set_title("Call Volume by Agent")
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-        st_pyplot_safe(fig_vol)
+            fig_vol, ax_vol = plt.subplots(figsize=(10, 6))
+            agent_volume.plot(
+                x="Agent", y="Total_Calls", kind="bar", ax=ax_vol, color="steelblue"
+            )
+            ax_vol.set_ylabel("Number of Calls")
+            ax_vol.set_xlabel("Agent")
+            ax_vol.set_title("Call Volume by Agent")
+            plt.xticks(rotation=45, ha="right")
+            plt.tight_layout()
+            st_pyplot_safe(fig_vol)
 
-    with vol_col2:
-        st.write("**Call Volume Over Time**")
-        daily_volume = (
-            filtered_df.groupby(filtered_df["Call Date"].dt.date).size().reset_index()
-        )
-        daily_volume.columns = ["Date", "Call Count"]
+        with vol_col2:
+            st.write("**Call Volume Over Time**")
+            daily_volume = (
+                filtered_df.groupby(filtered_df["Call Date"].dt.date)
+                .size()
+                .reset_index()
+            )
+            daily_volume.columns = ["Date", "Call Count"]
 
-        fig_vol_time, ax_vol_time = plt.subplots(figsize=(10, 5))
-        ax_vol_time.plot(
-            daily_volume["Date"],
-            daily_volume["Call Count"],
-            marker="o",
-            linewidth=2,
-            color="purple",
-        )
-        ax_vol_time.set_xlabel("Date")
-        ax_vol_time.set_ylabel("Number of Calls")
-        ax_vol_time.set_title("Call Volume Trend Over Time")
-        ax_vol_time.grid(True, alpha=0.3)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        st_pyplot_safe(fig_vol_time)
-
-# --- Time of Day Analysis ---
-st.subheader("Time of Day Analysis")
-if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
-    time_col1, time_col2 = st.columns(2)
-
-    with time_col1:
-        st.write("**QA Score by Time of Day**")
-        # Extract hour from time
-        filtered_df["Hour"] = pd.to_datetime(
-            filtered_df["Call Time"], format="%H:%M:%S", errors="coerce"
-        ).dt.hour
-        time_scores = filtered_df.groupby("Hour")["QA Score"].mean().reset_index()
-        time_scores = time_scores.dropna()
-
-        if len(time_scores) > 0:
-            fig_time, ax_time = plt.subplots(figsize=(10, 5))
-            ax_time.plot(
-                time_scores["Hour"],
-                time_scores["QA Score"],
+            fig_vol_time, ax_vol_time = plt.subplots(figsize=(10, 5))
+            ax_vol_time.plot(
+                daily_volume["Date"],
+                daily_volume["Call Count"],
                 marker="o",
                 linewidth=2,
-                color="teal",
+                color="purple",
             )
-            ax_time.set_xlabel("Hour of Day")
-            ax_time.set_ylabel("Average QA Score (%)")
-            ax_time.set_title("QA Score by Time of Day")
-            ax_time.grid(True, alpha=0.3)
-            ax_time.set_xticks(range(0, 24, 2))
+            ax_vol_time.set_xlabel("Date")
+            ax_vol_time.set_ylabel("Number of Calls")
+            ax_vol_time.set_title("Call Volume Trend Over Time")
+            ax_vol_time.grid(True, alpha=0.3)
+            plt.xticks(rotation=45)
             plt.tight_layout()
-            st_pyplot_safe(fig_time)
+            st_pyplot_safe(fig_vol_time)
 
-    with time_col2:
-        st.write("**Call Volume by Time of Day**")
-        time_volume = filtered_df.groupby("Hour").size().reset_index()
-        time_volume.columns = ["Hour", "Call Count"]
-        time_volume = time_volume.dropna()
+# --- Time of Day Analysis ---
+with st.expander("Time of Day Analysis", expanded=False):
+    st.subheader("Time of Day Analysis")
+    if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
+        time_col1, time_col2 = st.columns(2)
 
-        if len(time_volume) > 0:
-            fig_time_vol, ax_time_vol = plt.subplots(figsize=(10, 5))
-            ax_time_vol.bar(
-                time_volume["Hour"],
-                time_volume["Call Count"],
-                color="orange",
-                alpha=0.7,
-            )
-            ax_time_vol.set_xlabel("Hour of Day")
-            ax_time_vol.set_ylabel("Number of Calls")
-            ax_time_vol.set_title("Call Volume by Time of Day")
-            ax_time_vol.set_xticks(range(0, 24, 2))
-            plt.tight_layout()
-            st_pyplot_safe(fig_time_vol)
+        with time_col1:
+            st.write("**QA Score by Time of Day**")
+            # Extract hour from time
+            filtered_df["Hour"] = pd.to_datetime(
+                filtered_df["Call Time"], format="%H:%M:%S", errors="coerce"
+            ).dt.hour
+            time_scores = filtered_df.groupby("Hour")["QA Score"].mean().reset_index()
+            time_scores = time_scores.dropna()
+
+            if len(time_scores) > 0:
+                fig_time, ax_time = plt.subplots(figsize=(10, 5))
+                ax_time.plot(
+                    time_scores["Hour"],
+                    time_scores["QA Score"],
+                    marker="o",
+                    linewidth=2,
+                    color="teal",
+                )
+                ax_time.set_xlabel("Hour of Day")
+                ax_time.set_ylabel("Average QA Score (%)")
+                ax_time.set_title("QA Score by Time of Day")
+                ax_time.grid(True, alpha=0.3)
+                ax_time.set_xticks(range(0, 24, 2))
+                plt.tight_layout()
+                st_pyplot_safe(fig_time)
+
+        with time_col2:
+            st.write("**Call Volume by Time of Day**")
+            time_volume = filtered_df.groupby("Hour").size().reset_index()
+            time_volume.columns = ["Hour", "Call Count"]
+            time_volume = time_volume.dropna()
+
+            if len(time_volume) > 0:
+                fig_time_vol, ax_time_vol = plt.subplots(figsize=(10, 5))
+                ax_time_vol.bar(
+                    time_volume["Hour"],
+                    time_volume["Call Count"],
+                    color="orange",
+                    alpha=0.7,
+                )
+                ax_time_vol.set_xlabel("Hour of Day")
+                ax_time_vol.set_ylabel("Number of Calls")
+                ax_time_vol.set_title("Call Volume by Time of Day")
+                ax_time_vol.set_xticks(range(0, 24, 2))
+                plt.tight_layout()
+                st_pyplot_safe(fig_time_vol)
 
 # --- Reason and Outcome Analysis ---
-st.subheader("Call Reason & Outcome Analysis")
-if (
-    "Reason" in filtered_df.columns
-    or "Outcome" in filtered_df.columns
-    or "Summary" in filtered_df.columns
-):
-    reason_tab1, reason_tab2, reason_tab3 = st.tabs(["Reasons", "Outcomes", "Products"])
+with st.expander("Call Reason & Outcome Analysis", expanded=False):
+    st.subheader("Call Reason & Outcome Analysis")
+    if (
+        "Reason" in filtered_df.columns
+        or "Outcome" in filtered_df.columns
+        or "Summary" in filtered_df.columns
+    ):
+        reason_tab1, reason_tab2, reason_tab3 = st.tabs(
+            ["Reasons", "Outcomes", "Products"]
+        )
 
     with reason_tab1:
         if "Reason" in filtered_df.columns:
@@ -9382,410 +9614,412 @@ if (
                 )
 
 # --- Anomaly Detection ---
-st.markdown("---")
-st.subheader("Anomaly Detection")
+with st.expander("Anomaly Detection", expanded=False):
+    st.subheader("Anomaly Detection")
+    if (
+        "QA Score" in filtered_df.columns
+        and "Call Date" in filtered_df.columns
+        and len(filtered_df) > 1
+    ):
+        # Detect anomalies: sudden score drops/spikes
+        filtered_df_sorted = filtered_df.sort_values("Call Date")
 
-if (
-    "QA Score" in filtered_df.columns
-    and "Call Date" in filtered_df.columns
-    and len(filtered_df) > 1
-):
-    # Detect anomalies: sudden score drops/spikes
-    filtered_df_sorted = filtered_df.sort_values("Call Date")
-
-    # Calculate rolling average (last 5 calls)
-    filtered_df_sorted["Rolling_Avg"] = (
-        filtered_df_sorted["QA Score"].rolling(window=5, min_periods=1).mean()
-    )
-    filtered_df_sorted["Score_Change"] = (
-        filtered_df_sorted["QA Score"] - filtered_df_sorted["Rolling_Avg"]
-    )
-
-    # Define anomaly thresholds
-    anomaly_threshold = 20  # 20 point deviation from rolling average
-    anomalies = filtered_df_sorted[
-        (filtered_df_sorted["Score_Change"].abs() > anomaly_threshold)
-    ].copy()
-
-    if len(anomalies) > 0:
-        st.warning(f" **{len(anomalies)} anomaly/anomalies detected:**")
-
-        anomaly_col1, anomaly_col2 = st.columns(2)
-
-        with anomaly_col1:
-            st.write("**Score Drops (Sudden Decreases)**")
-            drops = anomalies[
-                anomalies["Score_Change"] < -anomaly_threshold
-            ].sort_values("Score_Change")
-            if len(drops) > 0:
-                drop_display = drops[
-                    ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
-                ].head(10)
-                drop_display["Score_Change"] = drop_display["Score_Change"].apply(
-                    lambda x: f"{x:.1f}%"
-                )
-                st.dataframe(drop_display, hide_index=True)
-            else:
-                st.info("No significant score drops detected")
-
-        with anomaly_col2:
-            st.write("**Score Spikes (Sudden Increases)**")
-            spikes = anomalies[
-                anomalies["Score_Change"] > anomaly_threshold
-            ].sort_values("Score_Change", ascending=False)
-            if len(spikes) > 0:
-                spike_display = spikes[
-                    ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
-                ].head(10)
-                spike_display["Score_Change"] = spike_display["Score_Change"].apply(
-                    lambda x: f"+{x:.1f}%"
-                )
-                st.dataframe(spike_display, hide_index=True)
-            else:
-                st.info("No significant score spikes detected")
-
-        # Anomaly trend chart
-        st.write("**Anomaly Timeline**")
-        fig_anomaly, ax_anomaly = plt.subplots(figsize=(14, 6))
-        ax_anomaly.plot(
-            filtered_df_sorted["Call Date"],
-            filtered_df_sorted["QA Score"],
-            alpha=0.3,
-            label="QA Score",
-            color="gray",
+        # Calculate rolling average (last 5 calls)
+        filtered_df_sorted["Rolling_Avg"] = (
+            filtered_df_sorted["QA Score"].rolling(window=5, min_periods=1).mean()
         )
-        ax_anomaly.plot(
-            filtered_df_sorted["Call Date"],
-            filtered_df_sorted["Rolling_Avg"],
-            label="Rolling Average",
-            color="blue",
-            linewidth=2,
+        filtered_df_sorted["Score_Change"] = (
+            filtered_df_sorted["QA Score"] - filtered_df_sorted["Rolling_Avg"]
         )
-        ax_anomaly.scatter(
-            anomalies["Call Date"],
-            anomalies["QA Score"],
-            color="red",
-            s=100,
-            label="Anomalies",
-            zorder=5,
-        )
-        ax_anomaly.set_xlabel("Call Date")
-        ax_anomaly.set_ylabel("QA Score (%)")
-        ax_anomaly.set_title("QA Score with Anomaly Detection")
-        ax_anomaly.legend()
-        ax_anomaly.grid(True, alpha=0.3)
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-        st_pyplot_safe(fig_anomaly)
+
+        # Define anomaly thresholds
+        anomaly_threshold = 20  # 20 point deviation from rolling average
+        anomalies = filtered_df_sorted[
+            (filtered_df_sorted["Score_Change"].abs() > anomaly_threshold)
+        ].copy()
+
+        if len(anomalies) > 0:
+            st.warning(f" **{len(anomalies)} anomaly/anomalies detected:**")
+
+            anomaly_col1, anomaly_col2 = st.columns(2)
+
+            with anomaly_col1:
+                st.write("**Score Drops (Sudden Decreases)**")
+                drops = anomalies[
+                    anomalies["Score_Change"] < -anomaly_threshold
+                ].sort_values("Score_Change")
+                if len(drops) > 0:
+                    drop_display = drops[
+                        ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
+                    ].head(10)
+                    drop_display["Score_Change"] = drop_display["Score_Change"].apply(
+                        lambda x: f"{x:.1f}%"
+                    )
+                    st.dataframe(drop_display, hide_index=True)
+                else:
+                    st.info("No significant score drops detected")
+
+            with anomaly_col2:
+                st.write("**Score Spikes (Sudden Increases)**")
+                spikes = anomalies[
+                    anomalies["Score_Change"] > anomaly_threshold
+                ].sort_values("Score_Change", ascending=False)
+                if len(spikes) > 0:
+                    spike_display = spikes[
+                        ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
+                    ].head(10)
+                    spike_display["Score_Change"] = spike_display["Score_Change"].apply(
+                        lambda x: f"+{x:.1f}%"
+                    )
+                    st.dataframe(spike_display, hide_index=True)
+                else:
+                    st.info("No significant score spikes detected")
+
+            # Anomaly trend chart
+            st.write("**Anomaly Timeline**")
+            fig_anomaly, ax_anomaly = plt.subplots(figsize=(14, 6))
+            ax_anomaly.plot(
+                filtered_df_sorted["Call Date"],
+                filtered_df_sorted["QA Score"],
+                alpha=0.3,
+                label="QA Score",
+                color="gray",
+            )
+            ax_anomaly.plot(
+                filtered_df_sorted["Call Date"],
+                filtered_df_sorted["Rolling_Avg"],
+                label="Rolling Average",
+                color="blue",
+                linewidth=2,
+            )
+            ax_anomaly.scatter(
+                anomalies["Call Date"],
+                anomalies["QA Score"],
+                color="red",
+                s=100,
+                label="Anomalies",
+                zorder=5,
+            )
+            ax_anomaly.set_xlabel("Call Date")
+            ax_anomaly.set_ylabel("QA Score (%)")
+            ax_anomaly.set_title("QA Score with Anomaly Detection")
+            ax_anomaly.legend()
+            ax_anomaly.grid(True, alpha=0.3)
+            plt.xticks(rotation=45, ha="right")
+            plt.tight_layout()
+            st_pyplot_safe(fig_anomaly)
+        else:
+            st.success(" No anomalies detected in the filtered data")
     else:
-        st.success(" No anomalies detected in the filtered data")
-else:
-    st.info(" Need at least 2 calls with QA scores to detect anomalies")
+        st.info(" Need at least 2 calls with QA scores to detect anomalies")
 
 # --- Advanced Analytics ---
-st.markdown("---")
-st.subheader(" Advanced Analytics")
-
-analytics_tab1, analytics_tab2, analytics_tab3 = st.tabs(
-    [
-        "Week-over-Week Comparison",
-        " Agent Improvement Trends",
-        " Failure Analysis",
-    ]
-)
-
-with analytics_tab1:
-    st.markdown("### Week-over-Week Performance Comparison")
-
-    if "Call Date" in filtered_df.columns and "QA Score" in filtered_df.columns:
-        # Group by week
-        filtered_df["Week"] = (
-            pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
-        )
-        weekly_stats = (
-            filtered_df.groupby("Week")
-            .agg(
-                {
-                    "QA Score": ["mean", "count"],
-                    "Rubric Pass Count": "sum",
-                    "Rubric Fail Count": "sum",
-                }
-            )
-            .reset_index()
-        )
-
-        weekly_stats.columns = [
-            "Week",
-            "Avg_QA_Score",
-            "Call_Count",
-            "Total_Pass",
-            "Total_Fail",
+with st.expander("Advanced Analytics", expanded=False):
+    st.subheader("Advanced Analytics")
+    analytics_tab1, analytics_tab2, analytics_tab3 = st.tabs(
+        [
+            "Week-over-Week Comparison",
+            " Agent Improvement Trends",
+            " Failure Analysis",
         ]
-        weekly_stats["Pass_Rate"] = (
-            weekly_stats["Total_Pass"]
-            / (weekly_stats["Total_Pass"] + weekly_stats["Total_Fail"])
-            * 100
-        ).fillna(0)
-        weekly_stats = weekly_stats.sort_values("Week")
+    )
 
-        if len(weekly_stats) > 1:
-            # Calculate week-over-week change
-            weekly_stats["WoW_Score_Change"] = weekly_stats["Avg_QA_Score"].diff()
-            weekly_stats["WoW_PassRate_Change"] = weekly_stats["Pass_Rate"].diff()
-            weekly_stats["WoW_CallCount_Change"] = weekly_stats["Call_Count"].diff()
+    with analytics_tab1:
+        st.markdown("### Week-over-Week Performance Comparison")
 
-            wow_col1, wow_col2 = st.columns(2)
-
-            with wow_col1:
-                st.write("**QA Score Week-over-Week**")
-                fig_wow_score, ax_wow_score = plt.subplots(figsize=(12, 6))
-                ax_wow_score.plot(
-                    weekly_stats["Week"],
-                    weekly_stats["Avg_QA_Score"],
-                    marker="o",
-                    linewidth=2,
-                    label="Avg QA Score",
-                )
-                ax_wow_score.set_xlabel("Week")
-                ax_wow_score.set_ylabel("Average QA Score (%)")
-                ax_wow_score.set_title("Week-over-Week QA Score Trend")
-                ax_wow_score.grid(True, alpha=0.3)
-                ax_wow_score.legend()
-                plt.xticks(rotation=45, ha="right")
-                plt.tight_layout()
-                st_pyplot_safe(fig_wow_score)
-
-                # Show WoW changes
-                st.write("**Week-over-Week Changes**")
-                wow_display = weekly_stats[
-                    [
-                        "Week",
-                        "Avg_QA_Score",
-                        "WoW_Score_Change",
-                        "Call_Count",
-                        "WoW_CallCount_Change",
-                    ]
-                ].copy()
-                wow_display["WoW_Score_Change"] = wow_display["WoW_Score_Change"].apply(
-                    lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A"
-                )
-                wow_display["WoW_CallCount_Change"] = wow_display[
-                    "WoW_CallCount_Change"
-                ].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
-                wow_display.columns = [
-                    "Week",
-                    "Avg QA Score",
-                    "WoW Change",
-                    "Call Count",
-                    "WoW Count Change",
-                ]
-                st.dataframe(wow_display, hide_index=True)
-
-            with wow_col2:
-                st.write("**Pass Rate Week-over-Week**")
-                fig_wow_pass, ax_wow_pass = plt.subplots(figsize=(12, 6))
-                ax_wow_pass.plot(
-                    weekly_stats["Week"],
-                    weekly_stats["Pass_Rate"],
-                    marker="s",
-                    linewidth=2,
-                    color="green",
-                    label="Pass Rate",
-                )
-                ax_wow_pass.set_xlabel("Week")
-                ax_wow_pass.set_ylabel("Pass Rate (%)")
-                ax_wow_pass.set_title("Week-over-Week Pass Rate Trend")
-                ax_wow_pass.grid(True, alpha=0.3)
-                ax_wow_pass.legend()
-                plt.xticks(rotation=45, ha="right")
-                plt.tight_layout()
-                st_pyplot_safe(fig_wow_pass)
-        else:
-            st.info(" Need at least 2 weeks of data for week-over-week comparison")
-
-with analytics_tab2:
-    st.markdown("### Agent Improvement Trends")
-
-    if (
-        "Agent" in filtered_df.columns
-        and "Call Date" in filtered_df.columns
-        and "QA Score" in filtered_df.columns
-    ):
-        # Group by agent and week
-        filtered_df["Week"] = (
-            pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
-        )
-        agent_weekly = (
-            filtered_df.groupby(["Agent", "Week"])
-            .agg({"QA Score": "mean", "Call ID": "count"})
-            .reset_index()
-        )
-        agent_weekly.columns = ["Agent", "Week", "Avg_QA_Score", "Call_Count"]
-
-        # Calculate improvement (first week vs last week for each agent)
-        agent_improvement = []
-        for agent in agent_weekly["Agent"].unique():
-            agent_data = agent_weekly[agent_weekly["Agent"] == agent].sort_values(
-                "Week"
+        if "Call Date" in filtered_df.columns and "QA Score" in filtered_df.columns:
+            # Group by week
+            filtered_df["Week"] = (
+                pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
             )
-            if len(agent_data) > 1:
-                first_score = agent_data.iloc[0]["Avg_QA_Score"]
-                last_score = agent_data.iloc[-1]["Avg_QA_Score"]
-                improvement = last_score - first_score
-                agent_improvement.append(
+            weekly_stats = (
+                filtered_df.groupby("Week")
+                .agg(
                     {
-                        "Agent": agent,
-                        "First Week Score": f"{first_score:.1f}%",
-                        "Last Week Score": f"{last_score:.1f}%",
-                        "Improvement": f"{improvement:+.1f}%",
-                        "Trend": " Improving"
-                        if improvement > 0
-                        else " Declining"
-                        if improvement < 0
-                        else " Stable",
+                        "QA Score": ["mean", "count"],
+                        "Rubric Pass Count": "sum",
+                        "Rubric Fail Count": "sum",
                     }
                 )
-
-        if agent_improvement:
-            improvement_df = pd.DataFrame(agent_improvement)
-            improvement_df = improvement_df.sort_values(
-                "Improvement",
-                key=lambda x: x.str.replace("%", "").str.replace("+", "").astype(float),
-                ascending=False,
-            )
-            st.dataframe(improvement_df, hide_index=True)
-
-            # Show trend chart for selected agents
-            selected_agents_trend = st.multiselect(
-                "Select agents to view trend:",
-                options=filtered_df["Agent"].unique().tolist(),
-                default=filtered_df["Agent"].unique().tolist()[:5]
-                if len(filtered_df["Agent"].unique()) > 5
-                else filtered_df["Agent"].unique().tolist(),
+                .reset_index()
             )
 
-            if selected_agents_trend:
-                fig_agent_trend, ax_agent_trend = plt.subplots(figsize=(14, 6))
-                for agent in selected_agents_trend:
-                    agent_data = agent_weekly[
-                        agent_weekly["Agent"] == agent
-                    ].sort_values("Week")
-                    ax_agent_trend.plot(
-                        agent_data["Week"],
-                        agent_data["Avg_QA_Score"],
+            weekly_stats.columns = [
+                "Week",
+                "Avg_QA_Score",
+                "Call_Count",
+                "Total_Pass",
+                "Total_Fail",
+            ]
+            weekly_stats["Pass_Rate"] = (
+                weekly_stats["Total_Pass"]
+                / (weekly_stats["Total_Pass"] + weekly_stats["Total_Fail"])
+                * 100
+            ).fillna(0)
+            weekly_stats = weekly_stats.sort_values("Week")
+
+            if len(weekly_stats) > 1:
+                # Calculate week-over-week change
+                weekly_stats["WoW_Score_Change"] = weekly_stats["Avg_QA_Score"].diff()
+                weekly_stats["WoW_PassRate_Change"] = weekly_stats["Pass_Rate"].diff()
+                weekly_stats["WoW_CallCount_Change"] = weekly_stats["Call_Count"].diff()
+
+                wow_col1, wow_col2 = st.columns(2)
+
+                with wow_col1:
+                    st.write("**QA Score Week-over-Week**")
+                    fig_wow_score, ax_wow_score = plt.subplots(figsize=(12, 6))
+                    ax_wow_score.plot(
+                        weekly_stats["Week"],
+                        weekly_stats["Avg_QA_Score"],
                         marker="o",
-                        label=agent,
                         linewidth=2,
+                        label="Avg QA Score",
                     )
+                    ax_wow_score.set_xlabel("Week")
+                    ax_wow_score.set_ylabel("Average QA Score (%)")
+                    ax_wow_score.set_title("Week-over-Week QA Score Trend")
+                    ax_wow_score.grid(True, alpha=0.3)
+                    ax_wow_score.legend()
+                    plt.xticks(rotation=45, ha="right")
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_wow_score)
 
-                ax_agent_trend.set_xlabel("Week")
-                ax_agent_trend.set_ylabel("Average QA Score (%)")
-                ax_agent_trend.set_title("Agent Performance Trends Over Time")
-                ax_agent_trend.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
-                ax_agent_trend.grid(True, alpha=0.3)
-                plt.xticks(rotation=45, ha="right")
-                plt.tight_layout()
-                st_pyplot_safe(fig_agent_trend)
-        else:
-            st.info(" Need multiple weeks of data per agent to show improvement trends")
-    else:
-        st.warning(" Missing required columns for agent improvement analysis")
+                    # Show WoW changes
+                    st.write("**Week-over-Week Changes**")
+                    wow_display = weekly_stats[
+                        [
+                            "Week",
+                            "Avg_QA_Score",
+                            "WoW_Score_Change",
+                            "Call_Count",
+                            "WoW_CallCount_Change",
+                        ]
+                    ].copy()
+                    wow_display["WoW_Score_Change"] = wow_display[
+                        "WoW_Score_Change"
+                    ].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+                    wow_display["WoW_CallCount_Change"] = wow_display[
+                        "WoW_CallCount_Change"
+                    ].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
+                    wow_display.columns = [
+                        "Week",
+                        "Avg QA Score",
+                        "WoW Change",
+                        "Call Count",
+                        "WoW Count Change",
+                    ]
+                    st.dataframe(wow_display, hide_index=True)
 
-with analytics_tab3:
-    st.markdown("### Most Common Failure Reasons")
+                with wow_col2:
+                    st.write("**Pass Rate Week-over-Week**")
+                    fig_wow_pass, ax_wow_pass = plt.subplots(figsize=(12, 6))
+                    ax_wow_pass.plot(
+                        weekly_stats["Week"],
+                        weekly_stats["Pass_Rate"],
+                        marker="s",
+                        linewidth=2,
+                        color="green",
+                        label="Pass Rate",
+                    )
+                    ax_wow_pass.set_xlabel("Week")
+                    ax_wow_pass.set_ylabel("Pass Rate (%)")
+                    ax_wow_pass.set_title("Week-over-Week Pass Rate Trend")
+                    ax_wow_pass.grid(True, alpha=0.3)
+                    ax_wow_pass.legend()
+                    plt.xticks(rotation=45, ha="right")
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_wow_pass)
+            else:
+                st.info(" Need at least 2 weeks of data for week-over-week comparison")
 
-    if "Rubric Details" in filtered_df.columns:
-        # Collect all failed rubric codes with their frequencies
-        failure_reasons = {}
-        for idx, row in filtered_df.iterrows():
-            rubric_details = row.get("Rubric Details", {})
-            if isinstance(rubric_details, dict):
-                for code, details in rubric_details.items():
-                    if (
-                        isinstance(details, dict)
-                        and details.get("status", "").lower() == "fail"
-                    ):
-                        if code not in failure_reasons:
-                            failure_reasons[code] = {
-                                "count": 0,
-                                "calls": set(),
-                                "notes": [],
-                            }
-                        failure_reasons[code]["count"] += 1
-                        failure_reasons[code]["calls"].add(row.get("Call ID", ""))
-                        note = details.get("note", "")
-                        if note and note not in failure_reasons[code]["notes"]:
-                            failure_reasons[code]["notes"].append(note)
+    with analytics_tab2:
+        st.markdown("### Agent Improvement Trends")
 
-        if failure_reasons:
-            # Sort by frequency
-            sorted_failures = sorted(
-                failure_reasons.items(), key=lambda x: x[1]["count"], reverse=True
+        if (
+            "Agent" in filtered_df.columns
+            and "Call Date" in filtered_df.columns
+            and "QA Score" in filtered_df.columns
+        ):
+            # Group by agent and week
+            filtered_df["Week"] = (
+                pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
             )
+            agent_weekly = (
+                filtered_df.groupby(["Agent", "Week"])
+                .agg({"QA Score": "mean", "Call ID": "count"})
+                .reset_index()
+            )
+            agent_weekly.columns = ["Agent", "Week", "Avg_QA_Score", "Call_Count"]
 
-            failure_col1, failure_col2 = st.columns([2, 1])
-
-            with failure_col1:
-                st.write("**Top Failure Reasons**")
-                failure_data = []
-                for code, data in sorted_failures[:20]:  # Top 20
-                    failure_data.append(
+            # Calculate improvement (first week vs last week for each agent)
+            agent_improvement = []
+            for agent in agent_weekly["Agent"].unique():
+                agent_data = agent_weekly[agent_weekly["Agent"] == agent].sort_values(
+                    "Week"
+                )
+                if len(agent_data) > 1:
+                    first_score = agent_data.iloc[0]["Avg_QA_Score"]
+                    last_score = agent_data.iloc[-1]["Avg_QA_Score"]
+                    improvement = last_score - first_score
+                    agent_improvement.append(
                         {
-                            "Rubric Code": code,
-                            "Failure Count": data["count"],
-                            "Affected Calls": len(data["calls"]),
-                            "Sample Notes": data["notes"][0][:50] + "..."
-                            if data["notes"]
-                            else "N/A",
+                            "Agent": agent,
+                            "First Week Score": f"{first_score:.1f}%",
+                            "Last Week Score": f"{last_score:.1f}%",
+                            "Improvement": f"{improvement:+.1f}%",
+                            "Trend": " Improving"
+                            if improvement > 0
+                            else " Declining"
+                            if improvement < 0
+                            else " Stable",
                         }
                     )
 
-                failure_df = pd.DataFrame(failure_data)
-                st.dataframe(failure_df, hide_index=True)
+            if agent_improvement:
+                improvement_df = pd.DataFrame(agent_improvement)
+                improvement_df = improvement_df.sort_values(
+                    "Improvement",
+                    key=lambda x: x.str.replace("%", "")
+                    .str.replace("+", "")
+                    .astype(float),
+                    ascending=False,
+                )
+                st.dataframe(improvement_df, hide_index=True)
 
-            with failure_col2:
-                st.write("**Failure Distribution**")
-                top_10_failures = sorted_failures[:10]
-                codes = [item[0] for item in top_10_failures]
-                counts = [item[1]["count"] for item in top_10_failures]
+                # Show trend chart for selected agents
+                selected_agents_trend = st.multiselect(
+                    "Select agents to view trend:",
+                    options=filtered_df["Agent"].unique().tolist(),
+                    default=filtered_df["Agent"].unique().tolist()[:5]
+                    if len(filtered_df["Agent"].unique()) > 5
+                    else filtered_df["Agent"].unique().tolist(),
+                )
 
-                fig_fail, ax_fail = plt.subplots(figsize=(8, 6))
-                ax_fail.barh(range(len(codes)), counts, color="red", alpha=0.7)
-                ax_fail.set_yticks(range(len(codes)))
-                ax_fail.set_yticklabels(codes)
-                ax_fail.set_xlabel("Failure Count")
-                ax_fail.set_title("Top 10 Failure Reasons")
-                plt.tight_layout()
-                st_pyplot_safe(fig_fail)
-
-            # Show detailed view for selected failure code
-            selected_failure_code = st.selectbox(
-                "View details for failure code:",
-                options=[code for code, _ in sorted_failures],
-                help="Select a failure code to see detailed information",
-            )
-
-            if selected_failure_code:
-                failure_info = failure_reasons[selected_failure_code]
-                st.markdown(f"### Failure Code: {selected_failure_code}")
-                st.metric("Total Failures", failure_info["count"])
-                st.metric("Affected Calls", len(failure_info["calls"]))
-
-                if failure_info["notes"]:
-                    st.write("**Sample Failure Notes:**")
-                    for note in failure_info["notes"][:5]:  # Show first 5 notes
-                        st.text_area(
-                            "Note",
-                            value=note,
-                            height=68,
-                            disabled=True,
-                            key=f"note_{hash(note)}",
-                            label_visibility="collapsed",
+                if selected_agents_trend:
+                    fig_agent_trend, ax_agent_trend = plt.subplots(figsize=(14, 6))
+                    for agent in selected_agents_trend:
+                        agent_data = agent_weekly[
+                            agent_weekly["Agent"] == agent
+                        ].sort_values("Week")
+                        ax_agent_trend.plot(
+                            agent_data["Week"],
+                            agent_data["Avg_QA_Score"],
+                            marker="o",
+                            label=agent,
+                            linewidth=2,
                         )
+
+                    ax_agent_trend.set_xlabel("Week")
+                    ax_agent_trend.set_ylabel("Average QA Score (%)")
+                    ax_agent_trend.set_title("Agent Performance Trends Over Time")
+                    ax_agent_trend.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+                    ax_agent_trend.grid(True, alpha=0.3)
+                    plt.xticks(rotation=45, ha="right")
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_agent_trend)
+            else:
+                st.info(
+                    " Need multiple weeks of data per agent to show improvement trends"
+                )
         else:
-            st.info(" No failed rubric items found in the filtered data")
-    else:
-        st.warning(" Rubric Details column not found")
+            st.warning(" Missing required columns for agent improvement analysis")
+
+    with analytics_tab3:
+        st.markdown("### Most Common Failure Reasons")
+
+        if "Rubric Details" in filtered_df.columns:
+            # Collect all failed rubric codes with their frequencies
+            failure_reasons = {}
+            for idx, row in filtered_df.iterrows():
+                rubric_details = row.get("Rubric Details", {})
+                if isinstance(rubric_details, dict):
+                    for code, details in rubric_details.items():
+                        if (
+                            isinstance(details, dict)
+                            and details.get("status", "").lower() == "fail"
+                        ):
+                            if code not in failure_reasons:
+                                failure_reasons[code] = {
+                                    "count": 0,
+                                    "calls": set(),
+                                    "notes": [],
+                                }
+                            failure_reasons[code]["count"] += 1
+                            failure_reasons[code]["calls"].add(row.get("Call ID", ""))
+                            note = details.get("note", "")
+                            if note and note not in failure_reasons[code]["notes"]:
+                                failure_reasons[code]["notes"].append(note)
+
+            if failure_reasons:
+                # Sort by frequency
+                sorted_failures = sorted(
+                    failure_reasons.items(), key=lambda x: x[1]["count"], reverse=True
+                )
+
+                failure_col1, failure_col2 = st.columns([2, 1])
+
+                with failure_col1:
+                    st.write("**Top Failure Reasons**")
+                    failure_data = []
+                    for code, data in sorted_failures[:20]:  # Top 20
+                        failure_data.append(
+                            {
+                                "Rubric Code": code,
+                                "Failure Count": data["count"],
+                                "Affected Calls": len(data["calls"]),
+                                "Sample Notes": data["notes"][0][:50] + "..."
+                                if data["notes"]
+                                else "N/A",
+                            }
+                        )
+
+                    failure_df = pd.DataFrame(failure_data)
+                    st.dataframe(failure_df, hide_index=True)
+
+                with failure_col2:
+                    st.write("**Failure Distribution**")
+                    top_10_failures = sorted_failures[:10]
+                    codes = [item[0] for item in top_10_failures]
+                    counts = [item[1]["count"] for item in top_10_failures]
+
+                    fig_fail, ax_fail = plt.subplots(figsize=(8, 6))
+                    ax_fail.barh(range(len(codes)), counts, color="red", alpha=0.7)
+                    ax_fail.set_yticks(range(len(codes)))
+                    ax_fail.set_yticklabels(codes)
+                    ax_fail.set_xlabel("Failure Count")
+                    ax_fail.set_title("Top 10 Failure Reasons")
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_fail)
+
+                # Show detailed view for selected failure code
+                selected_failure_code = st.selectbox(
+                    "View details for failure code:",
+                    options=[code for code, _ in sorted_failures],
+                    help="Select a failure code to see detailed information",
+                )
+
+                if selected_failure_code:
+                    failure_info = failure_reasons[selected_failure_code]
+                    st.markdown(f"### Failure Code: {selected_failure_code}")
+                    st.metric("Total Failures", failure_info["count"])
+                    st.metric("Affected Calls", len(failure_info["calls"]))
+
+                    if failure_info["notes"]:
+                        st.write("**Sample Failure Notes:**")
+                        for note in failure_info["notes"][:5]:  # Show first 5 notes
+                            st.text_area(
+                                "Note",
+                                value=note,
+                                height=68,
+                                disabled=True,
+                                key=f"note_{hash(note)}",
+                                label_visibility="collapsed",
+                            )
+            else:
+                st.info(" No failed rubric items found in the filtered data")
+        else:
+            st.warning(" Rubric Details column not found")
 
 # --- Export Options ---
 st.markdown("---")
