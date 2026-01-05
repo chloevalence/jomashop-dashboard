@@ -275,7 +275,8 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
         # Convert to DataFrame
         df = pd.DataFrame(call_data)
 
-        # Normalize column names
+        # Normalize column names (case-insensitive mapping)
+        # Priority: call_date > date_raw for Call Date
         column_mapping = {
             "call_date": "Call Date",
             "agent": "Agent",
@@ -285,18 +286,44 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             "rubric_fail_count": "Rubric Fail Count",
         }
 
-        for old_col, new_col in column_mapping.items():
-            if old_col in df.columns and new_col not in df.columns:
-                df.rename(columns={old_col: new_col}, inplace=True)
+        # Create rename dictionary by checking all columns (case-insensitive)
+        rename_dict = {}
+        columns_lower = {col.lower(): col for col in df.columns}
+        
+        for old_col_lower, new_col in column_mapping.items():
+            if old_col_lower in columns_lower:
+                old_col = columns_lower[old_col_lower]
+                # Only rename if the new name doesn't already exist or if it's different
+                if new_col not in df.columns or old_col != new_col:
+                    rename_dict[old_col] = new_col
+        
+        if rename_dict:
+            df.rename(columns=rename_dict, inplace=True)
+        
+        # Handle date_raw as fallback if Call Date doesn't exist yet
+        if "Call Date" not in df.columns:
+            if "date_raw" in df.columns:
+                df["Call Date"] = pd.to_datetime(df["date_raw"], errors="coerce")
+                df = df.drop(columns=["date_raw"])
+            elif "call_date" in df.columns:
+                df["Call Date"] = pd.to_datetime(df["call_date"], errors="coerce")
+                df = df.drop(columns=["call_date"])
 
         # Ensure Call Date is datetime
         if "Call Date" in df.columns:
-            if df["Call Date"].dtype == "object":
+            # Check if it's already datetime, if not convert it
+            if not pd.api.types.is_datetime64_any_dtype(df["Call Date"]):
                 df["Call Date"] = pd.to_datetime(df["Call Date"], errors="coerce")
         else:
-            # Try to extract from other date fields
-            if "date_raw" in df.columns:
-                df["Call Date"] = pd.to_datetime(df["date_raw"], errors="coerce")
+            # Try to extract from other date fields (case-insensitive)
+            date_col = None
+            for col in df.columns:
+                if col.lower() in ["date_raw", "call_date"]:
+                    date_col = col
+                    break
+            
+            if date_col:
+                df["Call Date"] = pd.to_datetime(df[date_col], errors="coerce")
             else:
                 raise ValueError("No date column found in BPO Centers data")
 
@@ -333,19 +360,16 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
 
             df["AHT"] = df.apply(compute_aht, axis=1)
 
-        # Filter to start_date onwards
-        after_mask = df["Call Date"] >= start_date
-        after_data = df[after_mask].copy()
+        # Include ALL data (don't filter by start_date for comprehensive report)
+        # If user wants date filtering, they can specify a different start_date
+        print(f"📊 BPO Centers data loaded:")
+        print(f"   Total calls: {len(df)}")
+        if len(df) > 0 and "Call Date" in df.columns:
+            print(
+                f"   Date range: {df['Call Date'].min()} to {df['Call Date'].max()}"
+            )
 
-        print(f"📊 BPO Centers data filtered:")
-        print(
-            f"   From {start_date.strftime('%Y-%m-%d')} onwards: {len(after_data)} calls"
-        )
-        print(
-            f"   Date range: {after_data['Call Date'].min()} to {after_data['Call Date'].max()}"
-        )
-
-        return after_data
+        return df
 
     except Exception as e:
         raise Exception(f"Error loading BPO Centers data: {e}")
@@ -1979,9 +2003,7 @@ def create_bpo_only_kpi_dashboard(bpo_metrics: Dict) -> plt.Figure:
         ("excellent_pct", "Excellent Scores (90+)", "%", 0, 100),
     ]
 
-    for idx, (metric_key, metric_name, unit, ymin, ymax) in enumerate(
-        metrics_to_show
-    ):
+    for idx, (metric_key, metric_name, unit, ymin, ymax) in enumerate(metrics_to_show):
         row = idx // 3
         col = idx % 3
         ax = axes[row, col]
@@ -2250,7 +2272,11 @@ def generate_pdf_report(
 
         has_previous_data = previous_data is not None and len(previous_data) > 0
         title_text = "Contact Center Performance Report"
-        subtitle_text = "BPO Centers Performance Analysis" if not has_previous_data else "Previous Contact Center vs BPO Centers"
+        subtitle_text = (
+            "BPO Centers Performance Analysis"
+            if not has_previous_data
+            else "Previous Contact Center vs BPO Centers"
+        )
         date_text = (
             f"BPO Centers Data: From {bpo_start_date.strftime('%B %d, %Y')} onwards"
         )
@@ -2307,7 +2333,7 @@ def generate_pdf_report(
 
         has_previous_data = previous_data is not None and len(previous_data) > 0
         summary_lines = ["EXECUTIVE SUMMARY", ""]
-        
+
         if not has_previous_data:
             summary_lines.append("BPO Centers Performance Overview")
             summary_lines.append("")
@@ -2389,42 +2415,39 @@ def generate_pdf_report(
             summary_lines.append(
                 f"  • Total Calls: {previous_metrics.get('total_calls', 'N/A')}"
             )
-        summary_lines.append(
-            f"  • Avg QA Score: {previous_metrics.get('avg_qa_score', 'N/A'):.1f}"
-            if previous_metrics.get("avg_qa_score") is not None
-            else "  • Avg QA Score: N/A"
-        )
-        summary_lines.append(
-            f"  • Median Score: {previous_metrics.get('score_median', 'N/A'):.1f}"
-            if previous_metrics.get("score_median") is not None
-            else "  • Median Score: N/A"
-        )
-        summary_lines.append(
-            f"  • Std Dev: {previous_metrics.get('score_std', 'N/A'):.1f}"
-            if previous_metrics.get("score_std") is not None
-            else "  • Std Dev: N/A"
-        )
-        summary_lines.append(
-            f"  • Pass Rate: {previous_metrics.get('pass_rate', 'N/A'):.1f}%"
-            if previous_metrics.get("pass_rate") is not None
-            else "  • Pass Rate: N/A"
-        )
-        summary_lines.append(
-            f"  • Avg AHT: {previous_metrics.get('avg_aht', 'N/A'):.1f} min"
-            if previous_metrics.get("avg_aht") is not None
-            else "  • Avg AHT: N/A"
-        )
-        summary_lines.append(
-            f"  • Excellent (90+): {previous_metrics.get('excellent_pct', 0):.1f}%"
-            if previous_metrics.get("excellent_pct") is not None
-            else "  • Excellent (90+): N/A"
-        )
-
-        if has_previous_data:
+            summary_lines.append(
+                f"  • Avg QA Score: {previous_metrics.get('avg_qa_score', 'N/A'):.1f}"
+                if previous_metrics.get("avg_qa_score") is not None
+                else "  • Avg QA Score: N/A"
+            )
+            summary_lines.append(
+                f"  • Median Score: {previous_metrics.get('score_median', 'N/A'):.1f}"
+                if previous_metrics.get("score_median") is not None
+                else "  • Median Score: N/A"
+            )
+            summary_lines.append(
+                f"  • Std Dev: {previous_metrics.get('score_std', 'N/A'):.1f}"
+                if previous_metrics.get("score_std") is not None
+                else "  • Std Dev: N/A"
+            )
+            summary_lines.append(
+                f"  • Pass Rate: {previous_metrics.get('pass_rate', 'N/A'):.1f}%"
+                if previous_metrics.get("pass_rate") is not None
+                else "  • Pass Rate: N/A"
+            )
+            summary_lines.append(
+                f"  • Avg AHT: {previous_metrics.get('avg_aht', 'N/A'):.1f} min"
+                if previous_metrics.get("avg_aht") is not None
+                else "  • Avg AHT: N/A"
+            )
+            summary_lines.append(
+                f"  • Excellent (90+): {previous_metrics.get('excellent_pct', 0):.1f}%"
+                if previous_metrics.get("excellent_pct") is not None
+                else "  • Excellent (90+): N/A"
+            )
             summary_lines.append("")
-        summary_lines.append(
-            f"BPO Centers (from {bpo_start_date.strftime('%Y-%m-%d')}):"
-        )
+        
+        summary_lines.append("BPO Centers:")
         summary_lines.append(
             f"  • Total Calls: {bpo_metrics.get('total_calls', 'N/A')}"
         )
@@ -2697,7 +2720,7 @@ def main():
     csv_paths = []
     previous_data = None
     previous_metrics = {}
-    
+
     if args.previous_csv:
         csv_paths = [Path(p) for p in args.previous_csv]
     elif args.previous_csv_dir:
@@ -2729,9 +2752,9 @@ def main():
         else:
             print("   (Skipping previous center data - BPO-only report)")
             previous_metrics = {}
-        
+
         bpo_data = load_bpo_centers_data(Path(args.cache), bpo_start_date)
-        
+
         if not csv_paths:
             print("\n📈 Calculating BPO metrics...")
         else:
