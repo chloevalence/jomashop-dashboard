@@ -3789,7 +3789,7 @@ def load_new_calls_only():
                             # _id and _s3_key are already set in parse_csv_row based on call_id
                             # No need to override them here - each row should have unique _id
                             csv_calls.append(parsed_data)
-            except Exception as e:
+                    except Exception as e:
                         error_msg = (
                             f"Error parsing row {idx + 1} in {filename}: {str(e)}"
                         )
