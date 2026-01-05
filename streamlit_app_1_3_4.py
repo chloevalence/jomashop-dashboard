@@ -2390,51 +2390,15 @@ def load_all_calls_cached(cache_version=0):
 
     # Determine what to load
     if reload_all_triggered:
-        # User explicitly requested full dataset - CLEAR ALL CACHES and load ALL files (may take 10-20 min)
+        # User explicitly requested full dataset - load ALL files (may take 10-20 min)
+        # NOTE: Caches were already cleared at the beginning of this function (lines 2056-2104)
+        # No need to clear again here to avoid duplicate operations
         logger.info(
-            "Reload ALL Data triggered - clearing all caches and loading ALL files from S3 (this will take 10-20 minutes)"
+            "Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)"
         )
-
-        # CRITICAL: Delete disk cache file
-        try:
-            if CACHE_FILE.exists():
-                with cache_file_lock(CACHE_FILE, timeout=5):
-                    CACHE_FILE.unlink()
-                    logger.info(f" Deleted disk cache file: {CACHE_FILE}")
-        except Exception as e:
-            logger.warning(f" Could not delete disk cache: {e}")
-
-        # CRITICAL: Delete S3 cache
-        try:
-            s3_client, s3_bucket = get_s3_client_and_bucket()
-            if s3_client and s3_bucket:
-                s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                logger.info(f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
-        except Exception as e:
-            logger.warning(f" Could not delete S3 cache: {e}")
-
-        # CRITICAL: Clear Streamlit cache
-        try:
-            load_all_calls_cached.clear()
-            logger.info(" Cleared Streamlit cache")
-        except Exception as e:
-            logger.warning(f" Could not clear Streamlit cache: {e}")
-
-        # CRITICAL: Clear session state cache
-        if "_s3_cache_result" in st.session_state:
-            del st.session_state["_s3_cache_result"]
-        if "_s3_cache_timestamp" in st.session_state:
-            del st.session_state["_s3_cache_timestamp"]
-        if "_merged_cache_data" in st.session_state:
-            del st.session_state["_merged_cache_data"]
-        if "_merged_cache_errors" in st.session_state:
-            del st.session_state["_merged_cache_errors"]
-        if "_merged_cache_data_timestamp" in st.session_state:
-            del st.session_state["_merged_cache_data_timestamp"]
-        logger.info(" Cleared session state cache")
-
         max_files = None  # Load all files
-        st.session_state["reload_all_triggered"] = False  # Clear flag after use
+        # Clear flag after use (but keep it until load completes to prevent re-triggering)
+        # We'll clear it at the end of the try block
     elif is_partial and partial_total > 0 and partial_processed < partial_total:
         # Partial cache exists - but limit auto-continuation to prevent crashes
         remaining_files = partial_total - partial_processed
@@ -2654,7 +2618,9 @@ def load_all_calls_cached(cache_version=0):
 
         logger.info(f" Total time: {elapsed:.1f} seconds ({elapsed / 60:.1f} minutes)")
 
+        # Clear reload_all_triggered flag after successful load
         if reload_all_triggered:
+            st.session_state["reload_all_triggered"] = False
             logger.info(
                 f" Returning {len(final_call_data) if final_call_data else 0} calls from FULL dataset"
             )
@@ -2675,7 +2641,20 @@ def load_all_calls_cached(cache_version=0):
         logger.exception(
             f" Error in load_all_calls_cached after {elapsed:.1f} seconds: {e}"
         )
-        # Return empty data with error message
+        
+        # CRITICAL: Clear reload_all_triggered flag even on error to prevent infinite retry loop
+        if reload_all_triggered:
+            st.session_state["reload_all_triggered"] = False
+            logger.error("Reload ALL Data failed - cleared flag to prevent retry loop")
+        
+        # Try to return disk cache if available as fallback
+        if disk_call_data and len(disk_call_data) > 0:
+            logger.warning(
+                f" Reload failed, falling back to disk cache: {len(disk_call_data)} calls"
+            )
+            return disk_call_data, [f"Reload failed: {str(e)}. Using cached data."]
+        
+        # Return empty data with error message only if no fallback available
         return [], [f"Failed to load data: {str(e)}"]
 
 
@@ -5005,34 +4984,61 @@ if is_super_admin():
 if is_super_admin():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Admin: Full Reload")
-    if st.sidebar.button(
-        " Reload ALL Data (Admin Only)",
-        help=" Clears cache and reloads ALL CSV files from S3. This may take 10-20 minutes.",
-        type="secondary",
-    ):
-        if is_super_admin():
-            log_audit_event(
-                current_username,
-                "reload_all_data",
-                "Cleared cache and reloaded all data from S3",
-            )
-        st.cache_data.clear()
-        # Clear persistent disk cache
-        if CACHE_FILE.exists():
+    
+    # Check if reload is already in progress
+    reload_in_progress = st.session_state.get("reload_all_triggered", False)
+    
+    if reload_in_progress:
+        st.sidebar.warning("⏳ Reload in progress... Please wait.")
+        st.sidebar.info("This may take 10-20 minutes. The page will refresh automatically when complete.")
+    else:
+        if st.sidebar.button(
+            " Reload ALL Data (Admin Only)",
+            help=" Clears cache and reloads ALL CSV files from S3. This may take 10-20 minutes.",
+            type="secondary",
+        ):
             try:
-                CACHE_FILE.unlink()
-                logger.info(f" Cleared persistent disk cache: {CACHE_FILE}")
+                if is_super_admin():
+                    log_audit_event(
+                        current_username,
+                        "reload_all_data",
+                        "Cleared cache and reloaded all data from S3",
+                    )
+                
+                # Clear Streamlit cache
+                st.cache_data.clear()
+                
+                # Clear persistent disk cache
+                if CACHE_FILE.exists():
+                    try:
+                        with cache_file_lock(CACHE_FILE, timeout=5):
+                            CACHE_FILE.unlink()
+                            logger.info(f" Cleared persistent disk cache: {CACHE_FILE}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clear disk cache: {e}")
+                
+                # Clear session state
+                if "processed_s3_keys" in st.session_state:
+                    del st.session_state["processed_s3_keys"]
+                
+                # Mark that full dataset should be cached after this reload
+                st.session_state["full_dataset_cached"] = (
+                    False  # Will be set to True after load completes
+                )
+                
+                # Set flag to trigger full load
+                st.session_state["reload_all_triggered"] = True
+                
+                st.success(" Cache cleared! Reloading all data from S3...")
+                logger.info("Reload ALL Data button clicked - starting full reload")
+                st.rerun()
             except Exception as e:
-                logger.warning(f"Failed to clear disk cache: {e}")
-        if "processed_s3_keys" in st.session_state:
-            del st.session_state["processed_s3_keys"]
-        # Mark that full dataset should be cached after this reload
-        st.session_state["full_dataset_cached"] = (
-            False  # Will be set to True after load completes
-        )
-        st.session_state["reload_all_triggered"] = True  # Flag to trigger full load
-        st.success(" Cache cleared! Reloading all data from S3...")
-        st.rerun()
+                logger.exception(f"Error initiating reload: {e}")
+                st.error(f"❌ Failed to initiate reload: {str(e)}")
+                st.info("Please try again or contact support if the issue persists.")
+                # Clear the flag if there was an error
+                if "reload_all_triggered" in st.session_state:
+                    st.session_state["reload_all_triggered"] = False
 
 
 # --- Load Rubric Reference ---
