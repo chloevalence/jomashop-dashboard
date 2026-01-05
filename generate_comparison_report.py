@@ -338,9 +338,27 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             print("⚠️  Warning: No calls with valid dates in BPO Centers data")
             return pd.DataFrame()
 
-        # Normalize agent IDs
+        # Normalize agent IDs - check for both "Agent" and "agent" columns (case-insensitive)
+        agent_col = None
+        for col in df.columns:
+            if col.lower() == "agent":
+                agent_col = col
+                if col != "Agent":
+                    df.rename(columns={col: "Agent"}, inplace=True)
+                break
+        
         if "Agent" in df.columns:
+            # Apply normalization to all agent IDs
+            original_sample = df["Agent"].head(5).tolist() if len(df) > 0 else []
             df["Agent"] = df["Agent"].apply(normalize_agent_id)
+            normalized_sample = df["Agent"].head(5).tolist() if len(df) > 0 else []
+            if original_sample:
+                print(f"   Agent ID normalization: {original_sample[0]} -> {normalized_sample[0]}")
+                # Verify normalization worked
+                unique_agents = df["Agent"].unique()[:10]
+                print(f"   Sample normalized agent IDs: {', '.join(map(str, unique_agents))}")
+        else:
+            print("   ⚠️  Warning: No 'Agent' column found in data")
 
         # Calculate AHT from speaking_time_per_speaker if available
         if "AHT" not in df.columns and "speaking_time_per_speaker" in df.columns:
@@ -2307,7 +2325,9 @@ def create_top_call_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
     fig.suptitle("Top 10 Call Reasons", fontsize=14, fontweight="bold")
 
     # Left: Count chart
-    bars1 = ax1.barh(reason_counts.index, reason_counts.values, color="#3498DB", alpha=0.7)
+    bars1 = ax1.barh(
+        reason_counts.index, reason_counts.values, color="#3498DB", alpha=0.7
+    )
     ax1.set_xlabel("Number of Calls", fontsize=11, fontweight="bold")
     ax1.set_title("Call Count", fontsize=12, fontweight="bold")
     ax1.grid(True, alpha=0.3, axis="x")
@@ -2404,7 +2424,9 @@ def create_top_call_outcomes_chart(bpo_df: pd.DataFrame) -> plt.Figure:
     fig.suptitle("Top 10 Call Outcomes", fontsize=14, fontweight="bold")
 
     # Left: Count chart
-    bars1 = ax1.barh(outcome_counts.index, outcome_counts.values, color="#E74C3C", alpha=0.7)
+    bars1 = ax1.barh(
+        outcome_counts.index, outcome_counts.values, color="#E74C3C", alpha=0.7
+    )
     ax1.set_xlabel("Number of Calls", fontsize=11, fontweight="bold")
     ax1.set_title("Call Count", fontsize=12, fontweight="bold")
     ax1.grid(True, alpha=0.3, axis="x")
@@ -2511,7 +2533,9 @@ def create_top_products_chart(bpo_df: pd.DataFrame) -> plt.Figure:
     fig.suptitle("Top 10 Products Discussed", fontsize=14, fontweight="bold")
 
     # Left: Count chart
-    bars1 = ax1.barh(product_counts.index, product_counts.values, color="#27AE60", alpha=0.7)
+    bars1 = ax1.barh(
+        product_counts.index, product_counts.values, color="#27AE60", alpha=0.7
+    )
     ax1.set_xlabel("Number of Mentions", fontsize=11, fontweight="bold")
     ax1.set_title("Mention Count", fontsize=12, fontweight="bold")
     ax1.grid(True, alpha=0.3, axis="x")
