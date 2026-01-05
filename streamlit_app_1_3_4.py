@@ -2179,8 +2179,8 @@ def load_all_calls_cached(cache_version=0):
                         if e.response.get("Error", {}).get("Code") != "NoSuchKey":
                             logger.warning(f" Could not delete S3 cache: {e}")
             else:
-                            logger.info(" S3 cache does not exist (already deleted)")
-        except Exception as e:
+                        logger.info(" S3 cache does not exist (already deleted)")
+            except Exception as e:
                 logger.warning(f" Could not delete S3 cache: {e}")
 
             # Clear Streamlit cache
