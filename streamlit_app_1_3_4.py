@@ -5216,8 +5216,8 @@ if is_super_admin():
                 
                 st.success(" Cache cleared! Reloading all data from S3...")
                 logger.info("Reload ALL Data button clicked - starting full reload")
-        st.rerun()
-            except Exception as e:
+                st.rerun()
+        except Exception as e:
                 logger.exception(f"Error initiating reload: {e}")
                 st.error(f"❌ Failed to initiate reload: {str(e)}")
                 st.info("Please try again or contact support if the issue persists.")
