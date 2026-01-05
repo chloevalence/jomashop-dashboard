@@ -2581,17 +2581,17 @@ def load_all_calls_cached(cache_version=0):
             # Migrate old cache format to new format
             if streamlit_call_data:
                 streamlit_call_data = migrate_old_cache_format(streamlit_call_data)
-        
-        # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
-        streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
+
+            # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
+            streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
             disk_cache_count = len(disk_call_data) if disk_call_data else 0
             logger.info(
                 f" Cache Comparison (after load): Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files"
             )
-        
-        # Determine which cache is better (more recent or more complete)
-        use_streamlit_cache = False
-        use_disk_cache = False
+
+            # Determine which cache is better (more recent or more complete)
+            use_streamlit_cache = False
+            use_disk_cache = False
         
         if streamlit_call_data and len(streamlit_call_data) > 0:
             # Streamlit cache has data - check if it's better than disk cache
