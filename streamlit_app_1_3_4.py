@@ -9200,8 +9200,8 @@ else:
                         )
                         plt.tight_layout()
                         st_pyplot_safe(fig_aht_compare)
-        else:
-            st.info("No agent data available for trend analysis")
+                    else:
+                        st.info("No agent data available for trend analysis")
 
 # --- QA Score Distribution and Label Distribution ---
 with st.expander("Score & Label Distribution Analysis", expanded=False):
