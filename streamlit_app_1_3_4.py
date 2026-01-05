@@ -5191,9 +5191,9 @@ if is_super_admin():
                     )
                 
                 # Clear Streamlit cache
-        st.cache_data.clear()
+                st.cache_data.clear()
                 
-        # Clear persistent disk cache
+                # Clear persistent disk cache
         if CACHE_FILE.exists():
             try:
                         with cache_file_lock(CACHE_FILE, timeout=5):
