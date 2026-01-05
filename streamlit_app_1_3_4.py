@@ -2109,34 +2109,34 @@ def load_all_calls_cached(cache_version=0):
         s3_timestamp_key = "_s3_cache_timestamp"
         if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
             cached_timestamp = st.session_state[s3_timestamp_key]
-        # Use cached result if timestamp matches (cache is still valid)
-        # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
-        cached_result = st.session_state[s3_cache_key]
-        if (
-            cached_result is not None
-            and isinstance(cached_result, tuple)
-            and len(cached_result) >= 1
-            and cached_result[0] is not None
-        ):
-            s3_cache_result = cached_result
-            s3_cache_timestamp = cached_timestamp
-            logger.debug(
-                f" Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
-            )
-        else:
-            # Session state contains invalid data - clear it and reload from S3
-            logger.warning(
-                "Session state contains invalid S3 cache data, clearing and reloading from S3"
-            )
-            if s3_cache_key in st.session_state:
-                del st.session_state[s3_cache_key]
-            if s3_timestamp_key in st.session_state:
-                del st.session_state[s3_timestamp_key]
-            s3_cache_result = None
-            s3_cache_timestamp = None
+            # Use cached result if timestamp matches (cache is still valid)
+            # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
+            cached_result = st.session_state[s3_cache_key]
+            if (
+                cached_result is not None
+                and isinstance(cached_result, tuple)
+                and len(cached_result) >= 1
+                and cached_result[0] is not None
+            ):
+                s3_cache_result = cached_result
+                s3_cache_timestamp = cached_timestamp
+                logger.debug(
+                    f" Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
+                )
+            else:
+                # Session state contains invalid data - clear it and reload from S3
+                logger.warning(
+                    "Session state contains invalid S3 cache data, clearing and reloading from S3"
+                )
+                if s3_cache_key in st.session_state:
+                    del st.session_state[s3_cache_key]
+                if s3_timestamp_key in st.session_state:
+                    del st.session_state[s3_timestamp_key]
+                s3_cache_result = None
+                s3_cache_timestamp = None
         else:
             # Load from S3 (only if not in session state)
-        s3_client, s3_bucket = get_s3_client_and_bucket()
+            s3_client, s3_bucket = get_s3_client_and_bucket()
         if s3_client and s3_bucket:
             try:
                 response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
