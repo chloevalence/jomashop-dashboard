@@ -2430,25 +2430,25 @@ def load_all_calls_cached(cache_version=0):
                         partial_total = cached_data.get("total", 0)
                 except Exception as e:
                     logger.warning(f" Failed to read cache metadata: {e}")
-        
-        # Log cache comparison immediately after loading disk cache
+
+            # Log cache comparison immediately after loading disk cache
             logger.info(
                 f" Cache Comparison: Disk cache = {cache_count} files (partial={is_partial}, {partial_processed}/{partial_total if partial_total > 0 else '?'} processed)"
             )
-        
-        # CRITICAL: Only return early if cache is COMPLETE (not partial)
-        # If partial, continue loading to complete it with incremental saves
-        if not reload_all_triggered:
-            if cache_count >= 100:  # Use cache if we have 100+ calls
-                if is_partial:
+
+            # CRITICAL: Only return early if cache is COMPLETE (not partial)
+            # If partial, continue loading to complete it with incremental saves
+            if not reload_all_triggered:
+                if cache_count >= 100:  # Use cache if we have 100+ calls
+                    if is_partial:
                         progress_pct = (
-                        (partial_processed * 100 // partial_total)
-                        if partial_total > 0
-                        else 0
-                    )
-                    logger.info(
-                        f" Found PARTIAL cache: {cache_count} calls ({progress_pct}% complete)"
-                    )
+                            (partial_processed * 100 // partial_total)
+                            if partial_total > 0
+                            else 0
+                        )
+                        logger.info(
+                            f" Found PARTIAL cache: {cache_count} calls ({progress_pct}% complete)"
+                        )
                     logger.info(
                         "Will continue loading remaining files from S3 with incremental saves"
                     )
