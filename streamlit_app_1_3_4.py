@@ -3371,9 +3371,8 @@ def load_new_calls_only():
                     try:
                         parsed_data = parse_csv_row(row, filename)
                         if parsed_data:
-                            # Store normalized key for consistent comparison
-                            parsed_data["_id"] = normalized_key
-                            parsed_data["_s3_key"] = normalized_key
+                            # _id and _s3_key are already set in parse_csv_row based on call_id
+                            # No need to override them here - each row should have unique _id
                             csv_calls.append(parsed_data)
                     except Exception as e:
                         error_msg = (
