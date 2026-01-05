@@ -8986,12 +8986,12 @@ if user_agent_id:
                 # AHT Trend
                 st.write("**My AHT Trend vs Team**")
                 if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
-                agent_aht_daily = (
-                    agent_data.groupby(agent_data["Call Date"].dt.date)
-                    .agg(Avg_AHT=("Call Duration (min)", "mean"))
-                    .reset_index()
-                )
-                agent_aht_daily.columns = ["Call Date", "My_AHT"]
+                    agent_aht_daily = (
+                        agent_data.groupby(agent_data["Call Date"].dt.date)
+                        .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                        .reset_index()
+                    )
+                    agent_aht_daily.columns = ["Call Date", "My_AHT"]
 
                 team_aht_daily = (
                     overall_df.groupby(overall_df["Call Date"].dt.date)
