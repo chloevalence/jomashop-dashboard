@@ -1,16 +1,14 @@
 import streamlit as st
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
-import seaborn as sns
 import io
 from datetime import datetime, timedelta, date
 from pandas import ExcelWriter
-from matplotlib.backends.backend_pdf import PdfPages
 import streamlit_authenticator as stauth
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 import json
-from xlsxwriter.utility import xl_rowcol_to_cell
 import time
 import re
 import os
@@ -18,14 +16,11 @@ import sys
 import logging
 import shutil
 from pathlib import Path
-from collections import defaultdict
 from contextlib import contextmanager
 from pdf_parser import parse_pdf_from_bytes
 from utils import (
     log_audit_event,
     check_session_timeout,
-    load_metrics,
-    track_feature_usage,
 )
 import warnings
 
@@ -49,7 +44,7 @@ DEBUG_LOG_FILE = PROJECT_ROOT / ".cursor" / "debug.log"
 # --- Create .cursor directory for debug logging ---
 try:
     DEBUG_LOG_FILE.parent.mkdir(exist_ok=True)
-except Exception as e:
+except Exception:
     # Silently fail - debug logging is optional
     pass
 
@@ -81,8 +76,6 @@ warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib.categ
 logging.getLogger("matplotlib.category").setLevel(logging.WARNING)
 
 # Configure matplotlib to automatically close figures and suppress memory warnings
-import matplotlib
-
 matplotlib.rcParams["figure.max_open_warning"] = (
     0  # Suppress the "More than 20 figures" warning
 )
@@ -93,8 +86,6 @@ except Exception:
     pass  # Backend may already be set, ignore
 
 # Suppress inotify errors (file watcher limit reached) - these are non-critical
-import warnings
-
 warnings.filterwarnings("ignore", message=".*inotify.*")
 warnings.filterwarnings("ignore", message=".*fileWatcherType.*")
 
@@ -280,7 +271,7 @@ def load_metrics():
                     metrics_data = json.load(f)
                     if not isinstance(metrics_data, dict):
                         logger.warning(
-                            f" Metrics file contains invalid data structure: "
+                            "Metrics file contains invalid data structure: "
                             f"{type(metrics_data).__name__}, expected dict"
                         )
                         return {
@@ -319,7 +310,7 @@ def save_metrics(metrics):
         with cache_file_lock(metrics_file, timeout=1):
             atomic_write_json(metrics_file, metrics)
     except LockTimeoutError:
-        logger.warning(f" Could not acquire lock for metrics file, skipping save")
+        logger.warning("Could not acquire lock for metrics file, skipping save")
     except Exception as e:
         logger.error(f"Failed to save metrics: {e}")
 
@@ -430,7 +421,7 @@ except KeyError as e:
     )
     st.error(f"**Current working directory:** `{os.getcwd()}`")
     st.error(
-        f"**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
+        "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
     )
     st.error(
         f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
@@ -502,9 +493,6 @@ def load_all_calls_internal(max_files=None):
 
         # Sort by modification date (most recent first)
         pdf_keys_with_dates.sort(key=lambda x: x["last_modified"], reverse=True)
-
-        # Store total count before limiting
-        total_pdfs = len(pdf_keys_with_dates)
 
         # Limit the number of files if specified (most recent files first)
         if max_files and max_files > 0:
@@ -780,7 +768,7 @@ def load_all_calls_internal(max_files=None):
                 else datetime.min,
                 reverse=True,
             )
-        except:
+        except Exception:
             pass  # If sorting fails, just return unsorted
 
         # Track processed S3 keys in session state (for smart refresh)
@@ -1445,7 +1433,7 @@ def load_all_calls_cached(cache_version=0):
         else:
             # Session state contains invalid data - clear it and reload from S3
             logger.warning(
-                f" Session state contains invalid S3 cache data, clearing and reloading from S3"
+                "Session state contains invalid S3 cache data, clearing and reloading from S3"
             )
             if s3_cache_key in st.session_state:
                 del st.session_state[s3_cache_key]
@@ -1601,7 +1589,6 @@ def load_all_calls_cached(cache_version=0):
     # The app keeps restarting during loads, losing progress. We MUST use partial caches.
     disk_call_data = None
     disk_errors = None
-    disk_cache_timestamp = None
     is_partial = False
     partial_processed = 0
     partial_total = 0
@@ -1621,7 +1608,6 @@ def load_all_calls_cached(cache_version=0):
             try:
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     cached_data = json.load(f)
-                    disk_cache_timestamp = cached_data.get("timestamp", None)
                     is_partial = cached_data.get("partial", False)
                     partial_processed = cached_data.get("processed", 0)
                     partial_total = cached_data.get("total", 0)
@@ -1647,7 +1633,7 @@ def load_all_calls_cached(cache_version=0):
                         f" Found PARTIAL cache: {cache_count} calls ({progress_pct}% complete)"
                     )
                     logger.info(
-                        f" Will continue loading remaining files from S3 with incremental saves"
+                        "Will continue loading remaining files from S3 with incremental saves"
                     )
                     # Don't return early - continue to load remaining files
                 else:
@@ -1767,7 +1753,7 @@ def load_all_calls_cached(cache_version=0):
     if reload_all_triggered:
         # User explicitly requested full dataset - load ALL files (may take 10-20 min)
         logger.info(
-            f" Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)"
+            "Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)"
         )
         max_files = None  # Load all files
         st.session_state["reload_all_triggered"] = False  # Clear flag after use
@@ -1833,7 +1819,7 @@ def load_all_calls_cached(cache_version=0):
             return disk_call_data, disk_errors if disk_errors else []
     else:
         # No substantial cache - load ALL files from S3
-        logger.info(f" No substantial cache found - loading ALL files from S3")
+        logger.info("No substantial cache found - loading ALL files from S3")
         max_files = None  # Load all files
 
     try:
@@ -1883,7 +1869,7 @@ def load_all_calls_cached(cache_version=0):
                     elif len(streamlit_call_data) == len(disk_call_data):
                         # Same size - prefer disk cache as source of truth (it persists across restarts)
                         logger.info(
-                            f" Caches match - using disk cache as source of truth (persists across restarts)"
+                            "Caches match - using disk cache as source of truth (persists across restarts)"
                         )
                         use_disk_cache = True
                 else:
@@ -1895,9 +1881,7 @@ def load_all_calls_cached(cache_version=0):
                 logger.info(
                     f" Loaded {len(streamlit_call_data)} calls from S3 (took {load_duration:.1f}s)"
                 )
-                logger.info(
-                    f" CRITICAL: Saving to disk cache to prevent loss on restart"
-                )
+                logger.info("CRITICAL: Saving to disk cache to prevent loss on restart")
                 use_streamlit_cache = True
                 # Force save to disk immediately for slow loads (they're fresh data from S3)
                 if streamlit_call_data:
@@ -1909,7 +1893,7 @@ def load_all_calls_cached(cache_version=0):
                             f" Failed to save S3-loaded data to disk: {save_error}"
                         )
                         logger.warning(
-                            f" Data was successfully loaded but not saved - will be lost on restart"
+                            "Data was successfully loaded but not saved - will be lost on restart"
                         )
                         # Continue anyway - return the successfully loaded data
                 elif disk_call_data and len(disk_call_data) > 0:
@@ -1935,7 +1919,7 @@ def load_all_calls_cached(cache_version=0):
                 if load_duration >= 2.0:
                     # Already saved above for slow loads, just log
                     logger.info(
-                        f" Streamlit cache data already saved to disk (from S3 load)"
+                        "Streamlit cache data already saved to disk (from S3 load)"
                     )
                 else:
                     # Fast load = from Streamlit cache, save it to disk now
@@ -1950,7 +1934,7 @@ def load_all_calls_cached(cache_version=0):
                             f" Failed to save Streamlit cache to disk: {save_error}"
                         )
                         logger.warning(
-                            f" Data is available but not saved - will be lost on restart"
+                            "Data is available but not saved - will be lost on restart"
                         )
                         # Continue anyway - return the successfully loaded data
         elif use_disk_cache:
@@ -1963,9 +1947,9 @@ def load_all_calls_cached(cache_version=0):
                     logger.info(
                         f" Deduplicated disk cache: {original_count} → {len(final_call_data)} unique calls"
                     )
-            logger.info(
-                f" Using disk cache - populating Streamlit's in-memory cache for faster access"
-            )
+                logger.info(
+                    "Using disk cache - populating Streamlit's in-memory cache for faster access"
+                )
         else:
             # No cache available - use what we loaded
             final_call_data, final_errors = streamlit_call_data, streamlit_errors
@@ -1981,9 +1965,9 @@ def load_all_calls_cached(cache_version=0):
                 try:
                     save_cached_data_to_disk(final_call_data, final_errors)
                 except Exception as save_error:
-                    logger.error(f" Failed to save fresh load to disk: {save_error}")
+                    logger.error(f"Failed to save fresh load to disk: {save_error}")
                     logger.warning(
-                        f" Data was successfully loaded but not saved - will be lost on restart"
+                        "Data was successfully loaded but not saved - will be lost on restart"
                     )
                     # Continue anyway - return the successfully loaded data
 
@@ -2460,7 +2444,6 @@ def calculate_trend_slope(dates, scores):
         Slope value (positive = improving, negative = declining)
     """
     import numpy as np
-    from datetime import timedelta
     from numpy.linalg import LinAlgError
 
     if len(dates) < 2:
@@ -2549,9 +2532,6 @@ def load_new_calls_only():
         existing_calls = (
             disk_result[0] if (disk_result and disk_result[0] is not None) else []
         )
-        existing_errors = (
-            disk_result[1] if (disk_result and disk_result[1] is not None) else []
-        )
 
         # Extract existing_cache_keys once for duplicate checking
         existing_cache_keys = set()
@@ -2569,7 +2549,7 @@ def load_new_calls_only():
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     cached_data = json.load(f)
                 last_save_time = cached_data.get("last_save_time", 0)
-            except:
+            except Exception:
                 pass
 
         # Also check session state as fallback for last_save_time
@@ -2749,7 +2729,7 @@ def load_new_calls_only():
             )
         if is_truncated:
             logger.error(
-                f" CRITICAL: Last page had IsTruncated=True! Pagination may be incomplete - expected more pages!"
+                "CRITICAL: Last page had IsTruncated=True! Pagination may be incomplete - expected more pages!"
             )
 
         # Additional check: If cache has files and S3 listing found same count, but user expects more files,
@@ -2759,13 +2739,13 @@ def load_new_calls_only():
             last_page_count = files_per_page[-1]
             if last_page_count == 1000 and not is_truncated:
                 logger.warning(
-                    f" WARNING: Last page had exactly 1000 files but IsTruncated=False!"
+                    "WARNING: Last page had exactly 1000 files but IsTruncated=False!"
                 )
                 logger.warning(
-                    f" This is unusual - typically a full page (1000 files) means more pages exist."
+                    "This is unusual - typically a full page (1000 files) means more pages exist."
                 )
                 logger.warning(
-                    f" If you know there are more files in S3, they may be in a different prefix/folder."
+                    "If you know there are more files in S3, they may be in a different prefix/folder."
                 )
 
         # Exhaustive key comparison - compare ALL cache keys against ALL S3 keys
@@ -2812,7 +2792,7 @@ def load_new_calls_only():
                 f" Cache hit rate is only {cache_hit_rate:.1f}% - some cached keys not found in S3"
             )
             logger.warning(
-                f" This could indicate key normalization issues or orphaned cache entries"
+                "This could indicate key normalization issues or orphaned cache entries"
             )
             if cache_keys_not_in_s3 > 0:
                 logger.warning(
@@ -2842,14 +2822,14 @@ def load_new_calls_only():
                 f" CRITICAL: Cache has MORE keys ({len(processed_keys_normalized)}) than S3 ({total_s3_files})!"
             )
             logger.error(
-                f" This suggests S3 listing is incomplete or cache has orphaned entries."
+                "This suggests S3 listing is incomplete or cache has orphaned entries."
             )
             logger.error(
                 f" Difference: {len(processed_keys_normalized) - total_s3_files} keys"
             )
             logger.error(f" S3 prefix used: '{s3_prefix}' (empty means root of bucket)")
             logger.error(
-                f" If you know there are more files, they may be in a different prefix/folder."
+                "If you know there are more files, they may be in a different prefix/folder."
             )
             # Don't exit early - S3 listing appears incomplete, continue to process
         elif len(processed_keys_normalized) == total_s3_files and total_s3_files > 0:
@@ -2866,24 +2846,24 @@ def load_new_calls_only():
                 )  # No new files - verified complete match for current prefix
             elif actual_matches == total_s3_files and len(new_pdf_keys) > 0:
                 logger.warning(
-                    f" WARNING: All keys match, but {len(new_pdf_keys)} files marked as new!"
+                    f"WARNING: All keys match, but {len(new_pdf_keys)} files marked as new!"
                 )
                 logger.warning(
-                    f" This indicates a logic error - proceeding to process new files"
+                    "This indicates a logic error - proceeding to process new files"
                 )
             else:
                 logger.warning(
-                    f" Cache count ({len(processed_keys_normalized)}) matches S3 count ({total_s3_files}), but only {actual_matches} keys match!"
+                    f"Cache count ({len(processed_keys_normalized)}) matches S3 count ({total_s3_files}), but only {actual_matches} keys match!"
                 )
                 logger.warning(
-                    f" This suggests key normalization issues - proceeding to process new files"
+                    "This suggests key normalization issues - proceeding to process new files"
                 )
         elif not new_pdf_keys and len(processed_keys_normalized) < total_s3_files:
             # S3 has more files than cache, but no new files found - this shouldn't happen
             logger.warning(
                 f" WARNING: S3 has {total_s3_files} files, cache has {len(processed_keys_normalized)}, but no new files found!"
             )
-            logger.warning(f" This suggests a comparison issue - proceeding anyway")
+            logger.warning("This suggests a comparison issue - proceeding anyway")
 
         # Final early exit check (only if validation passed above)
         if (
@@ -2899,7 +2879,7 @@ def load_new_calls_only():
         # Additional check: if processed count matches total, all should be cached
         if len(processed_keys_normalized) >= total_s3_files and total_s3_files > 0:
             logger.warning(
-                f" WARNING: Cached keys ({len(processed_keys_normalized)}) >= Total S3 files ({total_s3_files})"
+                f"WARNING: Cached keys ({len(processed_keys_normalized)}) >= Total S3 files ({total_s3_files})"
             )
             logger.warning(
                 f" But {len(new_pdf_keys)} files are marked as new. This indicates a key format mismatch."
@@ -3232,7 +3212,7 @@ def load_new_calls_only():
                             f" CRITICAL: All incremental save retries failed. Last error: {save_error}"
                         )
                         logger.error(
-                            f" Processing will continue, but data may be lost if app crashes"
+                            "Processing will continue, but data may be lost if app crashes"
                         )
                 except Exception as e:
                     logger.error(f" Unexpected error during incremental save: {e}")
@@ -3324,7 +3304,7 @@ if auth_status is None:
             if st.button("**Try Again After Refreshing**", type="primary"):
                 st.rerun()
         else:
-            st.error(f" **Authentication Error**")
+            st.error("**Authentication Error**")
             st.error(f"Error: {str(e)}")
             logger.exception("Authentication error")
         st.stop()
@@ -3351,7 +3331,7 @@ else:
 # Check for session timeout (30 minutes of inactivity)
 SESSION_TIMEOUT_MINUTES = 30
 if check_session_timeout(st.session_state.last_activity, SESSION_TIMEOUT_MINUTES):
-    st.warning("⏰ Your session has expired due to inactivity. Please log in again.")
+    st.warning("Your session has expired due to inactivity. Please log in again.")
     st.session_state.authentication_status = None
     st.session_state.last_activity = 0
     st.rerun()
@@ -3361,7 +3341,7 @@ time_remaining = SESSION_TIMEOUT_MINUTES - (
     (time.time() - st.session_state.last_activity) / 60
 )
 if 0 < time_remaining <= 5:
-    st.sidebar.warning(f"⏰ Session expires in {int(time_remaining)} minute(s)")
+    st.sidebar.warning(f"Session expires in {int(time_remaining)} minute(s)")
 
 # Audit logging (admin only - Shannon and Chloe)
 if current_username and current_username.lower() in ["chloe", "shannon"]:
@@ -3453,11 +3433,11 @@ st.sidebar.success(f"Welcome, {current_name} 👋")
 if is_anonymous_user:
     st.sidebar.info(" Anonymous View: De-identified Data")
 elif user_agent_id:
-    st.sidebar.info(f"👤 Agent View: {user_agent_id}")
+    st.sidebar.info(f"Agent View: {user_agent_id}")
 elif is_regular_admin():
-    st.sidebar.info("👑 Admin View: All Data")
+    st.sidebar.info("Admin View: All Data")
 else:
-    st.sidebar.info("👤 User View: All Data")
+    st.sidebar.info("User View: All Data")
 
 # Logout button
 st.sidebar.markdown("---")
@@ -3608,7 +3588,7 @@ def check_for_new_pdfs_lightweight():
             )
         if is_truncated:
             logger.error(
-                f" CRITICAL: Last page had IsTruncated=True! Pagination may be incomplete - expected more pages!"
+                "CRITICAL: Last page had IsTruncated=True! Pagination may be incomplete - expected more pages!"
             )
 
         # Validate S3 listing completeness
@@ -3617,7 +3597,7 @@ def check_for_new_pdfs_lightweight():
                 f" CRITICAL: Cache has MORE keys ({len(processed_keys_normalized)}) than S3 ({total_pdfs})!"
             )
             logger.error(
-                f" This suggests S3 listing is incomplete or cache has orphaned entries."
+                "This suggests S3 listing is incomplete or cache has orphaned entries."
             )
 
         logger.info(
@@ -3684,7 +3664,7 @@ else:
 if st.session_state.new_pdfs_notification_count > 0:
     st.sidebar.markdown("---")
     st.sidebar.success(
-        f"🆕 **{st.session_state.new_pdfs_notification_count} new PDF(s) available!**"
+        f"**{st.session_state.new_pdfs_notification_count} new PDF(s) available!**"
     )
     st.sidebar.caption("Click 'Refresh New Data' below to load them")
 
@@ -3873,7 +3853,7 @@ if is_super_admin():
                     f" CRITICAL: Failed to mark cache as complete: {save_error}"
                 )
                 logger.error(
-                    f" Cache may still be marked as partial - this could cause issues on next refresh"
+                    "Cache may still be marked as partial - this could cause issues on next refresh"
                 )
                 # Continue anyway - verification will catch this
 
@@ -3888,7 +3868,7 @@ if is_super_admin():
                     disk_cache_count = len(disk_result_verify[0])
                 else:
                     logger.warning(
-                        f" Verification load returned None - checking previous disk_result as fallback"
+                        "Verification load returned None - checking previous disk_result as fallback"
                     )
                     # CRITICAL FIX: Check if disk_result is None before using as fallback
                     if disk_result is not None and disk_result[0] is not None:
@@ -3896,7 +3876,7 @@ if is_super_admin():
                         disk_cache_count = len(disk_result[0])
                     else:
                         logger.error(
-                            f" Both verification load and disk_result are None - using empty lists as fallback"
+                            "Both verification load and disk_result are None - using empty lists as fallback"
                         )
                         disk_result_verify = ([], [])
                         disk_cache_count = 0
@@ -3904,7 +3884,7 @@ if is_super_admin():
             except Exception as verify_error:
                 logger.error(f" CRITICAL: Verification load failed: {verify_error}")
                 logger.error(
-                    f" Checking previous disk_result as fallback for verification"
+                    "Checking previous disk_result as fallback for verification"
                 )
                 verification_failed = True
                 # CRITICAL FIX: Check if disk_result is None before using as fallback
@@ -3914,7 +3894,7 @@ if is_super_admin():
                     verification_failed = False  # We have valid fallback data
                 else:
                     logger.error(
-                        f" Both verification load and disk_result are None - using empty lists as fallback"
+                        "Both verification load and disk_result are None - using empty lists as fallback"
                     )
                     disk_result_verify = ([], [])
                     disk_cache_count = 0
@@ -3929,9 +3909,9 @@ if is_super_admin():
                     or (verification_failed and disk_result_verify == ([], []))
                 ):
                     logger.error(
-                        f" CRITICAL: disk_result_verify is None or has None data - cannot proceed with merge"
+                        "CRITICAL: disk_result_verify is None or has None data - cannot proceed with merge"
                     )
-                    logger.error(f" Using all_calls_merged as fallback")
+                    logger.error("Using all_calls_merged as fallback")
                     # Use all_calls_merged as fallback since verification failed
                     st.session_state["_merged_cache_data"] = all_calls_merged
                     st.session_state["_merged_cache_errors"] = (
@@ -4042,7 +4022,7 @@ if is_super_admin():
                                 f"CRITICAL: Failed to save merged cache: {merge_save_error}"
                             )
                             logger.error(
-                                f"Using disk cache without Streamlit cache merge - some data may be lost"
+                                "Using disk cache without Streamlit cache merge - some data may be lost"
                             )
 
                         # CRITICAL FIX: Only store merged_data in session state if save succeeded
@@ -4096,7 +4076,7 @@ if is_super_admin():
                                 )
                             else:
                                 logger.error(
-                                    f"CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback"
+                                    "CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback"
                                 )
                                 st.session_state["_merged_cache_data"] = (
                                     all_calls_merged
@@ -4111,7 +4091,7 @@ if is_super_admin():
                     else:
                         # disk_result_verify[0] is None - use previous_streamlit_cache only
                         logger.warning(
-                            f" disk_result_verify[0] is None - using previous_streamlit_cache only"
+                            "disk_result_verify[0] is None - using previous_streamlit_cache only"
                         )
                         st.session_state["_merged_cache_data"] = (
                             previous_streamlit_cache
@@ -4128,7 +4108,7 @@ if is_super_admin():
                 else:
                     # No previous Streamlit cache - just use disk cache
                     logger.info(
-                        f" No previous Streamlit cache to merge - using disk cache ({disk_cache_count} calls)"
+                        f"No previous Streamlit cache to merge - using disk cache ({disk_cache_count} calls)"
                     )
                     # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
                     # Don't use potentially corrupted cache data when verification fails
@@ -4155,7 +4135,7 @@ if is_super_admin():
                         )
                     else:
                         logger.error(
-                            f" CRITICAL: disk_result_verify is invalid (None or failed verification) - using all_calls_merged as fallback"
+                            "CRITICAL: disk_result_verify is invalid (None or failed verification) - using all_calls_merged as fallback"
                         )
                         st.session_state["_merged_cache_data"] = all_calls_merged
                         st.session_state["_merged_cache_errors"] = (
@@ -4176,7 +4156,7 @@ if is_super_admin():
                     f" Disk cache saved ({disk_cache_count} calls) - Streamlit cache will update with latest data on next access"
                 )
                 logger.info(
-                    f" Merged data stored in session state - will be cached automatically when load_all_calls_cached() is called"
+                    "Merged data stored in session state - will be cached automatically when load_all_calls_cached() is called"
                 )
 
                 # REMOVED: load_all_calls_cached.clear() - causes crashes during refresh/rerun
@@ -4207,11 +4187,11 @@ if is_super_admin():
                         new_errors = disk_result_verify[1]
                 else:
                     logger.error(
-                        f" CRITICAL: Verification failed and no valid disk cache available - data may not be persisted"
+                        "CRITICAL: Verification failed and no valid disk cache available - data may not be persisted"
                     )
                     # Still use all_calls_merged as last resort, but log the risk
                     logger.warning(
-                        f" Using unverified all_calls_merged as fallback - data may be lost on restart"
+                        "Using unverified all_calls_merged as fallback - data may be lost on restart"
                     )
 
             # We need to manually update the cache - store in session state temporarily
@@ -4280,7 +4260,7 @@ if is_super_admin():
 # Admin-only: Full reload button (Super admins only)
 if is_super_admin():
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 👑 Admin: Full Reload")
+    st.sidebar.markdown("### Admin: Full Reload")
     if st.sidebar.button(
         " Reload ALL Data (Admin Only)",
         help=" Clears cache and reloads ALL PDFs from S3. This may take 10-20 minutes.",
@@ -4324,7 +4304,7 @@ def load_rubric():
             with open(rubric_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         return None
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -4516,8 +4496,6 @@ try:
 
         try:
             # Add timeout wrapper
-            import signal
-
             def timeout_handler(signum, frame):
                 raise TimeoutError("Data loading timed out after 5 minutes")
 
@@ -4537,7 +4515,7 @@ try:
 
             # Clear loading messages
             loading_placeholder.empty()
-        except TimeoutError as e:
+        except TimeoutError:
             logger.exception("Timeout during data loading")
             loading_placeholder.empty()
             status_text.empty()
@@ -4641,7 +4619,7 @@ try:
                             f" CRITICAL: Failed to save auto-loaded cache: {save_error}"
                         )
                         logger.error(
-                            f" Auto-loaded data will be lost on next restart - continuing anyway"
+                            "Auto-loaded data will be lost on next restart - continuing anyway"
                         )
                         # Still show success message since files were loaded, just not saved
                         logger.info(
@@ -4651,7 +4629,7 @@ try:
                             f" Auto-loaded {actual_new_count} new file(s)! Total: {len(all_calls_merged)} calls"
                         )
                         st.warning(
-                            f" Warning: Failed to save cache - data may be lost on restart"
+                            "Warning: Failed to save cache - data may be lost on restart"
                         )
 
                     # Update call_data to include new files
@@ -4669,7 +4647,7 @@ try:
                     st.rerun()
                 else:
                     logger.info(
-                        " No new files to load (may have been processed already)"
+                        "No new files to load (may have been processed already)"
                     )
                     del st.session_state.auto_refresh_pending
                     st.session_state.new_pdfs_notification_count = 0
@@ -4943,7 +4921,7 @@ if "speaking_time_per_speaker" in meta_df.columns:
                         if len(parts) == 2:
                             minutes, seconds = map(int, parts)
                             total += minutes * 60 + seconds
-                    except:
+                    except Exception:
                         pass
             return total
         return None
@@ -5190,7 +5168,7 @@ if not user_agent_id:
         else available_agents
     )
     selected_agents = st.sidebar.multiselect(
-        "👤 Select Agents", available_agents, default=default_agents
+        "Select Agents", available_agents, default=default_agents
     )
     st.session_state.last_agents = selected_agents  # Save selection
 else:
@@ -5227,7 +5205,7 @@ if "Label" in meta_df.columns:
     default_labels = (
         st.session_state.last_labels
         if st.session_state.last_labels
-        and all(l in available_labels for l in st.session_state.last_labels)
+        and all(label in available_labels for label in st.session_state.last_labels)
         else available_labels
     )
     selected_labels = st.sidebar.multiselect(
@@ -7023,7 +7001,7 @@ if (
 
 # --- At-Risk Agent Detection (Predictive Analytics) ---
 if not user_agent_id:  # Admin view only
-    with st.expander("🔮 At-Risk Agent Detection", expanded=False):
+    with st.expander("At-Risk Agent Detection", expanded=False):
         st.markdown("### Early Warning System for Agents at Risk")
         st.caption(
             "Identifies agents who may drop below threshold based on recent trends, volatility, and proximity to threshold"
@@ -7164,7 +7142,7 @@ with col_trend2:
         st_pyplot_safe(fig_pf)
 
 # --- Trend Forecasting (Predictive Analytics) ---
-with st.expander("🔮 Trend Forecasting", expanded=False):
+with st.expander("Trend Forecasting", expanded=False):
     st.markdown("### Predict Future QA Scores")
     st.caption(
         "Forecasts future QA scores based on historical trends using time series analysis"
@@ -7469,7 +7447,7 @@ if user_agent_id:
             )
             ax_agent.set_xlabel("Date")
             ax_agent.set_ylabel("Average QA Score (%)")
-            ax_agent.set_title(f"My Performance Trend vs Team Average")
+            ax_agent.set_title("My Performance Trend vs Team Average")
             ax_agent.grid(True, alpha=0.3)
             ax_agent.axhline(
                 y=alert_threshold,
@@ -7606,7 +7584,7 @@ if user_agent_id:
 
 else:
     # Admin view - agent selection and comparison
-    st.subheader("👤 Agent-Specific Performance Trends")
+    st.subheader("Agent-Specific Performance Trends")
     if len(filtered_df) > 0 and len(selected_agents) > 0:
         agent_trends_col1, agent_trends_col2 = st.columns(2)
 
@@ -7645,7 +7623,7 @@ else:
                     color="r",
                     linestyle="--",
                     alpha=0.5,
-                    label=f"Threshold",
+                    label="Threshold",
                 )
                 ax_agent.legend()
                 plt.xticks(rotation=45)
@@ -7949,11 +7927,11 @@ if rubric_data:
                     st.markdown("** Fail Criteria:**")
                     st.error(item.get("fail", "N/A"))
                 with col3:
-                    st.markdown("**➖ N/A Criteria:**")
+                    st.markdown("**N/A Criteria:**")
                     st.warning(item.get("na", "N/A"))
 
                 if item.get("agent_script_example"):
-                    st.markdown("**💬 Agent Script Example:**")
+                    st.markdown("**Agent Script Example:**")
                     st.code(item.get("agent_script_example"), language=None)
 
     with rubric_tab2:
@@ -8010,11 +7988,11 @@ if rubric_data:
                         st.markdown("** Fail Criteria:**")
                         st.error(item.get("fail", "N/A"))
                     with col3:
-                        st.markdown("**➖ N/A Criteria:**")
+                        st.markdown("**N/A Criteria:**")
                         st.warning(item.get("na", "N/A"))
 
                     if item.get("agent_script_example"):
-                        st.markdown("**💬 Agent Script Example:**")
+                        st.markdown("**Agent Script Example:**")
                         st.code(item.get("agent_script_example"), language=None)
 else:
     st.warning(
@@ -8202,7 +8180,7 @@ Generated by QA Dashboard • {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                 st.write("No rubric details available")
 
 # --- Call Volume Analysis ---
-st.subheader("📞 Call Volume Analysis")
+st.subheader("Call Volume Analysis")
 if len(filtered_df) > 0:
     vol_col1, vol_col2 = st.columns(2)
 
@@ -8250,7 +8228,7 @@ if len(filtered_df) > 0:
         st_pyplot_safe(fig_vol_time)
 
 # --- Time of Day Analysis ---
-st.subheader("⏰ Time of Day Analysis")
+st.subheader("Time of Day Analysis")
 if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
     time_col1, time_col2 = st.columns(2)
 
@@ -8332,7 +8310,7 @@ if "Reason" in filtered_df.columns or "Outcome" in filtered_df.columns:
 
 # --- Anomaly Detection ---
 st.markdown("---")
-st.subheader("🚨 Anomaly Detection")
+st.subheader("Anomaly Detection")
 
 if (
     "QA Score" in filtered_df.columns
@@ -8437,7 +8415,7 @@ st.subheader(" Advanced Analytics")
 
 analytics_tab1, analytics_tab2, analytics_tab3 = st.tabs(
     [
-        "📅 Week-over-Week Comparison",
+        "Week-over-Week Comparison",
         " Agent Improvement Trends",
         " Failure Analysis",
     ]
@@ -9002,5 +8980,5 @@ if len(filtered_df) > 0:
 
 st.markdown("---")
 st.markdown(
-    "Built with  by [Valence](https://www.getvalenceai.com) | QA Dashboard © 2025"
+    "Built with ❤️ by [Valence](https://www.getvalenceai.com) | QA Dashboard © 2025"
 )
