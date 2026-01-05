@@ -2475,7 +2475,7 @@ def load_all_calls_cached(cache_version=0):
                     logger.info(
                         f" USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss"
                     )
-                        return disk_call_data, disk_errors if disk_errors else []
+                    return disk_call_data, disk_errors if disk_errors else []
                     else:
                         logger.info(
                             f" Cache has only {cache_count} calls (< 100), will load from S3"
