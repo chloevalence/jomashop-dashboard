@@ -3130,34 +3130,44 @@ def load_new_calls_only():
                 f" Loaded {len(cached_calls)} calls from disk cache - extracting S3 keys..."
             )
 
-            # Extract all processed keys from cached calls
-            # CRITICAL: Use extract_cache_key to get consistent keys (call_id for CSV rows, _s3_key for PDFs)
+            # Extract processed file keys from cached calls
+            # NOTE: processed_keys is used for FILE-level checking (which CSV files have been processed)
+            # For call-level duplicate checking, we use existing_cache_keys (which uses extract_cache_key)
             keys_found = 0
             keys_missing = 0
-            csv_keys = 0
-            pdf_keys = 0
+            csv_files = 0
+            pdf_files = 0
             sample_keys = []
             for call in cached_calls:
-                # Use extract_cache_key for consistent key extraction
-                cache_key = extract_cache_key(call)
+                # Extract file key (filename for CSV, _s3_key for PDF)
+                filename = call.get("filename", "")
+                _s3_key = call.get("_s3_key", "")
+                _id = call.get("_id", "")
                 
-                if cache_key:
-                    processed_keys.add(cache_key)
+                # Determine if this is a CSV file
+                is_csv = ":" in str(_id) or ":" in str(_s3_key) or (filename and filename.lower().endswith(".csv"))
+                
+                if is_csv and filename:
+                    # For CSV files, use filename as the file key
+                    file_key = filename.strip("/")
+                    processed_keys.add(file_key)
                     keys_found += 1
-                    # Track CSV vs PDF keys for debugging
-                    _id = call.get("_id", "")
-                    _s3_key = call.get("_s3_key", "")
-                    if ":" in str(_id) or ":" in str(_s3_key):
-                        csv_keys += 1
-                    else:
-                        pdf_keys += 1
+                    csv_files += 1
                     if len(sample_keys) < 5:
-                        sample_keys.append(cache_key)
+                        sample_keys.append(file_key)
+                elif _s3_key:
+                    # For PDF files, use _s3_key as the file key
+                    file_key = _s3_key.strip("/")
+                    processed_keys.add(file_key)
+                    keys_found += 1
+                    pdf_files += 1
+                    if len(sample_keys) < 5:
+                        sample_keys.append(file_key)
                 else:
                     keys_missing += 1
 
             logger.debug(
-                f" Key Extraction Summary: {keys_found} found ({keys_from_s3_key} from _s3_key, {keys_from_id} from _id, {keys_from_filename} from filename), {keys_missing} missing"
+                f" File Key Extraction: {keys_found} file keys found ({csv_files} CSV files, {pdf_files} PDF files), {keys_missing} missing"
             )
             if sample_keys:
                 logger.debug(f" Sample cached keys (first 5): {sample_keys[:5]}")
