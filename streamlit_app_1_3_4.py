@@ -2111,9 +2111,7 @@ def load_all_calls_cached(cache_version=0):
     if s3_cache_result and s3_cache_result[0]:
         # Migrate old cache format to new format
         migrated_calls = migrate_old_cache_format(s3_cache_result[0])
-        logger.info(
-            f" Using S3 cache (source of truth): {len(migrated_calls)} calls"
-        )
+        logger.info(f" Using S3 cache (source of truth): {len(migrated_calls)} calls")
         # Store timestamp for future comparison
         if s3_cache_timestamp:
             st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
@@ -3688,10 +3686,11 @@ def load_new_calls_only():
                             existing_calls = calls_to_keep
 
                             # Update existing_cache_keys to match
+                            # Use consistent key extraction logic
                             existing_cache_keys = {
-                                call.get("_s3_key") or call.get("_id")
+                                key
                                 for call in existing_calls
-                                if call.get("_s3_key") or call.get("_id")
+                                if (key := extract_cache_key(call)) is not None
                             }
 
                             logger.info(
