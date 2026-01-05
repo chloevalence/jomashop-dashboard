@@ -2568,8 +2568,8 @@ def load_all_calls_cached(cache_version=0):
             max_files = None  # Load all files
 
         try:
-        load_start = time.time()
-        result = load_all_calls_internal(max_files=max_files)
+            load_start = time.time()
+            result = load_all_calls_internal(max_files=max_files)
         load_duration = time.time() - load_start
         elapsed = time.time() - start_time
         
