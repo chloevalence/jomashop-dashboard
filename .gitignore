@@ -7,5 +7,6 @@ __pycache__/
 logs/
 .cursor/debug.log
 .vscode/
+qa_results_jomashop.csv
 # PDF files (may contain sensitive data in filenames)
 *.pdf
