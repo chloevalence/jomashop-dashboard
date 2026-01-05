@@ -9048,9 +9048,9 @@ else:
                 selected_agent_for_trend = st.selectbox(
                     "Select Agent for Trend Analysis", selected_agents
                 )
-            
-            agent_data = filtered_df[filtered_df["Agent"] == selected_agent_for_trend]
-            if len(agent_data) > 0:
+                
+                agent_data = filtered_df[filtered_df["Agent"] == selected_agent_for_trend]
+                if len(agent_data) > 0:
                 agent_daily = (
                     agent_data.groupby(agent_data["Call Date"].dt.date)
                     .agg(
