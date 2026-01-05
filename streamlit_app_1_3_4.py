@@ -9051,10 +9051,10 @@ else:
                 
                 agent_data = filtered_df[filtered_df["Agent"] == selected_agent_for_trend]
                 if len(agent_data) > 0:
-                agent_daily = (
-                    agent_data.groupby(agent_data["Call Date"].dt.date)
-                    .agg(
-                    Avg_QA_Score=("QA Score", "mean"),
+                    agent_daily = (
+                        agent_data.groupby(agent_data["Call Date"].dt.date)
+                        .agg(
+                            Avg_QA_Score=("QA Score", "mean"),
                         Call_Count=("Call ID", "count"),
                         Avg_AHT=("Call Duration (min)", "mean"),
                     )
