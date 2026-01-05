@@ -2744,7 +2744,7 @@ def load_all_calls_cached(cache_version=0):
             # This ensures both caches are in sync with the most recent data
             return final_call_data, final_errors
         except Exception as e:
-        elapsed = time.time() - start_time
+            elapsed = time.time() - start_time
         logger.exception(
             f" Error in load_all_calls_cached after {elapsed:.1f} seconds: {e}"
         )
