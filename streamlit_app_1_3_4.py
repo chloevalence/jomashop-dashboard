@@ -5108,42 +5108,6 @@ if "call_date" in meta_df.columns:
         meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
 
 
-# --- Normalize Agent IDs to bpagent## format ---
-def normalize_agent_id(agent_str):
-    """Normalize agent ID to bpagent## format (e.g., bpagent01, bpagent02)"""
-    if pd.isna(agent_str) or not agent_str:
-        return agent_str
-
-    agent_str = str(agent_str).lower().strip()
-
-    # Special case: "unknown" -> Agent 01 (Jesus)
-    if agent_str == "unknown":
-        return "bpagent01"
-
-    # Special case: bp016803073 and bp016803074 -> Agent 01 (Jesus)
-    if agent_str in ["bp016803073", "bp016803074"]:
-        return "bpagent01"
-
-    # Special case: Any string starting with "bp01" (first 4 chars) -> Agent 01 (Jesus)
-    if agent_str.startswith("bp01"):
-        return "bpagent01"
-
-    # Extract number from bpagent### pattern (could be bpagent01, bpagent030844482, etc.)
-    match = re.search(r"bpagent(\d+)", agent_str)
-    if match:
-        # Get the number and take only first 2 digits (or pad to 2 digits)
-        agent_num = match.group(1)
-        # If number is longer than 2 digits, take first 2; otherwise pad to 2 digits
-        if len(agent_num) >= 2:
-            agent_num = agent_num[:2]  # Take first 2 digits
-        else:
-            agent_num = agent_num.zfill(2)  # Pad to 2 digits
-        return f"bpagent{agent_num}"
-
-    # If no match, return as is
-    return agent_str
-
-
 # --- Product Extraction Function ---
 def extract_products_from_text(text):
     """
