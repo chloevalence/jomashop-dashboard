@@ -2745,28 +2745,28 @@ def load_all_calls_cached(cache_version=0):
             return final_call_data, final_errors
         except Exception as e:
             elapsed = time.time() - start_time
-        logger.exception(
-            f" Error in load_all_calls_cached after {elapsed:.1f} seconds: {e}"
-        )
-        
-        # CRITICAL: Clear reload_all_triggered flag even on error to prevent infinite retry loop
-        if reload_all_triggered:
-            st.session_state["reload_all_triggered"] = False
-            logger.error("Reload ALL Data failed - cleared flag to prevent retry loop")
-        
-        # Clear load in progress flag
-        if load_in_progress_key in st.session_state:
-            del st.session_state[load_in_progress_key]
-        
-        # Try to return disk cache if available as fallback
-        if disk_call_data and len(disk_call_data) > 0:
-            logger.warning(
-                f" Reload failed, falling back to disk cache: {len(disk_call_data)} calls"
+            logger.exception(
+                f" Error in load_all_calls_cached after {elapsed:.1f} seconds: {e}"
             )
-            return disk_call_data, [f"Reload failed: {str(e)}. Using cached data."]
-        
-        # Return empty data with error message only if no fallback available
-        return [], [f"Failed to load data: {str(e)}"]
+            
+            # CRITICAL: Clear reload_all_triggered flag even on error to prevent infinite retry loop
+            if reload_all_triggered:
+                st.session_state["reload_all_triggered"] = False
+                logger.error("Reload ALL Data failed - cleared flag to prevent retry loop")
+            
+            # Clear load in progress flag
+            if load_in_progress_key in st.session_state:
+                del st.session_state[load_in_progress_key]
+            
+            # Try to return disk cache if available as fallback
+            if disk_call_data and len(disk_call_data) > 0:
+                logger.warning(
+                    f" Reload failed, falling back to disk cache: {len(disk_call_data)} calls"
+                )
+                return disk_call_data, [f"Reload failed: {str(e)}. Using cached data."]
+            
+            # Return empty data with error message only if no fallback available
+            return [], [f"Failed to load data: {str(e)}"]
 
 
 # Chart caching helper - cache chart figures based on data hash
