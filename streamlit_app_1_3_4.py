@@ -2420,15 +2420,15 @@ def load_all_calls_cached(cache_version=0):
             disk_call_data = migrate_old_cache_format(disk_call_data)
             cache_count = len(disk_call_data)
         
-        # Get cache metadata
-        if CACHE_FILE.exists():
-            try:
+            # Get cache metadata
+            if CACHE_FILE.exists():
+                try:
                     with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    cached_data = json.load(f)
+                        cached_data = json.load(f)
                         is_partial = cached_data.get("partial", False)
                         partial_processed = cached_data.get("processed", 0)
                         partial_total = cached_data.get("total", 0)
-            except Exception as e:
+                except Exception as e:
                     logger.warning(f" Failed to read cache metadata: {e}")
         
         # Log cache comparison immediately after loading disk cache
