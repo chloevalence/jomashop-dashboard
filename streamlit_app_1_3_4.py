@@ -2503,12 +2503,12 @@ def load_all_calls_cached(cache_version=0):
             # Clear flag after use (but keep it until load completes to prevent re-triggering)
             # We'll clear it at the end of the try block
         elif disk_call_data and is_partial and partial_total > 0 and partial_processed < partial_total:
-        # Partial cache exists - but limit auto-continuation to prevent crashes
-        remaining_files = partial_total - partial_processed
-        
-        # Only auto-continue if remaining files is small (<= 1000) to prevent long blocking operations
-        # This prevents crashes from trying to load thousands of files synchronously during page load
-        if remaining_files <= 1000:
+            # Partial cache exists - but limit auto-continuation to prevent crashes
+            remaining_files = partial_total - partial_processed
+
+            # Only auto-continue if remaining files is small (<= 1000) to prevent long blocking operations
+            # This prevents crashes from trying to load thousands of files synchronously during page load
+            if remaining_files <= 1000:
                 logger.info(
                     f" Continuing partial cache: {partial_processed}/{partial_total} files loaded, {remaining_files} remaining"
                 )
