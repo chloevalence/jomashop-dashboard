@@ -2163,6 +2163,7 @@ def load_all_calls_cached(cache_version=0):
                 logger.warning(f" Failed to load from S3 cache: {s3_error}")
 
     # CRITICAL: If S3 cache exists, check if Streamlit cache is stale
+    # (Skip this check if we just deleted caches due to reload_all_triggered)
     # Invalidate Streamlit cache if S3 cache is newer
     if s3_cache_timestamp:
         streamlit_cache_timestamp = st.session_state.get("_s3_cache_timestamp", None)
