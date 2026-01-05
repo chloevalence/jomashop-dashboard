@@ -1016,9 +1016,39 @@ def recover_partial_json(filepath):
         return None, None
 
 
+def extract_cache_key(call):
+    """
+    Extract a consistent cache key from a call object.
+    
+    For CSV rows: Returns call_id (detected by colon in _id or _s3_key format)
+    For PDF rows: Returns _s3_key or _id
+    Handles both old format (_id = filename) and new format (_id = "filename:call_id")
+    
+    Args:
+        call: Dictionary representing a call
+        
+    Returns:
+        String key for cache lookup, or None if no valid key found
+    """
+    if not isinstance(call, dict):
+        return None
+    
+    call_id = call.get("call_id")
+    _id = call.get("_id", "")
+    _s3_key = call.get("_s3_key", "")
+    
+    # If _id or _s3_key contains a colon, it's from a CSV (format: filename:call_id)
+    # Use call_id as the unique key for CSV rows
+    if call_id and (":" in str(_id) or ":" in str(_s3_key)):
+        return str(call_id)
+    else:
+        # For PDFs or legacy format, use _s3_key or _id
+        return _s3_key or _id or (str(call_id) if call_id else None)
+
+
 def deduplicate_calls(call_data):
     """Remove duplicate calls based on _s3_key or _id. Keeps the first occurrence.
-
+    
     For CSV files, uses call_id as the primary identifier since multiple rows
     can come from the same CSV file.
     """
@@ -1037,20 +1067,8 @@ def deduplicate_calls(call_data):
             )
             continue
 
-        # For CSV files, use call_id as primary identifier (since _s3_key is filename)
-        # For PDF files, use _s3_key as primary identifier
-        # Check if this is from a CSV by checking if _id contains a colon (filename:call_id format)
-        call_id = call.get("call_id")
-        _id = call.get("_id", "")
-        _s3_key = call.get("_s3_key", "")
-
-        # If _id contains a colon, it's from a CSV (format: filename:call_id)
-        # Use call_id as the unique key for CSV rows
-        if call_id and (":" in str(_id) or ":" in str(_s3_key)):
-            key = str(call_id)
-        else:
-            # For PDFs or legacy format, use _s3_key as primary identifier
-            key = _s3_key or _id or call_id
+        # Use consistent key extraction
+        key = extract_cache_key(call)
         if key and key not in seen_keys:
             seen_keys.add(key)
             deduplicated.append(call)
@@ -2984,13 +3002,17 @@ def load_new_calls_only():
         )
 
         # Extract existing_cache_keys once for duplicate checking
+        # Use consistent key extraction logic that matches cache check logic
         existing_cache_keys = set()
         if existing_calls:
             existing_cache_keys = {
-                call.get("_s3_key") or call.get("_id")
+                key
                 for call in existing_calls
-                if call.get("_s3_key") or call.get("_id")
+                if (key := extract_cache_key(call)) is not None
             }
+            logger.debug(
+                f" Built existing_cache_keys: {len(existing_cache_keys)} keys from {len(existing_calls)} calls"
+            )
 
         # Get last_save_time from cache metadata (if available)
         last_save_time = 0
@@ -3533,19 +3555,9 @@ def load_new_calls_only():
                             batch_calls.append(parsed_data)  # Track for this batch
 
                             # Check if this call is already in cache
-                            # For CSV files, use call_id as the key (since _s3_key is filename)
-                            # For PDFs, use _s3_key
-                            call_id = parsed_data.get("call_id")
-                            _id = parsed_data.get("_id", "")
-                            _s3_key = parsed_data.get("_s3_key", "")
-
-                            # If _id contains a colon, it's from a CSV (format: filename:call_id)
-                            if call_id and (":" in str(_id) or ":" in str(_s3_key)):
-                                call_key = str(call_id)
-                            else:
-                                # For PDFs or legacy format, use _s3_key
-                                call_key = _s3_key or _id
-
+                            # Use consistent key extraction logic
+                            call_key = extract_cache_key(parsed_data)
+                            
                             if call_key and call_key in existing_cache_keys:
                                 # Already in cache - skip (already added to new_calls above)
                                 pass
