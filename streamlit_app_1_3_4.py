@@ -8540,13 +8540,13 @@ with col_trend2:
                 label="Fail Rate",
                 color="red",
             )
-        ax_pf.set_xlabel("Date")
-        ax_pf.set_ylabel("Rate (%)")
-        ax_pf.set_title("Pass/Fail Rate Trends Over Time")
-        ax_pf.grid(True, alpha=0.3)
-        ax_pf.legend()
-        plt.xticks(rotation=45)
-        plt.tight_layout()
+            ax_pf.set_xlabel("Date")
+            ax_pf.set_ylabel("Rate (%)")
+            ax_pf.set_title("Pass/Fail Rate Trends Over Time")
+            ax_pf.grid(True, alpha=0.3)
+            ax_pf.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
             st_pyplot_safe(fig_pf)
 
 # --- Rubric Code Analysis ---
