@@ -1018,7 +1018,11 @@ def recover_partial_json(filepath):
 
 
 def deduplicate_calls(call_data):
-    """Remove duplicate calls based on _s3_key or _id. Keeps the first occurrence."""
+    """Remove duplicate calls based on _s3_key or _id. Keeps the first occurrence.
+    
+    For CSV files, uses call_id as the primary identifier since multiple rows
+    can come from the same CSV file.
+    """
     if not call_data:
         return []
 
@@ -1034,8 +1038,20 @@ def deduplicate_calls(call_data):
             )
             continue
 
-        # Use _s3_key as primary identifier, fall back to _id
-        key = call.get("_s3_key") or call.get("_id") or call.get("Call ID")
+        # For CSV files, use call_id as primary identifier (since _s3_key is filename)
+        # For PDF files, use _s3_key as primary identifier
+        # Check if this is from a CSV by checking if _id contains a colon (filename:call_id format)
+        call_id = call.get("call_id")
+        _id = call.get("_id", "")
+        _s3_key = call.get("_s3_key", "")
+        
+        # If _id contains a colon, it's from a CSV (format: filename:call_id)
+        # Use call_id as the unique key for CSV rows
+        if call_id and (":" in str(_id) or ":" in str(_s3_key)):
+            key = str(call_id)
+        else:
+            # For PDFs or legacy format, use _s3_key as primary identifier
+            key = _s3_key or _id or call_id
         if key and key not in seen_keys:
             seen_keys.add(key)
             deduplicated.append(call)
