@@ -8,6 +8,7 @@ from pandas import ExcelWriter
 import streamlit_authenticator as stauth
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
+import botocore.config
 import json
 import time
 import re
@@ -1046,60 +1047,192 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     # Try loading from S3 first (only if not already in session state)
     s3_client, s3_bucket = get_s3_client_and_bucket()
     if s3_client and s3_bucket:
+        # Create dedicated S3 client with longer timeout for cache loading
         try:
-            response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-            cached_data = json.loads(response["Body"].read().decode("utf-8"))
-            if not isinstance(cached_data, dict):
-                logger.warning(
-                    f" S3 cache contains invalid data structure: {type(cached_data).__name__}, expected dict"
-                )
-            else:
-                call_data = cached_data.get("call_data", [])
-                errors = cached_data.get("errors", [])
-                cache_timestamp = cached_data.get("timestamp", None)
-                cache_count = len(call_data)
-                is_partial = cached_data.get("partial", False)
-
-                if is_partial:
-                    processed = cached_data.get("processed", 0)
-                    total = cached_data.get("total", 0)
-                    logger.info(
-                        f" Found PARTIAL cache in S3 with {cache_count} calls "
-                        f"({processed}/{total} = {processed * 100 // total if total > 0 else 0}% complete, "
-                        f"saved at {cache_timestamp})"
-                    )
-                else:
-                    logger.info(
-                        f" Found COMPLETE cache in S3 with {cache_count} calls (saved at {cache_timestamp})"
-                    )
-
-                # Also sync to local disk for faster subsequent loads
-                try:
-                    with cache_file_lock(CACHE_FILE, timeout=5):
-                        atomic_write_json(CACHE_FILE, cached_data)
-                        logger.debug(f" Synced S3 cache to local disk: {CACHE_FILE}")
-                except Exception as sync_error:
-                    logger.debug(f"Could not sync S3 cache to local disk: {sync_error}")
-
-                # Cache result in session state during refresh to reduce repeated S3 loads
-                result = (call_data, errors)
-                if refresh_in_progress:
-                    cache_key = "_disk_cache_during_refresh"
-                    st.session_state[cache_key] = (result, time.time())
-
-                return result
-        except ClientError as s3_error:
-            error_code = s3_error.response.get("Error", {}).get("Code", "")
-            if error_code == "NoSuchKey":
-                logger.debug(f" No cache found in S3: s3://{s3_bucket}/{S3_CACHE_KEY}")
-            else:
-                logger.warning(
-                    f" Failed to load cache from S3 (will try local disk): {s3_error}"
-                )
-        except Exception as s3_error:
-            logger.warning(
-                f" Failed to load cache from S3 (will try local disk): {s3_error}"
+            config = botocore.config.Config(
+                connect_timeout=30,
+                read_timeout=120,  # 2 minutes for large cache files
+                retries={"max_attempts": 3, "mode": "adaptive"},
             )
+            s3_cache_client = boto3.client(
+                "s3",
+                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+                config=config,
+            )
+        except Exception as config_error:
+            logger.warning(
+                f" Could not create S3 cache client with extended timeout, using default: {config_error}"
+            )
+            s3_cache_client = s3_client
+
+        # Retry logic for S3 cache download
+        max_retries = 3
+        retry_delay = 2  # seconds
+        for attempt in range(max_retries):
+            try:
+                logger.debug(
+                    f" Attempting to load cache from S3 (attempt {attempt + 1}/{max_retries})..."
+                )
+                response = s3_cache_client.get_object(
+                    Bucket=s3_bucket, Key=S3_CACHE_KEY
+                )
+
+                # Stream download instead of loading all at once to prevent memory issues
+                body = response["Body"]
+                chunks = []
+                chunk_size = 8192  # 8KB chunks
+                total_bytes = 0
+
+                try:
+                    for chunk in body.iter_chunks(chunk_size=chunk_size):
+                        chunks.append(chunk)
+                        total_bytes += len(chunk)
+                        # Log progress for large files (every 1MB)
+                        if total_bytes % (1024 * 1024) < chunk_size:
+                            logger.debug(
+                                f" Loading cache from S3: {total_bytes / (1024 * 1024):.1f} MB downloaded..."
+                            )
+                except Exception as stream_error:
+                    logger.warning(
+                        f" Error streaming cache from S3: {stream_error}, will retry..."
+                    )
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+                    raise
+
+                # Parse JSON from streamed chunks
+                try:
+                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                except json.JSONDecodeError as json_error:
+                    logger.error(
+                        f" Failed to parse JSON from S3 cache: {json_error}. "
+                        f"Cache file may be corrupted. Will try local disk."
+                    )
+                    break  # Break retry loop, fall back to disk
+
+                if not isinstance(cached_data, dict):
+                    logger.warning(
+                        f" S3 cache contains invalid data structure: {type(cached_data).__name__}, expected dict"
+                    )
+                    break  # Break retry loop, fall back to disk
+                else:
+                    call_data = cached_data.get("call_data", [])
+                    errors = cached_data.get("errors", [])
+                    cache_timestamp = cached_data.get("timestamp", None)
+                    cache_count = len(call_data)
+                    is_partial = cached_data.get("partial", False)
+
+                    if is_partial:
+                        processed = cached_data.get("processed", 0)
+                        total = cached_data.get("total", 0)
+                        logger.info(
+                            f" Found PARTIAL cache in S3 with {cache_count} calls "
+                            f"({processed}/{total} = {processed * 100 // total if total > 0 else 0}% complete, "
+                            f"saved at {cache_timestamp})"
+                        )
+                    else:
+                        logger.info(
+                            f" Found COMPLETE cache in S3 with {cache_count} calls (saved at {cache_timestamp})"
+                        )
+
+                    # Also sync to local disk for faster subsequent loads
+                    try:
+                        with cache_file_lock(CACHE_FILE, timeout=5):
+                            atomic_write_json(CACHE_FILE, cached_data)
+                            logger.debug(
+                                f" Synced S3 cache to local disk: {CACHE_FILE}"
+                            )
+                    except Exception as sync_error:
+                        logger.debug(
+                            f" Could not sync S3 cache to local disk: {sync_error}"
+                        )
+
+                    # Cache result in session state during refresh to reduce repeated S3 loads
+                    result = (call_data, errors)
+                    if refresh_in_progress:
+                        cache_key = "_disk_cache_during_refresh"
+                        st.session_state[cache_key] = (result, time.time())
+
+                    return result
+
+            except ClientError as s3_error:
+                error_code = s3_error.response.get("Error", {}).get("Code", "")
+                if error_code == "NoSuchKey":
+                    logger.debug(
+                        f" No cache found in S3: s3://{s3_bucket}/{S3_CACHE_KEY}"
+                    )
+                    break  # No retry needed for missing key
+                else:
+                    error_msg = str(s3_error)
+                    if (
+                        "timeout" in error_msg.lower()
+                        or "timed out" in error_msg.lower()
+                    ):
+                        logger.warning(
+                            f" S3 cache download timed out (attempt {attempt + 1}/{max_retries}). "
+                            f"Will retry with exponential backoff..."
+                        )
+                    elif (
+                        "connection reset" in error_msg.lower()
+                        or "ConnectionResetError" in error_msg
+                    ):
+                        logger.warning(
+                            f" S3 cache download connection reset (attempt {attempt + 1}/{max_retries}). "
+                            f"Will retry with exponential backoff..."
+                        )
+                    else:
+                        logger.warning(
+                            f" Failed to load cache from S3 (attempt {attempt + 1}/{max_retries}): {s3_error}"
+                        )
+
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (attempt + 1)
+                        logger.info(f" Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(
+                            f" Failed to load cache from S3 after {max_retries} attempts. "
+                            f"Will try local disk cache."
+                        )
+
+            except Exception as s3_error:
+                error_msg = str(s3_error)
+                error_type = type(s3_error).__name__
+
+                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    logger.warning(
+                        f" S3 cache download timeout (attempt {attempt + 1}/{max_retries}): {error_type} - {error_msg}"
+                    )
+                elif (
+                    "connection reset" in error_msg.lower()
+                    or "ConnectionResetError" in error_msg
+                ):
+                    logger.warning(
+                        f" S3 cache download connection reset (attempt {attempt + 1}/{max_retries}): {error_type} - {error_msg}"
+                    )
+                elif "MemoryError" in error_type or "memory" in error_msg.lower():
+                    logger.error(
+                        f" Memory error loading S3 cache: {error_type} - {error_msg}. "
+                        f"Cache file may be too large. Will try local disk."
+                    )
+                    break  # Don't retry memory errors
+                else:
+                    logger.warning(
+                        f" Failed to load cache from S3 (attempt {attempt + 1}/{max_retries}): {error_type} - {error_msg}"
+                    )
+
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)
+                    logger.info(f" Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(
+                        f" Failed to load cache from S3 after {max_retries} attempts: {error_type} - {error_msg}. "
+                        f"Will try local disk cache."
+                    )
 
     # Fall back to local disk if S3 unavailable or not found
     if not CACHE_FILE.exists():
@@ -1350,6 +1483,80 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
         # Also save to S3 for persistence across deployments
         s3_client, s3_bucket = get_s3_client_and_bucket()
         if s3_client and s3_bucket:
+            # PROTECTION: Check existing cache before overwriting with PARTIAL cache
+            if partial:  # Only check if saving PARTIAL cache
+                try:
+                    # Create S3 client with timeout for checking existing cache
+                    config = botocore.config.Config(
+                        connect_timeout=10, read_timeout=30, retries={"max_attempts": 2}
+                    )
+                    s3_check_client = boto3.client(
+                        "s3",
+                        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                        region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+                        config=config,
+                    )
+
+                    existing_response = s3_check_client.get_object(
+                        Bucket=s3_bucket, Key=S3_CACHE_KEY
+                    )
+                    # Stream download for existing cache check
+                    body = existing_response["Body"]
+                    chunks = []
+                    for chunk in body.iter_chunks(chunk_size=8192):
+                        chunks.append(chunk)
+                    existing_data = json.loads(b"".join(chunks).decode("utf-8"))
+                    existing_is_partial = existing_data.get("partial", False)
+                    existing_call_data = existing_data.get("call_data", [])
+                    existing_count = len(existing_call_data)
+
+                    if not existing_is_partial:  # Existing cache is COMPLETE
+                        logger.warning(
+                            f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
+                            f"with PARTIAL cache ({len(call_data)} calls). "
+                            f"Complete cache preserved. Local cache saved successfully."
+                        )
+                        return  # Don't overwrite COMPLETE cache with PARTIAL
+                    else:
+                        # Both are PARTIAL - check progress
+                        existing_processed = existing_data.get("processed", 0)
+                        existing_total = existing_data.get("total", 0)
+                        new_processed = processed
+                        new_total = total
+
+                        # Check if new cache is more complete
+                        new_is_better = False
+                        if new_processed > existing_processed:
+                            new_is_better = True
+                        elif (
+                            new_processed == existing_processed
+                            and len(call_data) > existing_count
+                        ):
+                            new_is_better = True
+
+                        if not new_is_better:
+                            logger.warning(
+                                f" PROTECTED: Not overwriting PARTIAL cache ({existing_processed}/{existing_total}, {existing_count} calls) "
+                                f"with less complete PARTIAL cache ({new_processed}/{new_total}, {len(call_data)} calls). "
+                                f"More complete cache preserved. Local cache saved successfully."
+                            )
+                            return  # Don't overwrite with less complete cache
+
+                except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code", "")
+                    if error_code != "NoSuchKey":
+                        logger.warning(
+                            f" Could not check existing cache status: {e}. Proceeding with save."
+                        )
+                    # If no existing cache, proceed with save
+                except Exception as check_error:
+                    logger.warning(
+                        f" Error checking existing cache: {check_error}. Proceeding with save."
+                    )
+                    # Proceed with save if check fails
+
+            # Proceed with save (protected by checks above)
             try:
                 cache_json = json.dumps(cache_data, default=str, ensure_ascii=False)
                 s3_client.put_object(

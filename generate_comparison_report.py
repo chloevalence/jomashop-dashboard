@@ -1712,12 +1712,12 @@ def generate_pdf_report(
         )
         summary_lines.append(
             f"  • Std Dev: {previous_metrics.get('score_std', 'N/A'):.1f}"
-            if previous_metrics.get("score_std")
+            if previous_metrics.get("score_std") is not None
             else "  • Std Dev: N/A"
         )
         summary_lines.append(
             f"  • Pass Rate: {previous_metrics.get('pass_rate', 'N/A'):.1f}%"
-            if previous_metrics.get("pass_rate")
+            if previous_metrics.get("pass_rate") is not None
             else "  • Pass Rate: N/A"
         )
         summary_lines.append(
@@ -1750,12 +1750,12 @@ def generate_pdf_report(
         )
         summary_lines.append(
             f"  • Std Dev: {bpo_metrics.get('score_std', 'N/A'):.1f}"
-            if bpo_metrics.get("score_std")
+            if bpo_metrics.get("score_std") is not None
             else "  • Std Dev: N/A"
         )
         summary_lines.append(
             f"  • Pass Rate: {bpo_metrics.get('pass_rate', 'N/A'):.1f}%"
-            if bpo_metrics.get("pass_rate")
+            if bpo_metrics.get("pass_rate") is not None
             else "  • Pass Rate: N/A"
         )
         summary_lines.append(
