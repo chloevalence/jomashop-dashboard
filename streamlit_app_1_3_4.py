@@ -788,7 +788,7 @@ def parse_csv_row(row, filename):
     # Backward compatibility fields
     if data.get("qa_score") is not None:
         data["average_happiness_value"] = data["qa_score"]
-                    else:
+    else:
         data["average_happiness_value"] = 0.0
 
     # Legacy emotion fields
