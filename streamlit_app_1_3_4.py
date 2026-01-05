@@ -1019,7 +1019,7 @@ def recover_partial_json(filepath):
 
 def deduplicate_calls(call_data):
     """Remove duplicate calls based on _s3_key or _id. Keeps the first occurrence.
-    
+
     For CSV files, uses call_id as the primary identifier since multiple rows
     can come from the same CSV file.
     """
@@ -1044,7 +1044,7 @@ def deduplicate_calls(call_data):
         call_id = call.get("call_id")
         _id = call.get("_id", "")
         _s3_key = call.get("_s3_key", "")
-        
+
         # If _id contains a colon, it's from a CSV (format: filename:call_id)
         # Use call_id as the unique key for CSV rows
         if call_id and (":" in str(_id) or ":" in str(_s3_key)):
@@ -3025,16 +3025,28 @@ def load_new_calls_only():
             keys_from_filename = 0
             sample_keys = []
             for call in cached_calls:
-                # Try multiple ways to get the S3 key
-                s3_key = call.get("_s3_key")
-                if s3_key:
-                    keys_from_s3_key += 1
+                # For CSV files, use call_id as the key (since _s3_key is filename)
+                # For PDF files, use _s3_key
+                call_id = call.get("call_id")
+                _id = call.get("_id", "")
+                _s3_key = call.get("_s3_key", "")
+                
+                # If _id contains a colon, it's from a CSV (format: filename:call_id)
+                if call_id and (":" in str(_id) or ":" in str(_s3_key)):
+                    # For CSV files, use call_id as the unique key
+                    s3_key = str(call_id)
+                    keys_from_s3_key += 1  # Track as call_id-based key
                 else:
-                    s3_key = call.get("_id")
+                    # For PDFs or legacy format, use _s3_key
+                    s3_key = _s3_key
                     if s3_key:
-                        keys_from_id += 1
+                        keys_from_s3_key += 1
+                    else:
+                        s3_key = call.get("_id")
+                        if s3_key:
+                            keys_from_id += 1
 
-                # If still no key, try to get from filename
+                # If still no key, try to get from filename (legacy PDF format)
                 if not s3_key:
                     filename = call.get("Filename") or call.get("Call ID")
                     if filename:
@@ -3527,14 +3539,14 @@ def load_new_calls_only():
                             call_id = parsed_data.get("call_id")
                             _id = parsed_data.get("_id", "")
                             _s3_key = parsed_data.get("_s3_key", "")
-                            
+
                             # If _id contains a colon, it's from a CSV (format: filename:call_id)
                             if call_id and (":" in str(_id) or ":" in str(_s3_key)):
                                 call_key = str(call_id)
                             else:
                                 # For PDFs or legacy format, use _s3_key
                                 call_key = _s3_key or _id
-                            
+
                             if call_key and call_key in existing_cache_keys:
                                 # Already in cache - skip (already added to new_calls above)
                                 pass
