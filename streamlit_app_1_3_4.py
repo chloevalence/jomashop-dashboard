@@ -2493,16 +2493,16 @@ def load_all_calls_cached(cache_version=0):
 
         # Determine what to load
         if reload_all_triggered:
-        # User explicitly requested full dataset - load ALL files (may take 10-20 min)
+            # User explicitly requested full dataset - load ALL files (may take 10-20 min)
             # NOTE: Caches were already cleared at the beginning of this function (lines 2056-2104)
             # No need to clear again here to avoid duplicate operations
             logger.info(
-            "Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)"
+                "Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)"
             )
-        max_files = None  # Load all files
+            max_files = None  # Load all files
             # Clear flag after use (but keep it until load completes to prevent re-triggering)
             # We'll clear it at the end of the try block
-    elif is_partial and partial_total > 0 and partial_processed < partial_total:
+        elif disk_call_data and is_partial and partial_total > 0 and partial_processed < partial_total:
         # Partial cache exists - but limit auto-continuation to prevent crashes
         remaining_files = partial_total - partial_processed
         
