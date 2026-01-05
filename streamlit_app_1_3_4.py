@@ -9900,14 +9900,9 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
 
     # Add Agent Leaderboard sheet for admin view
     if not user_agent_id:
-        # Ensure Agent column is normalized for export (safety check)
-        export_filtered_df = filtered_df.copy()
-        if "Agent" in export_filtered_df.columns:
-            export_filtered_df["Agent"] = export_filtered_df["Agent"].apply(normalize_agent_id)
-        
         # Recalculate agent performance for export
         agent_perf_export = (
-            export_filtered_df.groupby("Agent")
+            filtered_df.groupby("Agent")
             .agg(
                 Total_Calls=("Call ID", "count"),
                 Avg_QA_Score=("QA Score", "mean"),
