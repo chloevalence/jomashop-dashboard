@@ -7385,7 +7385,7 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             pie_data = pd.concat(
                                 [top_reasons, pd.Series({"Other": other_count})]
                             )
-else:
+                        else:
                             pie_data = top_reasons
 
                         fig_reason_pie, ax_reason_pie = plt.subplots(figsize=(8, 6))
