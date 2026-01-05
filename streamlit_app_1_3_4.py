@@ -1093,10 +1093,11 @@ def migrate_old_cache_format(call_data):
                     is_old_format = True
 
         if is_old_format and call_id:
-            # Migrate to new format: _id = "filename:call_id"
+            # Migrate to new format: _id = "filename:call_id", _s3_key = filename
             call["_id"] = f"{filename}:{call_id}"
             if not _s3_key or _s3_key == filename or _s3_key == filename_base:
-                call["_s3_key"] = f"{filename}:{call_id}"
+                # _s3_key should be just the filename (not filename:call_id)
+                call["_s3_key"] = filename
             migrated_count += 1
 
         migrated_calls.append(call)
