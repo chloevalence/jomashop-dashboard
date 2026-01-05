@@ -4024,19 +4024,88 @@ credentials = st.secrets["credentials"].to_dict()
 cookie = st.secrets["cookie"]
 auto_hash = st.secrets.get("auto_hash", False)
 
-authenticator = stauth.Authenticate(
-    credentials,
-    cookie["name"],
-    cookie["key"],
-    cookie["expiry_days"],
-    auto_hash=auto_hash,
-)
+# Initialize authenticator with retry logic for CookieManager loading issues
+authenticator = None
+max_retries = 3
+retry_delay = 2  # seconds
+
+for attempt in range(max_retries):
+    try:
+        authenticator = stauth.Authenticate(
+            credentials,
+            cookie["name"],
+            cookie["key"],
+            cookie["expiry_days"],
+            auto_hash=auto_hash,
+        )
+        break  # Success, exit retry loop
+    except Exception as e:
+        error_msg = str(e).lower()
+        is_component_error = (
+            "cookiemanager" in error_msg
+            or "component" in error_msg
+            or "frontend" in error_msg
+            or "extra_streamlit_components" in error_msg
+        )
+        
+        if is_component_error and attempt < max_retries - 1:
+            # Retry with exponential backoff
+            wait_time = retry_delay * (2 ** attempt)
+            logger.warning(
+                f"CookieManager initialization failed (attempt {attempt + 1}/{max_retries}). "
+                f"Retrying in {wait_time}s... Error: {e}"
+            )
+            time.sleep(wait_time)
+            continue
+        else:
+            # Final attempt failed or non-component error
+            logger.error(f"Failed to initialize authenticator after {attempt + 1} attempts: {e}")
+            if is_component_error:
+                # Will be handled in login section below
+                authenticator = None
+            else:
+                st.error("**Authentication System Error**")
+                st.error(f"Failed to initialize authentication: {str(e)}")
+                logger.exception("Authentication initialization error")
+                st.stop()
 
 # --- LOGIN GUARD ---
 auth_status = st.session_state.get("authentication_status")
 
 # If they've never submitted the form, show it
 if auth_status is None:
+    if authenticator is None:
+        # CookieManager failed to initialize
+        st.error(" **Authentication Component Loading Issue**")
+        st.warning(
+            "The authentication component is having trouble loading. This is usually a temporary network or CDN issue."
+        )
+        st.markdown("### 🔧 **Quick Fixes (try in order):**")
+        st.markdown("1. **Wait 10-15 seconds** and refresh the page (F5 or Cmd+R)")
+        st.markdown("2. **Hard refresh** the page:")
+        st.code("Windows/Linux: Ctrl+Shift+R\nMac: Cmd+Shift+R", language=None)
+        st.markdown("3. **Clear browser cache** and cookies for this site")
+        st.markdown("4. **Try a different browser** or incognito/private mode")
+        st.markdown(
+            "5. **Check your network connection** - ensure you can access external CDNs"
+        )
+        st.markdown(
+            "6. **Verify installation** - ensure `extra-streamlit-components` is installed:"
+        )
+        st.code("pip install --upgrade extra-streamlit-components", language="bash")
+        st.markdown("---")
+        st.info(
+            " **If the issue persists:** This may be a network/proxy/CDN issue. Contact your administrator or check if your deployment environment allows access to Streamlit component CDNs."
+        )
+        st.markdown("---")
+        if st.button("**Retry Authentication**", type="primary"):
+            # Clear any cached state and retry
+            if "authenticator_retry_count" not in st.session_state:
+                st.session_state.authenticator_retry_count = 0
+            st.session_state.authenticator_retry_count += 1
+            st.rerun()
+        st.stop()
+    
     try:
         authenticator.login("main", "Login")
     except Exception as e:
