@@ -1799,7 +1799,7 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
 
 # Cached wrapper - uses both Streamlit cache (fast) and disk cache (persistent, survives restarts)
 # First load will take time, subsequent loads will be instant
-# Use "Refresh New Data" button when new PDFs are added to S3 - it only loads new files
+# Use "Refresh New Data" button when new CSV files are added to S3 - it only loads new files (PDFs are ignored)
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
 @st.cache_data(ttl=None, max_entries=1, show_spinner=True)
 def load_all_calls_cached(cache_version=0):
@@ -1820,9 +1820,6 @@ def load_all_calls_cached(cache_version=0):
 
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
-    # Perform one-time cache cleanup to remove PDF-sourced calls
-    cleanup_pdf_sourced_calls()
-    
     import time
     from datetime import datetime
 
@@ -2138,11 +2135,11 @@ def load_all_calls_cached(cache_version=0):
                                 )
                                 # Set flag to trigger background load
                                 st.session_state.auto_refresh_pending = new_count
-                                st.session_state.new_pdfs_notification_count = new_count
+                                st.session_state.new_csvs_notification_count = new_count
                             else:
                                 logger.info("No new files found - cache is up to date")
                                 # Clear notification count since there are no new files
-                                st.session_state.new_pdfs_notification_count = 0
+                                st.session_state.new_csvs_notification_count = 0
                         except Exception as e:
                             # CRITICAL FIX: Log full exception details to help diagnose crashes
                             logger.warning(f"Failed to check for new files: {e}")
@@ -2946,7 +2943,7 @@ def classify_trajectory(df, agent=None):
 
 def load_new_calls_only():
     """
-    Smart refresh: Only loads PDFs that haven't been processed yet.
+    Smart refresh: Only loads CSV files that haven't been processed yet (PDFs are ignored).
     Returns tuple: (new_call_data_list, error_message, count_of_new_files)
     """
     try:
@@ -3022,9 +3019,9 @@ def load_new_calls_only():
                                 s3_key = f"{s3_prefix.rstrip('/')}/{filename}"
                         else:
                             s3_key = filename
-                        # Ensure it ends with .pdf
-                        if not s3_key.lower().endswith(".pdf"):
-                            s3_key = f"{s3_key}.pdf"
+                        # Ensure it ends with .csv
+                        if not s3_key.lower().endswith(".csv"):
+                            s3_key = f"{s3_key}.csv"
                         keys_from_filename += 1
 
                 # Normalize the key (remove leading/trailing slashes for comparison)
@@ -3075,14 +3072,14 @@ def load_new_calls_only():
             config=config,
         )
 
-        # List all PDF files in S3
+        # List all CSV files in S3 (PDFs are ignored)
         paginator = s3_client_with_timeout.get_paginator("list_objects_v2")
         pages = paginator.paginate(
             Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=1000
         )
 
-        # Find new PDFs (not in processed_keys)
-        new_pdf_keys = []
+        # Find new CSV files (not in processed_keys)
+        new_csv_keys = []
         processed_keys_normalized = {key.strip("/") for key in processed_keys}
         total_s3_files = 0
         sample_s3_keys = []
@@ -3105,7 +3102,7 @@ def load_new_calls_only():
                     key = key_raw.strip(
                         "/"
                     )  # Normalize S3 key (consistent with cache normalization)
-                    if key.lower().endswith(".pdf"):
+                    if key.lower().endswith(".csv"):
                         total_s3_files += 1
                         page_file_count += 1
                         all_s3_keys.append(key)
@@ -3116,7 +3113,7 @@ def load_new_calls_only():
                             # Ensure LastModified is a datetime object for safe sorting
                             if not isinstance(last_modified, datetime):
                                 last_modified = datetime.min
-                            new_pdf_keys.append(
+                            new_csv_keys.append(
                                 {
                                     "key": key,  # Store normalized key
                                     "last_modified": last_modified,
@@ -3136,7 +3133,7 @@ def load_new_calls_only():
             # Log pagination progress every 10 pages
             if page_count % 10 == 0:
                 logger.info(
-                    f" Processing page {page_count}, found {total_s3_files} PDF files so far..."
+                    f" Processing page {page_count}, found {total_s3_files} CSV files so far..."
                 )
 
         # Log pagination completion with final IsTruncated status (combined)
@@ -3201,12 +3198,12 @@ def load_new_calls_only():
         logger.info(
             f" Key Comparison: S3={total_s3_files}, Cache={len(processed_keys_normalized)}, Matches={actual_matches}, New={s3_keys_not_in_cache}, Orphaned={cache_keys_not_in_s3}, MatchRate={match_rate:.1f}%, HitRate={cache_hit_rate:.1f}%"
         )
-        logger.info(f"   - New files to process: {len(new_pdf_keys)}")
+        logger.info(f"   - New files to process: {len(new_csv_keys)}")
 
         # Validate that new file count matches expected
-        if s3_keys_not_in_cache != len(new_pdf_keys):
+        if s3_keys_not_in_cache != len(new_csv_keys):
             logger.warning(
-                f" WARNING: Mismatch! S3 keys not in cache ({s3_keys_not_in_cache}) != new_pdf_keys count ({len(new_pdf_keys)})"
+                f" WARNING: Mismatch! S3 keys not in cache ({s3_keys_not_in_cache}) != new_csv_keys count ({len(new_csv_keys)})"
             )
 
         if sample_s3_keys:
@@ -3227,7 +3224,7 @@ def load_new_calls_only():
 
         # Warn if all files are being treated as new when cache exists
         if (
-            len(new_pdf_keys) == total_s3_files
+            len(new_csv_keys) == total_s3_files
             and len(processed_keys_normalized) > 0
             and total_s3_files > 0
         ):
@@ -3270,9 +3267,9 @@ def load_new_calls_only():
                     None,
                     0,
                 )  # No new files - verified complete match for current prefix
-            elif actual_matches == total_s3_files and len(new_pdf_keys) > 0:
+            elif actual_matches == total_s3_files and len(new_csv_keys) > 0:
                 logger.warning(
-                    f"WARNING: All keys match, but {len(new_pdf_keys)} files marked as new!"
+                    f"WARNING: All keys match, but {len(new_csv_keys)} files marked as new!"
                 )
                 logger.warning(
                     "This indicates a logic error - proceeding to process new files"
@@ -3284,7 +3281,7 @@ def load_new_calls_only():
                 logger.warning(
                     "This suggests key normalization issues - proceeding to process new files"
                 )
-        elif not new_pdf_keys and len(processed_keys_normalized) < total_s3_files:
+        elif not new_csv_keys and len(processed_keys_normalized) < total_s3_files:
             # S3 has more files than cache, but no new files found - this shouldn't happen
             logger.warning(
                 f" WARNING: S3 has {total_s3_files} files, cache has {len(processed_keys_normalized)}, but no new files found!"
@@ -3293,7 +3290,7 @@ def load_new_calls_only():
 
         # Final early exit check (only if validation passed above)
         if (
-            not new_pdf_keys
+            not new_csv_keys
             and len(processed_keys_normalized) <= total_s3_files
             and actual_matches == total_s3_files
         ):
@@ -3308,21 +3305,21 @@ def load_new_calls_only():
                 f"WARNING: Cached keys ({len(processed_keys_normalized)}) >= Total S3 files ({total_s3_files})"
             )
             logger.warning(
-                f" But {len(new_pdf_keys)} files are marked as new. This indicates a key format mismatch."
+                f" But {len(new_csv_keys)} files are marked as new. This indicates a key format mismatch."
             )
             logger.warning(
                 f" Match rate: {match_rate:.1f}% - Keys are not matching correctly."
             )
 
         # Sort by modification date (most recent first)
-        new_pdf_keys.sort(key=lambda x: x["last_modified"], reverse=True)
+        new_csv_keys.sort(key=lambda x: x["last_modified"], reverse=True)
 
-        # Process new PDFs
+        # Process new CSV files
         new_calls = []
         errors = []
 
-        def process_pdf(key_item):
-            """Process a single PDF: download, parse, and return result.
+        def process_csv(key_item):
+            """Process a single CSV file: download, parse rows, and return results.
 
             Args:
                 key_item: Either a string (normalized key) or dict with 'key' and 'last_modified'
@@ -3334,35 +3331,48 @@ def load_new_calls_only():
                 else:
                     normalized_key = key_item
 
-                # Use normalized key for S3 (S3 keys typically don't have leading slashes anyway)
-                # But ensure it works - if download fails, try with prefix
+                # Use normalized key for S3
                 s3_key_to_use = normalized_key
                 if s3_prefix and not normalized_key.startswith(s3_prefix):
-                    # Try adding prefix if not present
                     s3_key_to_use = (
                         f"{s3_prefix.rstrip('/')}/{normalized_key}"
                         if not normalized_key.startswith(s3_prefix)
                         else normalized_key
                     )
 
+                # Download CSV from S3
                 response = s3_client_with_timeout.get_object(
                     Bucket=s3_bucket_name, Key=s3_key_to_use
                 )
-                pdf_bytes = response["Body"].read()
+                csv_content = response["Body"].read().decode("utf-8")
+                
+                # Read CSV into DataFrame
+                csv_file = io.StringIO(csv_content)
+                df = pd.read_csv(csv_file)
+                
+                # Extract filename from key
                 filename = normalized_key.split("/")[-1]
-                parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
-
-                if parsed_data:
-                    # Store normalized key for consistent comparison
-                    parsed_data["_id"] = normalized_key
-                    parsed_data["_s3_key"] = normalized_key
-                    return parsed_data, None
-                else:
-                    return None, f"Failed to parse {filename}"
+                
+                # Process each row
+                csv_calls = []
+                for idx, row in df.iterrows():
+                    try:
+                        parsed_data = parse_csv_row(row, filename)
+                        if parsed_data:
+                            # Store normalized key for consistent comparison
+                            parsed_data["_id"] = normalized_key
+                            parsed_data["_s3_key"] = normalized_key
+                            csv_calls.append(parsed_data)
+                    except Exception as e:
+                        error_msg = f"Error parsing row {idx + 1} in {filename}: {str(e)}"
+                        errors.append(error_msg)
+                        logger.warning(error_msg)
+                        continue
+                
+                return csv_calls, None
             except Exception as e:
-                # If download failed with normalized key, log the error
-                logger.warning(f" Failed to download with key '{normalized_key}': {e}")
-                return None, f"{normalized_key}: {str(e)}"
+                logger.warning(f" Failed to process CSV '{normalized_key}': {e}")
+                return [], f"{normalized_key}: {str(e)}"
 
         # Process in smaller batches to reduce lock contention with large cache files
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3373,22 +3383,22 @@ def load_new_calls_only():
         MAX_FILES_PER_REFRESH = 500  # Reduced from 1000 to process in smaller chunks and reduce memory pressure
 
         # Limit the number of files processed per refresh
-        total_new_unlimited = len(new_pdf_keys)
-        new_pdf_keys = new_pdf_keys[:MAX_FILES_PER_REFRESH]
-        total_new = len(new_pdf_keys)
+        total_new_unlimited = len(new_csv_keys)
+        new_csv_keys = new_csv_keys[:MAX_FILES_PER_REFRESH]
+        total_new = len(new_csv_keys)
 
         if total_new_unlimited > MAX_FILES_PER_REFRESH:
             remaining = total_new_unlimited - MAX_FILES_PER_REFRESH
             logger.info(
-                f" Refresh New Data: Found {total_new_unlimited} new PDF files total, processing {total_new} this refresh (limit: {MAX_FILES_PER_REFRESH}), {remaining} remaining"
+                f" Refresh New Data: Found {total_new_unlimited} new CSV files total, processing {total_new} this refresh (limit: {MAX_FILES_PER_REFRESH}), {remaining} remaining"
             )
         else:
             logger.info(
-                f" Refresh New Data: Found {total_new} new PDF files to process"
+                f" Refresh New Data: Found {total_new} new CSV files to process"
             )
 
         logger.info(
-            f" Starting to process {total_new} new PDF files in batches of {BATCH_SIZE} (out of {total_s3_files} total in S3)"
+            f" Starting to process {total_new} new CSV files in batches of {BATCH_SIZE} (out of {total_s3_files} total in S3)"
         )
 
         # Memory monitoring - check initial memory usage
@@ -3427,7 +3437,7 @@ def load_new_calls_only():
         # Process in batches
         for batch_start in range(0, total_new, BATCH_SIZE):
             batch_end = min(batch_start + BATCH_SIZE, total_new)
-            batch_keys = new_pdf_keys[batch_start:batch_end]
+            batch_keys = new_csv_keys[batch_start:batch_end]
             batch_num = batch_start // BATCH_SIZE + 1
             total_batches = (total_new + BATCH_SIZE - 1) // BATCH_SIZE
 
@@ -3446,15 +3456,15 @@ def load_new_calls_only():
                 max_workers=5
             ) as executor:  # Reduced from 10 to lower memory pressure
                 future_to_key = {
-                    executor.submit(process_pdf, item): item["key"]
+                    executor.submit(process_csv, item): item["key"]
                     for item in batch_keys
                 }
 
                 for future in as_completed(future_to_key):
                     try:
-                        parsed_data, error = future.result(
-                            timeout=60
-                        )  # 60 second timeout per file
+                        csv_calls_list, error = future.result(
+                            timeout=120
+                        )  # 120 second timeout per CSV file (may contain many rows)
                     except Exception as e:
                         # Handle both TimeoutError and concurrent.futures.TimeoutError
                         from concurrent.futures import (
@@ -3463,30 +3473,30 @@ def load_new_calls_only():
 
                         if isinstance(e, (TimeoutError, FuturesTimeoutError)):
                             key = future_to_key.get(future, "Unknown")
-                            logger.error(f" Timeout processing {key}: {e}")
-                            errors.append(f"{key}: Processing timeout (60s)")
-                            st.session_state.pdf_processing_progress["errors"] += 1
+                            logger.error(f" Timeout processing CSV {key}: {e}")
+                            errors.append(f"{key}: Processing timeout (120s)")
                             processed_count += 1
                             continue
                         else:
                             # Unexpected error in future execution
                             logger.error(f" Unexpected error in future: {e}")
                             errors.append(f"Unknown: {str(e)}")
-                            st.session_state.pdf_processing_progress["errors"] += 1
                             processed_count += 1
                             continue
 
                     processed_count += 1
 
-                    if parsed_data:
-                        new_calls.append(parsed_data)
-                        batch_calls.append(parsed_data)  # Track for this batch
+                    if csv_calls_list:
+                        # Extend with list of calls from CSV
+                        for parsed_data in csv_calls_list:
+                            new_calls.append(parsed_data)
+                            batch_calls.append(parsed_data)  # Track for this batch
 
-                        # Check if this call is already in cache
-                        call_key = parsed_data.get("_s3_key") or parsed_data.get("_id")
-                        if call_key and call_key in existing_cache_keys:
-                            # Already in cache - skip (already added to new_calls above)
-                            pass
+                            # Check if this call is already in cache
+                            call_key = parsed_data.get("_s3_key") or parsed_data.get("_id")
+                            if call_key and call_key in existing_cache_keys:
+                                # Already in cache - skip (already added to new_calls above)
+                                pass
                     elif error:
                         errors.append(error)
 
@@ -3883,7 +3893,7 @@ if st.sidebar.button("🚪 Logout", help="Log out of your account", type="second
 @st.cache_data(ttl=60, max_entries=1, show_spinner=False)
 def check_for_new_pdfs_lightweight():
     """
-    Lightweight check: Just counts new PDFs without downloading.
+    Lightweight check: Just counts new CSV files without downloading (PDFs are ignored).
     Cached for 60 seconds to prevent excessive S3 pagination calls.
     Returns: (new_count, error_message)
     """
@@ -3963,15 +3973,15 @@ def check_for_new_pdfs_lightweight():
             config=config,
         )
 
-        # List all PDF files in S3 (quick check - just count)
+        # List all CSV files in S3 (quick check - just count, PDFs are ignored)
         paginator = s3_client_quick.get_paginator("list_objects_v2")
         pages = paginator.paginate(
             Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=1000
         )
 
-        # Count new PDFs (not in processed_keys)
+        # Count new CSV files (not in processed_keys)
         new_count = 0
-        total_pdfs = 0
+        total_csvs = 0
         processed_keys_normalized = {
             key.strip("/") for key in processed_keys
         }  # Consistent normalization
@@ -3991,8 +4001,8 @@ def check_for_new_pdfs_lightweight():
                     key = key_raw.strip(
                         "/"
                     )  # Normalize S3 key (consistent with cache normalization)
-                    if key.lower().endswith(".pdf"):
-                        total_pdfs += 1
+                    if key.lower().endswith(".csv"):
+                        total_csvs += 1
                         if key not in processed_keys_normalized:
                             new_count += 1
             # Check if pagination is truncated
@@ -4004,13 +4014,13 @@ def check_for_new_pdfs_lightweight():
 
         # Log pagination completion with final IsTruncated status (combined)
         logger.info(
-            f" Lightweight check: {page_count} pages, {total_pdfs} files, IsTruncated={is_truncated} (False=complete, True=may be incomplete)"
+            f" Lightweight check: {page_count} pages, {total_csvs} CSV files, IsTruncated={is_truncated} (False=complete, True=may be incomplete)"
         )
 
         # Verify pagination completed (warn if suspicious)
-        if total_pdfs > 0 and total_pdfs % 1000 == 0:
+        if total_csvs > 0 and total_csvs % 1000 == 0:
             logger.warning(
-                f" Total files ({total_pdfs}) is exactly divisible by 1000 - pagination might be incomplete!"
+                f" Total files ({total_csvs}) is exactly divisible by 1000 - pagination might be incomplete!"
             )
         if is_truncated:
             logger.error(
@@ -4018,16 +4028,16 @@ def check_for_new_pdfs_lightweight():
             )
 
         # Validate S3 listing completeness
-        if len(processed_keys_normalized) > total_pdfs:
+        if len(processed_keys_normalized) > total_csvs:
             logger.error(
-                f" CRITICAL: Cache has MORE keys ({len(processed_keys_normalized)}) than S3 ({total_pdfs})!"
+                f" CRITICAL: Cache has MORE keys ({len(processed_keys_normalized)}) than S3 ({total_csvs})!"
             )
             logger.error(
                 "This suggests S3 listing is incomplete or cache has orphaned entries."
             )
 
         logger.info(
-            f" PDF Count: {total_pdfs} total in S3, {len(processed_keys_normalized)} processed, {new_count} new"
+            f" CSV Count: {total_csvs} total in S3, {len(processed_keys_normalized)} processed, {new_count} new"
         )
 
         # Note: For lightweight check, we don't do full exhaustive comparison to save time
@@ -4036,7 +4046,7 @@ def check_for_new_pdfs_lightweight():
         return new_count, None
 
     except Exception as e:
-        return 0, f"Error checking for new PDFs: {e}"
+        return 0, f"Error checking for new CSV files: {e}"
 
 
 # Initialize background refresh state
@@ -4048,12 +4058,12 @@ if "bg_check_interval_minutes" not in st.session_state:
     st.session_state.bg_check_interval_minutes = (
         60  # Check every hour (very low AWS cost)
     )
-if "new_pdfs_notification_count" not in st.session_state:
-    st.session_state.new_pdfs_notification_count = 0
+if "new_csvs_notification_count" not in st.session_state:
+    st.session_state.new_csvs_notification_count = 0
 if "bg_check_error" not in st.session_state:
     st.session_state.bg_check_error = None
 
-# Background refresh: Check for new PDFs if enough time has passed
+# Background refresh: Check for new CSV files if enough time has passed (PDFs are ignored)
 current_time = time.time()
 time_since_last_check = (
     current_time - st.session_state.last_bg_check_time
@@ -4072,25 +4082,25 @@ if (
     else:
         st.session_state.bg_check_error = None
         if new_count > 0:
-            st.session_state.new_pdfs_notification_count = new_count
+            st.session_state.new_csvs_notification_count = new_count
         else:
             # Clear notification count since there are no new files
-            st.session_state.new_pdfs_notification_count = 0
+            st.session_state.new_csvs_notification_count = 0
 else:
     # Even if not time for background check, verify count is correct
     # If we have a notification count but haven't checked recently, verify it's still valid
-    if st.session_state.new_pdfs_notification_count > 0:
+    if st.session_state.new_csvs_notification_count > 0:
         # Quick verification - if we have a notification but haven't checked recently, verify it
         new_count, _ = check_for_new_pdfs_lightweight()
         if new_count == 0:
             # Clear stale notification count
-            st.session_state.new_pdfs_notification_count = 0
+            st.session_state.new_csvs_notification_count = 0
 
 # Show notification if new PDFs are available
-if st.session_state.new_pdfs_notification_count > 0:
+if st.session_state.new_csvs_notification_count > 0:
     st.sidebar.markdown("---")
     st.sidebar.success(
-        f"**{st.session_state.new_pdfs_notification_count} new PDF(s) available!**"
+        f"**{st.session_state.new_csvs_notification_count} new CSV file(s) available!**"
     )
     st.sidebar.caption("Click 'Refresh New Data' below to load them")
 
@@ -4134,7 +4144,7 @@ if is_super_admin():
                     st.error(f" {check_error}")
                 elif new_count > 0:
                     st.success(f" Found {new_count} new PDF(s)!")
-                    st.session_state.new_pdfs_notification_count = new_count
+                    st.session_state.new_csvs_notification_count = new_count
                 else:
                     st.info(" No new PDFs found")
                 st.rerun()
@@ -4636,7 +4646,7 @@ if is_super_admin():
             if new_errors:
                 st.warning(f" {len(new_errors)} file(s) had errors")
             # Clear notification count after successful refresh
-            st.session_state.new_pdfs_notification_count = 0
+            st.session_state.new_csvs_notification_count = 0
             # Reset auto_refresh_checked so startup check runs again to verify 0 new files
             st.session_state.auto_refresh_checked = False
 
@@ -5067,7 +5077,7 @@ try:
 
                     # Clear flags
                     del st.session_state.auto_refresh_pending
-                    st.session_state.new_pdfs_notification_count = 0
+                    st.session_state.new_csvs_notification_count = 0
 
                     # Rerun to show updated data
                     st.rerun()
@@ -5076,7 +5086,7 @@ try:
                         "No new files to load (may have been processed already)"
                     )
                     del st.session_state.auto_refresh_pending
-                    st.session_state.new_pdfs_notification_count = 0
+                    st.session_state.new_csvs_notification_count = 0
 
     # Check if we got valid data
     if not call_data and not errors:
