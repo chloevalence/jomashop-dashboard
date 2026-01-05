@@ -2093,17 +2093,21 @@ def load_all_calls_cached(cache_version=0):
         
         # Clear the flag so we don't delete again
         st.session_state["reload_all_triggered"] = False
+        # Skip S3 cache check - we just deleted it, need fresh load
+        s3_cache_result = None
+        s3_cache_timestamp = None
+        logger.info(" Skipping S3 cache check - caches deleted, will load fresh from S3")
+    else:
+        # CRITICAL: Always check S3 cache first (source of truth, shared across all users)
+        # This ensures all users get the same up-to-date data
+        # Use session state caching to prevent duplicate S3 loads
+        s3_cache_result = None
+        s3_cache_timestamp = None
 
-    # CRITICAL: Always check S3 cache first (source of truth, shared across all users)
-    # This ensures all users get the same up-to-date data
-    # Use session state caching to prevent duplicate S3 loads
-    s3_cache_result = None
-    s3_cache_timestamp = None
-
-    # Check session state first to avoid duplicate S3 loads
-    s3_cache_key = "_s3_cache_result"
-    s3_timestamp_key = "_s3_cache_timestamp"
-    if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
+        # Check session state first to avoid duplicate S3 loads
+        s3_cache_key = "_s3_cache_result"
+        s3_timestamp_key = "_s3_cache_timestamp"
+        if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
         cached_timestamp = st.session_state[s3_timestamp_key]
         # Use cached result if timestamp matches (cache is still valid)
         # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
