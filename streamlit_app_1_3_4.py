@@ -9210,7 +9210,7 @@ with st.expander("Score & Label Distribution Analysis", expanded=False):
     with col_left:
         st.subheader("QA Score Distribution")
         if "QA Score" in filtered_df.columns:
-        fig_dist, ax_dist = plt.subplots(figsize=(8, 5))
+            fig_dist, ax_dist = plt.subplots(figsize=(8, 5))
             filtered_df["QA Score"].hist(
                 bins=20, ax=ax_dist, edgecolor="black", color="steelblue"
             )
