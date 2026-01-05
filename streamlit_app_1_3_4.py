@@ -2476,23 +2476,23 @@ def load_all_calls_cached(cache_version=0):
                         f" USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss"
                     )
                     return disk_call_data, disk_errors if disk_errors else []
+                else:
+                    logger.info(
+                        f" Cache has only {cache_count} calls (< 100), will load from S3"
+                    )
             else:
                 logger.info(
-                    f" Cache has only {cache_count} calls (< 100), will load from S3"
+                    f" Reload ALL Data triggered - ignoring cache with {cache_count} calls, will load fresh from S3"
                 )
-        else:
-            logger.info(
-                f" Reload ALL Data triggered - ignoring cache with {cache_count} calls, will load fresh from S3"
-            )
-    
-    # Only reach here if:
-    # 1. No cache found, OR
-    # 2. Cache has < 100 calls, OR  
-    # 3. User explicitly requested reload (reload_all_triggered = True)
-    # 4. Cache is partial (will continue loading remaining files)
-    
-    # Determine what to load
-    if reload_all_triggered:
+
+        # Only reach here if:
+        # 1. No cache found, OR
+        # 2. Cache has < 100 calls, OR
+        # 3. User explicitly requested reload (reload_all_triggered = True)
+        # 4. Cache is partial (will continue loading remaining files)
+
+        # Determine what to load
+        if reload_all_triggered:
         # User explicitly requested full dataset - load ALL files (may take 10-20 min)
             # NOTE: Caches were already cleared at the beginning of this function (lines 2056-2104)
             # No need to clear again here to avoid duplicate operations
