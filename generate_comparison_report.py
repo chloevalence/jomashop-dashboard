@@ -1704,12 +1704,12 @@ def generate_pdf_report(
         )
         summary_lines.append(
             f"  • Avg QA Score: {previous_metrics.get('avg_qa_score', 'N/A'):.1f}"
-            if previous_metrics.get("avg_qa_score")
+            if previous_metrics.get("avg_qa_score") is not None
             else "  • Avg QA Score: N/A"
         )
         summary_lines.append(
             f"  • Median Score: {previous_metrics.get('score_median', 'N/A'):.1f}"
-            if previous_metrics.get("score_median")
+            if previous_metrics.get("score_median") is not None
             else "  • Median Score: N/A"
         )
         summary_lines.append(
@@ -1724,7 +1724,7 @@ def generate_pdf_report(
         )
         summary_lines.append(
             f"  • Avg AHT: {previous_metrics.get('avg_aht', 'N/A'):.1f} min"
-            if previous_metrics.get("avg_aht")
+            if previous_metrics.get("avg_aht") is not None
             else "  • Avg AHT: N/A"
         )
         summary_lines.append(
@@ -1742,12 +1742,12 @@ def generate_pdf_report(
         )
         summary_lines.append(
             f"  • Avg QA Score: {bpo_metrics.get('avg_qa_score', 'N/A'):.1f}"
-            if bpo_metrics.get("avg_qa_score")
+            if bpo_metrics.get("avg_qa_score") is not None
             else "  • Avg QA Score: N/A"
         )
         summary_lines.append(
             f"  • Median Score: {bpo_metrics.get('score_median', 'N/A'):.1f}"
-            if bpo_metrics.get("score_median")
+            if bpo_metrics.get("score_median") is not None
             else "  • Median Score: N/A"
         )
         summary_lines.append(
@@ -1762,7 +1762,7 @@ def generate_pdf_report(
         )
         summary_lines.append(
             f"  • Avg AHT: {bpo_metrics.get('avg_aht', 'N/A'):.1f} min"
-            if bpo_metrics.get("avg_aht")
+            if bpo_metrics.get("avg_aht") is not None
             else "  • Avg AHT: N/A"
         )
         summary_lines.append(
