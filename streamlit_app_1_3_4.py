@@ -18,7 +18,6 @@ import logging
 import shutil
 from pathlib import Path
 from contextlib import contextmanager
-from pdf_parser import parse_pdf_from_bytes
 from utils import (
     log_audit_event,
     check_session_timeout,
@@ -3030,7 +3029,7 @@ def load_new_calls_only():
                 call_id = call.get("call_id")
                 _id = call.get("_id", "")
                 _s3_key = call.get("_s3_key", "")
-                
+
                 # If _id contains a colon, it's from a CSV (format: filename:call_id)
                 if call_id and (":" in str(_id) or ":" in str(_s3_key)):
                     # For CSV files, use call_id as the unique key
@@ -3940,7 +3939,7 @@ if st.sidebar.button("🚪 Logout", help="Log out of your account", type="second
         st.sidebar.error("Error logging out. Please refresh the page.")
 
 
-def check_for_new_pdfs_lightweight():
+def check_for_new_csvs_lightweight():
     """
     Lightweight check: Just counts new CSV files without downloading (PDFs are ignored).
     Cached for 60 seconds to prevent excessive S3 pagination calls.
@@ -4855,8 +4854,8 @@ try:
             logger.debug("Setting up progress tracking...")
 
             # Initialize progress tracking
-            if "pdf_processing_progress" not in st.session_state:
-                st.session_state.pdf_processing_progress = {
+            if "csv_processing_progress" not in st.session_state:
+                st.session_state.csv_processing_progress = {
                     "processed": 0,
                     "total": 0,
                     "errors": 0,
@@ -4872,14 +4871,14 @@ try:
 
             # Show progress if we're processing files
             def update_progress():
-                if st.session_state.pdf_processing_progress["total"] > 0:
-                    processed = st.session_state.pdf_processing_progress["processed"]
-                    total = st.session_state.pdf_processing_progress["total"]
-                    errors = st.session_state.pdf_processing_progress["errors"]
+                if st.session_state.csv_processing_progress["total"] > 0:
+                    processed = st.session_state.csv_processing_progress["processed"]
+                    total = st.session_state.csv_processing_progress["total"]
+                    errors = st.session_state.csv_processing_progress["errors"]
                     progress = processed / total if total > 0 else 0
                     progress_placeholder.progress(
                         progress,
-                        text=f"Processing PDFs: {processed}/{total} ({errors} errors)",
+                        text=f"Processing CSV files: {processed}/{total} ({errors} errors)",
                     )
 
             # Load data (this will trigger processing if not cached)
