@@ -2108,7 +2108,7 @@ def load_all_calls_cached(cache_version=0):
         s3_cache_key = "_s3_cache_result"
         s3_timestamp_key = "_s3_cache_timestamp"
         if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
-        cached_timestamp = st.session_state[s3_timestamp_key]
+            cached_timestamp = st.session_state[s3_timestamp_key]
         # Use cached result if timestamp matches (cache is still valid)
         # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
         cached_result = st.session_state[s3_cache_key]
