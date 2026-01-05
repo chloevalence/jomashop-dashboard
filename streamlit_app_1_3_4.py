@@ -2410,11 +2410,11 @@ def load_all_calls_cached(cache_version=0):
     
         # NOTE: Removed duplicate check for _merged_cache_data - it's already checked earlier at line 1271
         # and returns immediately, making this check unreachable dead code
-    
-    # Load disk cache regardless of reload_all_triggered - we'll check that flag later
-    disk_result = load_cached_data_from_disk()
-    # CRITICAL FIX: Check if disk_result is None before accessing its elements
-    if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
+
+        # Load disk cache regardless of reload_all_triggered - we'll check that flag later
+        disk_result = load_cached_data_from_disk()
+        # CRITICAL FIX: Check if disk_result is None before accessing its elements
+        if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
         disk_call_data, disk_errors = disk_result
             # Migrate old cache format to new format
             disk_call_data = migrate_old_cache_format(disk_call_data)
