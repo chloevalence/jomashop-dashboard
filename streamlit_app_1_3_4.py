@@ -9029,9 +9029,9 @@ else:
             agent_trends_col1, agent_trends_col2 = st.columns(2)
 
             with agent_trends_col1:
-            selected_agent_for_trend = st.selectbox(
-                "Select Agent for Trend Analysis", selected_agents
-            )
+                selected_agent_for_trend = st.selectbox(
+                    "Select Agent for Trend Analysis", selected_agents
+                )
 
             agent_data = filtered_df[filtered_df["Agent"] == selected_agent_for_trend]
             if len(agent_data) > 0:
