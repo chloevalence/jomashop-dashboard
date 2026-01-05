@@ -5547,6 +5547,115 @@ meta_df.rename(
     inplace=True,
 )
 
+
+def normalize_category(value):
+    """
+    Normalize call reason/outcome categories to merge duplicates and handle case sensitivity.
+    
+    Rules:
+    1. Case-insensitive: "order status inquiry" and "Order status inquiry" → "Order status inquiry"
+    2. Merge shipping-related: "customer informed about shipping delay", "shipping status", 
+       "shipping timeline" → "shipping status"
+    3. Rename: "refund and return process initiated" → "return process initiated"
+    
+    Args:
+        value: Category string to normalize
+        
+    Returns:
+        Normalized category string
+    """
+    if pd.isna(value) or not value or not str(value).strip():
+        return value
+    
+    value_str = str(value).strip()
+    
+    # Normalize to lowercase for comparison
+    value_lower = value_str.lower()
+    
+    # Merge shipping-related categories
+    shipping_variants = [
+        "customer informed about shipping delay",
+        "shipping status",
+        "shipping timeline",
+    ]
+    if value_lower in shipping_variants:
+        return "shipping status"
+    
+    # Rename "refund and return process initiated" to "return process initiated"
+    if value_lower == "refund and return process initiated":
+        return "return process initiated"
+    
+    # For case-insensitive duplicates, use the first occurrence's capitalization
+    # We'll handle this by creating a mapping of lowercase -> preferred capitalization
+    # For now, just return the value as-is (we'll handle case normalization separately)
+    return value_str
+
+
+def normalize_categories_in_dataframe(df, column_name):
+    """
+    Normalize categories in a DataFrame column, handling case-insensitive duplicates.
+    
+    This function:
+    1. Applies category-specific normalization rules
+    2. Merges case-insensitive duplicates (keeps the most common capitalization)
+    
+    Args:
+        df: DataFrame to normalize
+        column_name: Name of the column to normalize
+        
+    Returns:
+        DataFrame with normalized column
+    """
+    if column_name not in df.columns:
+        return df
+    
+    df = df.copy()
+    
+    # First, apply category-specific normalization rules
+    df[column_name] = df[column_name].apply(normalize_category)
+    
+    # Then, handle case-insensitive duplicates
+    # Group by lowercase version and use the most common capitalization
+    if df[column_name].notna().any():
+        # Create a mapping: lowercase -> most common capitalization
+        category_counts = df[column_name].value_counts()
+        lowercase_to_canonical = {}
+        
+        for category in category_counts.index:
+            if pd.notna(category):
+                cat_lower = str(category).lower()
+                # If we haven't seen this lowercase version, or this capitalization is more common
+                if cat_lower not in lowercase_to_canonical:
+                    lowercase_to_canonical[cat_lower] = category
+                else:
+                    # Use the one with higher count
+                    current_count = category_counts.get(category, 0)
+                    existing_cat = lowercase_to_canonical[cat_lower]
+                    existing_count = category_counts.get(existing_cat, 0)
+                    if current_count > existing_count:
+                        lowercase_to_canonical[cat_lower] = category
+        
+        # Apply the mapping
+        def apply_case_normalization(val):
+            if pd.isna(val):
+                return val
+            val_str = str(val)
+            val_lower = val_str.lower()
+            if val_lower in lowercase_to_canonical:
+                return lowercase_to_canonical[val_lower]
+            return val_str
+        
+        df[column_name] = df[column_name].apply(apply_case_normalization)
+    
+    return df
+
+
+# Normalize Reason and Outcome columns to merge duplicates
+if "Reason" in meta_df.columns:
+    meta_df = normalize_categories_in_dataframe(meta_df, "Reason")
+if "Outcome" in meta_df.columns:
+    meta_df = normalize_categories_in_dataframe(meta_df, "Outcome")
+
 # Handle call duration
 if "speaking_time_per_speaker" in meta_df.columns:
 
