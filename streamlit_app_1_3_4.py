@@ -8974,13 +8974,13 @@ if user_agent_id:
                     color="lightgreen",
                     linestyle="--",
                 )
-            ax_pass_trend.set_xlabel("Date")
-            ax_pass_trend.set_ylabel("Pass Rate (%)")
-            ax_pass_trend.set_title("My Pass Rate Trend vs Team Average")
-            ax_pass_trend.grid(True, alpha=0.3)
-            ax_pass_trend.legend()
-            plt.xticks(rotation=45)
-            plt.tight_layout()
+                ax_pass_trend.set_xlabel("Date")
+                ax_pass_trend.set_ylabel("Pass Rate (%)")
+                ax_pass_trend.set_title("My Pass Rate Trend vs Team Average")
+                ax_pass_trend.grid(True, alpha=0.3)
+                ax_pass_trend.legend()
+                plt.xticks(rotation=45)
+                plt.tight_layout()
                 st_pyplot_safe(fig_pass_trend)
 
             # AHT Trend
