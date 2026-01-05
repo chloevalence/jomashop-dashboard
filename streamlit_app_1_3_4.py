@@ -4356,10 +4356,10 @@ def is_regular_admin():
         return False
 
     # Try to get agent_id from secrets
-try:
-    user_mapping = st.secrets.get("user_mapping", {})
+    try:
+        user_mapping = st.secrets.get("user_mapping", {})
         if current_username in user_mapping:
-        agent_id_value = user_mapping[current_username].get("agent_id", "")
+            agent_id_value = user_mapping[current_username].get("agent_id", "")
             # No agent_id means admin
             if not agent_id_value:
                 return True
