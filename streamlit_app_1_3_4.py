@@ -2549,19 +2549,19 @@ def load_all_calls_cached(cache_version=0):
                     logger.error(traceback.format_exc())
                     # Fallback to disk cache if new load fails
                     return disk_call_data, disk_errors if disk_errors else []
-                else:
-                    # Too many files remaining - return partial cache and let user manually refresh
-                    # This prevents crashes from long-running operations during page load
-                    logger.info(
-                        f" Found PARTIAL cache: {partial_processed}/{partial_total} files ({remaining_files} remaining)"
-                    )
-                    logger.info(
-                        f" Returning partial cache immediately - use 'Refresh New Data' button to load remaining {remaining_files} files"
-                    )
-                    logger.info(
-                        f" Auto-continuation skipped to prevent crashes (>{1000} files remaining)"
-                    )
-                    return disk_call_data, disk_errors if disk_errors else []
+            else:
+                # Too many files remaining - return partial cache and let user manually refresh
+                # This prevents crashes from long-running operations during page load
+                logger.info(
+                    f" Found PARTIAL cache: {partial_processed}/{partial_total} files ({remaining_files} remaining)"
+                )
+                logger.info(
+                    f" Returning partial cache immediately - use 'Refresh New Data' button to load remaining {remaining_files} files"
+                )
+                logger.info(
+                    f" Auto-continuation skipped to prevent crashes (>{1000} files remaining)"
+                )
+                return disk_call_data, disk_errors if disk_errors else []
         else:
             # No substantial cache - load ALL files from S3
             logger.info("No substantial cache found - loading ALL files from S3")
@@ -2594,9 +2594,9 @@ def load_all_calls_cached(cache_version=0):
             use_disk_cache = False
 
             if streamlit_call_data and len(streamlit_call_data) > 0:
-            # Streamlit cache has data - check if it's better than disk cache
-            if load_duration < 2.0:
-                # Fast load = likely from Streamlit's in-memory cache
+                # Streamlit cache has data - check if it's better than disk cache
+                if load_duration < 2.0:
+                    # Fast load = likely from Streamlit's in-memory cache
                     logger.info(
                         f"⚡ Detected Streamlit in-memory cache ({len(streamlit_call_data)} calls loaded in {load_duration:.2f}s)"
                     )
@@ -2605,20 +2605,20 @@ def load_all_calls_cached(cache_version=0):
                     # CRITICAL: Always prefer disk cache if it has more data, regardless of load speed
                     # This ensures we never show stale Streamlit cache when disk cache is more complete
                     if len(disk_call_data) > len(streamlit_call_data):
-                            logger.info(
-                                f" Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - ALWAYS using disk cache"
-                            )
+                        logger.info(
+                            f" Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - ALWAYS using disk cache"
+                        )
                         use_disk_cache = True
                     elif len(streamlit_call_data) > len(disk_call_data):
-                            logger.info(
-                                f" Streamlit cache is more complete ({len(streamlit_call_data)} vs {len(disk_call_data)} calls) - using it"
-                            )
+                        logger.info(
+                            f" Streamlit cache is more complete ({len(streamlit_call_data)} vs {len(disk_call_data)} calls) - using it"
+                        )
                         use_streamlit_cache = True
                     elif len(streamlit_call_data) == len(disk_call_data):
                         # Same size - prefer disk cache as source of truth (it persists across restarts)
-                            logger.info(
-                                "Caches match - using disk cache as source of truth (persists across restarts)"
-                            )
+                        logger.info(
+                            "Caches match - using disk cache as source of truth (persists across restarts)"
+                        )
                         use_disk_cache = True
                 else:
                     # No disk cache - use Streamlit cache
@@ -2648,86 +2648,86 @@ def load_all_calls_cached(cache_version=0):
                     # Only disk cache has data
                     logger.info(f" Using disk cache ({len(disk_call_data)} calls)")
                     use_disk_cache = True
-        
+
             # Use the best cache
             if use_streamlit_cache:
                 final_call_data, final_errors = streamlit_call_data, streamlit_errors
-            # Deduplicate Streamlit cache data
-            if final_call_data:
-                original_count = len(final_call_data)
-                final_call_data = deduplicate_calls(final_call_data)
-                if len(final_call_data) < original_count:
+                # Deduplicate Streamlit cache data
+                if final_call_data:
+                    original_count = len(final_call_data)
+                    final_call_data = deduplicate_calls(final_call_data)
+                    if len(final_call_data) < original_count:
+                        logger.info(
+                            f" Deduplicated Streamlit cache: {original_count} → {len(final_call_data)} unique calls"
+                        )
+                # ALWAYS update disk cache with Streamlit cache data (it's more recent)
+                # This ensures Streamlit cache is preserved to disk for future restarts
+                if final_call_data:
+                    # Only skip save if we already saved it above (for slow S3 loads)
+                    if load_duration >= 2.0:
+                        # Already saved above for slow loads, just log
+                        logger.info(
+                            "Streamlit cache data already saved to disk (from S3 load)"
+                        )
+                    else:
+                        # Fast load = from Streamlit cache, save it to disk now
+                        # CRITICAL FIX: Wrap save in try/except so save failures don't cause function to return empty data
+                        try:
+                            save_cached_data_to_disk(final_call_data, final_errors)
+                            logger.info(
+                                f" Saved Streamlit cache to disk cache ({len(final_call_data)} calls) - preserved for future restarts"
+                            )
+                        except Exception as save_error:
+                            logger.error(
+                                f" Failed to save Streamlit cache to disk: {save_error}"
+                            )
+                            logger.warning(
+                                "Data is available but not saved - will be lost on restart"
+                            )
+                            # Continue anyway - return the successfully loaded data
+            elif use_disk_cache:
+                final_call_data, final_errors = disk_call_data, disk_errors
+                # Deduplicate disk cache data (should already be deduplicated, but double-check)
+                if final_call_data:
+                    original_count = len(final_call_data)
+                    final_call_data = deduplicate_calls(final_call_data)
+                    if len(final_call_data) < original_count:
+                        logger.info(
+                            f" Deduplicated disk cache: {original_count} → {len(final_call_data)} unique calls"
+                        )
                     logger.info(
-                        f" Deduplicated Streamlit cache: {original_count} → {len(final_call_data)} unique calls"
+                        "Using disk cache - populating Streamlit's in-memory cache for faster access"
                     )
-            # ALWAYS update disk cache with Streamlit cache data (it's more recent)
-            # This ensures Streamlit cache is preserved to disk for future restarts
-            if final_call_data:
-                # Only skip save if we already saved it above (for slow S3 loads)
-                if load_duration >= 2.0:
-                    # Already saved above for slow loads, just log
-                    logger.info(
-                        "Streamlit cache data already saved to disk (from S3 load)"
-                    )
-                else:
-                    # Fast load = from Streamlit cache, save it to disk now
+            else:
+                # No cache available - use what we loaded
+                final_call_data, final_errors = streamlit_call_data, streamlit_errors
+                # Deduplicate before saving
+                if final_call_data:
+                    original_count = len(final_call_data)
+                    final_call_data = deduplicate_calls(final_call_data)
+                    if len(final_call_data) < original_count:
+                        logger.info(
+                            f" Deduplicated fresh load: {original_count} → {len(final_call_data)} unique calls"
+                        )
                     # CRITICAL FIX: Wrap save in try/except so save failures don't cause function to return empty data
                     try:
                         save_cached_data_to_disk(final_call_data, final_errors)
-                        logger.info(
-                            f" Saved Streamlit cache to disk cache ({len(final_call_data)} calls) - preserved for future restarts"
-                        )
                     except Exception as save_error:
-                        logger.error(
-                            f" Failed to save Streamlit cache to disk: {save_error}"
-                        )
+                        logger.error(f"Failed to save fresh load to disk: {save_error}")
                         logger.warning(
-                            "Data is available but not saved - will be lost on restart"
+                            "Data was successfully loaded but not saved - will be lost on restart"
                         )
                         # Continue anyway - return the successfully loaded data
-        elif use_disk_cache:
-            final_call_data, final_errors = disk_call_data, disk_errors
-            # Deduplicate disk cache data (should already be deduplicated, but double-check)
-            if final_call_data:
-                original_count = len(final_call_data)
-                final_call_data = deduplicate_calls(final_call_data)
-                if len(final_call_data) < original_count:
-                    logger.info(
-                        f" Deduplicated disk cache: {original_count} → {len(final_call_data)} unique calls"
-                    )
-                logger.info(
-                    "Using disk cache - populating Streamlit's in-memory cache for faster access"
-                )
-        else:
-            # No cache available - use what we loaded
-            final_call_data, final_errors = streamlit_call_data, streamlit_errors
-            # Deduplicate before saving
-            if final_call_data:
-                original_count = len(final_call_data)
-                final_call_data = deduplicate_calls(final_call_data)
-                if len(final_call_data) < original_count:
-                    logger.info(
-                        f" Deduplicated fresh load: {original_count} → {len(final_call_data)} unique calls"
-                    )
-                # CRITICAL FIX: Wrap save in try/except so save failures don't cause function to return empty data
-                try:
-                    save_cached_data_to_disk(final_call_data, final_errors)
-                except Exception as save_error:
-                    logger.error(f"Failed to save fresh load to disk: {save_error}")
-                    logger.warning(
-                        "Data was successfully loaded but not saved - will be lost on restart"
-                    )
-                    # Continue anyway - return the successfully loaded data
-        
+
             logger.info(f" Total time: {elapsed:.1f} seconds ({elapsed / 60:.1f} minutes)")
-        
+
             # Clear reload_all_triggered flag after successful load
-        if reload_all_triggered:
+            if reload_all_triggered:
                 st.session_state["reload_all_triggered"] = False
                 logger.info(
                     f" Returning {len(final_call_data) if final_call_data else 0} calls from FULL dataset"
                 )
-        else:
+            else:
                 logger.info(
                     f" Returning {len(final_call_data) if final_call_data else 0} calls"
                 )
@@ -2739,10 +2739,10 @@ def load_all_calls_cached(cache_version=0):
             # Clear load in progress flag
             if load_in_progress_key in st.session_state:
                 del st.session_state[load_in_progress_key]
-        
-        # Return the data - Streamlit's @st.cache_data automatically caches this return value
-        # This ensures both caches are in sync with the most recent data
-        return final_call_data, final_errors
+
+            # Return the data - Streamlit's @st.cache_data automatically caches this return value
+            # This ensures both caches are in sync with the most recent data
+            return final_call_data, final_errors
     except Exception as e:
         elapsed = time.time() - start_time
         logger.exception(
