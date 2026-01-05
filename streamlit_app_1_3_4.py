@@ -480,7 +480,7 @@ def parse_csv_row(row, filename):
         filename: CSV filename (for metadata)
 
     Returns:
-        Dictionary with parsed call data matching PDF parser output format
+        Dictionary with parsed call data matching expected call data format
     """
     data = {}
 
@@ -3297,7 +3297,7 @@ def load_new_calls_only():
         elif len(processed_keys_normalized) == total_s3_files and total_s3_files > 0:
             # Cache count matches S3 count - verify all are actually matched
             # WARNING: This doesn't mean S3 listing is complete - files might be in different locations
-            if actual_matches == total_s3_files and not new_pdf_keys:
+            if actual_matches == total_s3_files and not new_csv_keys:
                 logger.info(
                     f" All {total_s3_files} S3 files (prefix '{s3_prefix}') are in cache and verified. Note: More files may exist in other prefixes."
                 )
@@ -3996,7 +3996,7 @@ def check_for_new_csvs_lightweight():
             )
         else:
             logger.info(
-                " No disk cache found in count_new_pdfs - all files will be treated as new"
+                " No disk cache found in count_new_csvs - all files will be treated as new"
             )
 
         # Also check session state (for files processed in current session)
@@ -4112,7 +4112,7 @@ if is_super_admin():
 if is_super_admin():
     if st.sidebar.button(
         " Refresh New Data",
-        help="Only processes new PDFs added since last refresh. Fast and efficient!",
+        help="Only processes new CSV files added since last refresh. Fast and efficient!",
         type="primary",
     ):
         log_audit_event(current_username, "refresh_data", "Refreshed new data from S3")
@@ -4146,7 +4146,7 @@ if is_super_admin():
         # CRITICAL FIX: Wrap load_new_calls_only() in try/except to ensure refresh_in_progress flag is always cleared
         refresh_failed = False
         try:
-            with st.spinner(" Checking for new PDFs..."):
+            with st.spinner(" Checking for new CSV files..."):
                 new_calls, new_errors, new_count = load_new_calls_only()
         except Exception as e:
             # If load_new_calls_only() crashes, clear flag and show error
@@ -4648,14 +4648,14 @@ if is_super_admin():
         else:
             # No new files found and no errors
             st.session_state["refresh_in_progress"] = False  # Clear flag
-            st.info(" No new PDFs found. All data is up to date!")
+            st.info(" No new CSV files found. All data is up to date!")
 # Admin-only: Full reload button (Super admins only)
 if is_super_admin():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Admin: Full Reload")
     if st.sidebar.button(
         " Reload ALL Data (Admin Only)",
-        help=" Clears cache and reloads ALL PDFs from S3. This may take 10-20 minutes.",
+        help=" Clears cache and reloads ALL CSV files from S3. This may take 10-20 minutes.",
         type="secondary",
     ):
         if is_super_admin():
@@ -4752,7 +4752,7 @@ try:
         # Don't stop - try to load from cache instead
         status_text.text(" Attempting to load from cache...")
 
-    # Skip PDF count for faster startup - just load data directly
+    # Skip CSV count for faster startup - just load data directly
     pdf_count = None
     logger.debug(
         "Skipping PDF count for faster startup - proceeding to data loading..."
@@ -4784,12 +4784,12 @@ except Exception as e:
     st.stop()
 
 # Always load all files - caching handles performance
-# First load will process all PDFs, then cached indefinitely for instant access
+# First load will process all CSV files, then cached indefinitely for instant access
 
 # Now load the actual data
 logger.debug("Entering data loading section...")
 try:
-    status_text.text(" Loading PDF files from S3...")
+    status_text.text(" Loading CSV files from S3...")
     logger.debug("Status text updated, starting timer...")
 
     t0 = time.time()
@@ -4849,7 +4849,7 @@ try:
                 "No merged calls found, proceeding with normal load from cache or S3"
             )
             # Normal load from cache or S3
-            # Load all files - first load will process all PDFs, then cached indefinitely for instant access
+            # Load all files - first load will process all CSV files, then cached indefinitely for instant access
             # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
             logger.debug("Setting up progress tracking...")
 
@@ -4945,10 +4945,10 @@ try:
             st.stop()
 
         # Clear progress after loading
-        was_processing = st.session_state.pdf_processing_progress.get("total", 0) > 0
+        was_processing = st.session_state.csv_processing_progress.get("total", 0) > 0
         if was_processing:
             progress_placeholder.empty()
-            st.session_state.pdf_processing_progress = {
+            st.session_state.csv_processing_progress = {
                 "processed": 0,
                 "total": 0,
                 "errors": 0,
@@ -5025,9 +5025,9 @@ try:
     else:
         st.error(" No call data found!")
         st.error("Possible issues:")
-        st.error("1. No PDF files in S3 bucket (check bucket name and prefix)")
-        st.error("2. PDF files couldn't be parsed")
-        st.error("3. Check the prefix path if PDFs are in a subfolder")
+        st.error("1. No CSV files in S3 bucket (check bucket name and prefix)")
+        st.error("2. CSV files couldn't be parsed")
+        st.error("3. Check the prefix path if CSV files are in a subfolder")
         st.stop()
 except Exception as e:
     status_text.empty()
