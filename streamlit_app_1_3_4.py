@@ -5199,8 +5199,8 @@ if is_super_admin():
                         with cache_file_lock(CACHE_FILE, timeout=5):
                             CACHE_FILE.unlink()
                             logger.info(f" Cleared persistent disk cache: {CACHE_FILE}")
-            except Exception as e:
-                logger.warning(f"Failed to clear disk cache: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clear disk cache: {e}")
                 
                 # Clear session state
                 if "processed_s3_keys" in st.session_state:
