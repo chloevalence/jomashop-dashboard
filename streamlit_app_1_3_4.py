@@ -8867,9 +8867,9 @@ if user_agent_id:
                     .agg(Avg_QA_Score=("QA Score", "mean"))
                     .reset_index()
                 )
-            agent_daily.columns = ["Date", "My_Score"]
-            
-            # Get team average for same dates
+                agent_daily.columns = ["Date", "My_Score"]
+                
+                # Get team average for same dates
                 overall_daily = (
                     overall_df.groupby(overall_df["Call Date"].dt.date)
                     .agg(Avg_QA_Score=("QA Score", "mean"))
