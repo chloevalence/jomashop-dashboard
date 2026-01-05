@@ -436,13 +436,271 @@ except Exception as e:
     st.stop()
 
 
+def parse_csv_row(row, filename):
+    """
+    Parse a CSV row and convert it to the existing call data structure.
+    
+    Args:
+        row: pandas Series representing a CSV row
+        filename: CSV filename (for metadata)
+    
+    Returns:
+        Dictionary with parsed call data matching PDF parser output format
+    """
+    data = {}
+    
+    # Basic field mappings
+    data['call_id'] = str(row.get('call_id', '')) if pd.notna(row.get('call_id')) else None
+    data['qa_score'] = float(row.get('qa_score', 0)) if pd.notna(row.get('qa_score')) else None
+    data['label'] = str(row.get('label', '')) if pd.notna(row.get('label')) else None
+    data['strengths'] = str(row.get('strengths', '')) if pd.notna(row.get('strengths')) else None
+    data['challenges'] = str(row.get('challenges', '')) if pd.notna(row.get('challenges')) else None
+    data['reason'] = str(row.get('call_reason', '')) if pd.notna(row.get('call_reason')) else None
+    data['outcome'] = str(row.get('call_outcome', '')) if pd.notna(row.get('call_outcome')) else None
+    data['summary'] = str(row.get('call_summary', '')) if pd.notna(row.get('call_summary')) else None
+    data['call_direction'] = str(row.get('call_direction', '')) if pd.notna(row.get('call_direction')) else None
+    data['revenue_retention_amount'] = float(row.get('revenue_retention_amount', 0)) if pd.notna(row.get('revenue_retention_amount')) else 0.0
+    data['revenue_retention_summary'] = str(row.get('revenue_retention_summary', '')) if pd.notna(row.get('revenue_retention_summary')) else None
+    
+    # Handle handle_time_minutes conversion
+    handle_time = row.get('handle_time_minutes')
+    if pd.notna(handle_time):
+        try:
+            minutes = float(handle_time)
+            data['speaking_time_per_speaker'] = {
+                'total': f"{int(minutes)}:{int((minutes % 1) * 60):02d}"
+            }
+        except (ValueError, TypeError):
+            data['speaking_time_per_speaker'] = None
+    else:
+        data['speaking_time_per_speaker'] = None
+    
+    # Parse call_date (YYYYMMDD format)
+    call_date_str = row.get('call_date')
+    if pd.notna(call_date_str):
+        try:
+            call_date_str = str(call_date_str).strip()
+            if len(call_date_str) == 8:  # YYYYMMDD
+                call_date = datetime.strptime(call_date_str, "%Y%m%d")
+                data['call_date'] = call_date
+                # Create date_raw in MMDDYYYY format for backward compatibility
+                data['date_raw'] = f"{call_date_str[4:6]}{call_date_str[6:8]}{call_date_str[0:4]}"
+            else:
+                # Try parsing as datetime string
+                data['call_date'] = pd.to_datetime(call_date_str, errors='coerce')
+                if pd.notna(data['call_date']):
+                    data['date_raw'] = data['call_date'].strftime("%m%d%Y")
+                else:
+                    data['call_date'] = None
+                    data['date_raw'] = None
+        except (ValueError, TypeError):
+            data['call_date'] = None
+            data['date_raw'] = None
+    else:
+        data['call_date'] = None
+        data['date_raw'] = None
+    
+    # Extract time from call_id if available (format: YYYYMMDD_HHMMSS_...)
+    if data.get('call_id'):
+        try:
+            call_id_parts = str(data['call_id']).split('_')
+            if len(call_id_parts) >= 2:
+                time_str = call_id_parts[1]
+                if len(time_str) == 6:  # HHMMSS
+                    data['time'] = f"{time_str[0:2]}:{time_str[2:4]}:{time_str[4:6]}"
+                else:
+                    data['time'] = None
+            else:
+                data['time'] = None
+        except Exception:
+            data['time'] = None
+    else:
+        data['time'] = None
+    
+    # Normalize agent name
+    agent_name = row.get('agent_name')
+    if pd.notna(agent_name) and str(agent_name).strip():
+        data['agent'] = normalize_agent_id(str(agent_name).strip())
+    else:
+        data['agent'] = normalize_agent_id('Unknown')
+    
+    # Build rubric_details dict
+    rubric_details = {}
+    rubric_code_pattern = re.compile(r'^\d+\.\d+\.\d+$')
+    
+    for col in row.index:
+        if rubric_code_pattern.match(col):
+            code = col
+            status_value = row.get(code)
+            reason_col = f"{code}__reason"
+            reason_value = row.get(reason_col) if reason_col in row.index else None
+            
+            # Convert status: True -> "Pass", False -> "Fail", N/A or NaN -> "N/A"
+            if pd.isna(status_value) or status_value == 'N/A' or str(status_value).upper() == 'N/A':
+                status = "N/A"
+            elif status_value is True or str(status_value).lower() == 'true':
+                status = "Pass"
+            elif status_value is False or str(status_value).lower() == 'false':
+                status = "Fail"
+            else:
+                # Try to parse as boolean
+                status_str = str(status_value).lower()
+                if status_str in ['true', 'pass']:
+                    status = "Pass"
+                elif status_str in ['false', 'fail']:
+                    status = "Fail"
+                else:
+                    status = "N/A"
+            
+            # Get note (reason)
+            note = None
+            if pd.notna(reason_value) and str(reason_value).strip():
+                note = str(reason_value).strip()
+            
+            rubric_details[code] = {
+                'status': status,
+                'note': note
+            }
+    
+    data['rubric_details'] = rubric_details
+    
+    # Calculate rubric statistics
+    total_rubric_items = len(rubric_details)
+    pass_count = sum(1 for r in rubric_details.values() if r['status'] == 'Pass')
+    fail_count = sum(1 for r in rubric_details.values() if r['status'] == 'Fail')
+    na_count = sum(1 for r in rubric_details.values() if r['status'] == 'N/A')
+    
+    data['rubric_pass_count'] = pass_count
+    data['rubric_fail_count'] = fail_count
+    data['rubric_na_count'] = na_count
+    data['rubric_total_count'] = total_rubric_items
+    
+    # Build coaching_suggestions list
+    coaching_suggestions = []
+    for i in range(1, 4):
+        coaching_col = f'coaching_{i}'
+        if coaching_col in row.index:
+            coaching_value = row.get(coaching_col)
+            if pd.notna(coaching_value) and str(coaching_value).strip():
+                coaching_suggestions.append(str(coaching_value).strip())
+    data['coaching_suggestions'] = coaching_suggestions
+    
+    # Set metadata fields
+    normalized_key = filename.strip("/")
+    data['_id'] = normalized_key
+    data['_s3_key'] = normalized_key
+    data['filename'] = filename
+    data['company'] = 'Jomashop'
+    
+    # Backward compatibility fields
+    if data.get('qa_score') is not None:
+        data['average_happiness_value'] = data['qa_score']
+    else:
+        data['average_happiness_value'] = 0.0
+    
+    # Legacy emotion fields
+    data['happy'] = 0
+    data['angry'] = 0
+    data['sad'] = 0
+    data['neutral'] = 1 if data.get('label', '').lower() == 'neutral' else 0
+    
+    # Low confidences
+    data['low_confidences'] = 0.0
+    
+    return data
+
+
+def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
+    """
+    Load call data from CSV files in S3.
+    
+    Args:
+        s3_client: Boto3 S3 client
+        s3_bucket: S3 bucket name
+        s3_prefix: S3 prefix/folder path
+    
+    Returns:
+        Tuple: (list of call dictionaries, list of error messages)
+    """
+    all_calls = []
+    errors = []
+    
+    try:
+        # List all CSV files in S3 bucket
+        paginator = s3_client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(
+            Bucket=s3_bucket,
+            Prefix=s3_prefix,
+            MaxKeys=1000
+        )
+        
+        csv_keys = []
+        for page in pages:
+            if isinstance(page, dict) and "Contents" in page:
+                for obj in page["Contents"]:
+                    key = obj.get("Key")
+                    if key and key.lower().endswith(".csv"):
+                        csv_keys.append(key)
+        
+        if not csv_keys:
+            logger.info("No CSV files found in S3 bucket")
+            return [], ["No CSV files found in S3 bucket"]
+        
+        logger.info(f"Found {len(csv_keys)} CSV file(s) in S3 bucket")
+        
+        # Process each CSV file
+        for csv_key in csv_keys:
+            try:
+                logger.debug(f"Processing CSV file: {csv_key}")
+                
+                # Download CSV from S3
+                response = s3_client.get_object(Bucket=s3_bucket, Key=csv_key)
+                csv_content = response["Body"].read().decode("utf-8")
+                
+                # Read CSV into DataFrame
+                csv_file = io.StringIO(csv_content)
+                df = pd.read_csv(csv_file)
+                
+                # Extract filename from key
+                filename = csv_key.split("/")[-1]
+                
+                # Process each row
+                for idx, row in df.iterrows():
+                    try:
+                        parsed_data = parse_csv_row(row, filename)
+                        if parsed_data:
+                            all_calls.append(parsed_data)
+                    except Exception as e:
+                        error_msg = f"Error parsing row {idx + 1} in {filename}: {str(e)}"
+                        errors.append(error_msg)
+                        logger.warning(error_msg)
+                        continue
+                
+                logger.info(f"Processed {len(df)} rows from {filename}")
+                
+            except Exception as e:
+                error_msg = f"Error processing CSV file {csv_key}: {str(e)}"
+                errors.append(error_msg)
+                logger.error(error_msg)
+                continue
+        
+        logger.info(f"Successfully loaded {len(all_calls)} calls from {len(csv_keys)} CSV file(s)")
+        
+    except Exception as e:
+        error_msg = f"Error listing CSV files in S3: {str(e)}"
+        errors.append(error_msg)
+        logger.error(error_msg)
+    
+    return all_calls, errors
+
+
 def load_all_calls_internal(max_files=None):
     """
-    Internal function to load PDF files from S3 bucket.
+    Internal function to load CSV files from S3 bucket (PDFs are ignored).
     Returns tuple: (call_data_list, error_message)
 
     Args:
-        max_files: Maximum number of PDFs to load (None = load all)
+        max_files: Maximum number of CSV files to load (None = load all)
     """
     try:
         all_calls = []
@@ -461,307 +719,23 @@ def load_all_calls_internal(max_files=None):
             config=config,
         )
 
-        # List all PDF files in the S3 bucket
-        try:
-            paginator = s3_client_with_timeout.get_paginator("list_objects_v2")
-            pages = paginator.paginate(
-                Bucket=s3_bucket_name,
-                Prefix=s3_prefix,
-                MaxKeys=1000,  # Limit to prevent huge lists
-            )
-
-            # Collect all PDF file keys with their modification dates
-            pdf_keys_with_dates = []
-            for page in pages:
-                if isinstance(page, dict) and "Contents" in page:
-                    for obj in page["Contents"]:
-                        key = obj.get("Key")
-                        if not key or not key.lower().endswith(".pdf"):
-                            continue
-                        # Store key and last modified date for sorting
-                        last_modified = obj.get("LastModified", datetime.min)
-                        # Ensure LastModified is a datetime object for safe sorting
-                        if not isinstance(last_modified, datetime):
-                            last_modified = datetime.min
-                        pdf_keys_with_dates.append(
-                            {"key": key, "last_modified": last_modified}
-                        )
-        except Exception as e:
-            return [], f"Error listing S3 objects: {e}"
-
-        if not pdf_keys_with_dates:
-            return [], "No PDF files found in S3 bucket"
-
-        # Sort by modification date (most recent first)
-        pdf_keys_with_dates.sort(key=lambda x: x["last_modified"], reverse=True)
-
-        # Limit the number of files if specified (most recent files first)
-        if max_files and max_files > 0:
-            pdf_keys_with_dates = pdf_keys_with_dates[:max_files]
-
-        # Extract just the keys for processing
-        pdf_keys = [item["key"] for item in pdf_keys_with_dates]
-
-        # Download and parse PDFs in parallel for faster processing
-        errors = []
-        total = len(pdf_keys)
-
-        def process_pdf_with_retry(key, max_retries=3):
-            """Process a single PDF with retry logic for transient errors."""
-            import time
-
-            last_error = None
-
-            for attempt in range(max_retries):
-                try:
-                    # Download PDF from S3 (with timeout per file)
-                    response = s3_client_with_timeout.get_object(
-                        Bucket=s3_bucket_name, Key=key
-                    )
-                    pdf_bytes = response["Body"].read()
-
-                    # Extract filename from key
-                    filename = key.split("/")[-1]
-
-                    # Parse PDF
-                    parsed_data = parse_pdf_from_bytes(pdf_bytes, filename)
-
-                    if parsed_data:
-                        # Add S3 metadata - normalize key for consistent comparison
-                        # Store normalized key but keep original for S3 operations
-                        normalized_key = key.strip("/")
-                        parsed_data["_id"] = normalized_key
-                        parsed_data["_s3_key"] = normalized_key
-                        return parsed_data, None
-                    else:
-                        return None, f"Failed to parse {filename}"
-
-                except Exception as e:
-                    last_error = e
-                    # Retry on transient errors (network issues, timeouts)
-                    if attempt < max_retries - 1:
-                        # Exponential backoff: wait 0.5s, 1s, 2s
-                        time.sleep(0.5 * (2**attempt))
-                        continue
-                    else:
-                        return None, f"{key}: {str(e)}"
-
-            return None, f"{key}: {str(last_error)}"
-
-        # Use parallel processing for faster parsing
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        # Initialize progress tracking in session state
-        # Try to restore progress from disk cache if it exists (for partial cache continuation)
-        restored_progress = False
-        if CACHE_FILE.exists():
-            try:
-                # Use file locking for consistency (even though this is just metadata)
-                with cache_file_lock(CACHE_FILE, timeout=1):
-                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                        cached_data = json.load(f)
-                    if cached_data.get("partial", False):
-                        partial_processed = cached_data.get("processed", 0)
-                        partial_total = cached_data.get("total", 0)
-                        if partial_total > 0 and partial_processed > 0:
-                            # Restore progress from cache
-                            if "pdf_processing_progress" not in st.session_state:
-                                st.session_state.pdf_processing_progress = {
-                                    "processed": partial_processed,
-                                    "total": partial_total,
-                                    "errors": 0,
-                                    "processing_start_time": None,
-                                }
-                                restored_progress = True
-                                logger.info(
-                                    f" Restored progress from cache: {partial_processed}/{partial_total} files"
-                                )
-            except (
-                LockTimeoutError,
-                json.JSONDecodeError,
-                FileNotFoundError,
-                Exception,
-            ):
-                # Silently fail - progress restoration is optional
-                pass
-
-        if not restored_progress:
-            if "pdf_processing_progress" not in st.session_state:
-                st.session_state.pdf_processing_progress = {
-                    "processed": 0,
-                    "total": total,
-                    "errors": 0,
-                    "processing_start_time": None,
-                }
-        else:
-            # Progress was restored from cache - update total and errors, but keep processed count
-            st.session_state.pdf_processing_progress["total"] = total
-            st.session_state.pdf_processing_progress["errors"] = 0
-        # Track actual processing start time
-        processing_start_time = time.time()
-        st.session_state.pdf_processing_progress["processing_start_time"] = (
-            processing_start_time
+        # Load calls from CSV files (PDFs are ignored)
+        logger.info("Loading from CSV files (PDFs ignored)...")
+        csv_calls, csv_errors = load_calls_from_csv(
+            s3_client_with_timeout, s3_bucket_name, s3_prefix
         )
-
-        # Process PDFs in smaller batches to reduce lock contention with large cache files
-        BATCH_SIZE = 50  # Reduced from 100 to reduce lock contention
-        DASHBOARD_UPDATE_INTERVAL = 500
-
-        logger.info(
-            f" Starting to process {total} PDF files in batches of {BATCH_SIZE} (this will take 10-20 minutes)"
-        )
-
-        last_dashboard_update = 0
-
-        # Process in batches
-        for batch_start in range(0, total, BATCH_SIZE):
-            batch_end = min(batch_start + BATCH_SIZE, total)
-            batch_keys = pdf_keys[batch_start:batch_end]
-
-            batch_num = batch_start // BATCH_SIZE + 1
-            total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
-            if batch_num % 5 == 0 or batch_num == 1 or batch_num == total_batches:
-                logger.info(
-                    f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total}"
-                )
-
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_key = {
-                    executor.submit(process_pdf_with_retry, key): key
-                    for key in batch_keys
-                }
-
-                for future in as_completed(future_to_key):
-                    try:
-                        parsed_data, error = future.result(
-                            timeout=60
-                        )  # 60 second timeout per file
-                    except Exception as e:
-                        # Handle both TimeoutError and concurrent.futures.TimeoutError
-                        from concurrent.futures import (
-                            TimeoutError as FuturesTimeoutError,
-                        )
-
-                        if isinstance(e, (TimeoutError, FuturesTimeoutError)):
-                            key = future_to_key.get(future, "Unknown")
-                            logger.error(f" Timeout processing {key}: {e}")
-                            errors.append(f"{key}: Processing timeout (60s)")
-                            st.session_state.pdf_processing_progress["errors"] += 1
-                            st.session_state.pdf_processing_progress["processed"] += 1
-                            continue
-                        else:
-                            # Unexpected error in future execution
-                            logger.error(f" Unexpected error in future: {e}")
-                            errors.append(f"Unknown: {str(e)}")
-                            st.session_state.pdf_processing_progress["errors"] += 1
-                            st.session_state.pdf_processing_progress["processed"] += 1
-                            continue
-
-                    if parsed_data:
-                        all_calls.append(parsed_data)
-                    elif error:
-                        errors.append(error)
-                        st.session_state.pdf_processing_progress["errors"] += 1
-
-                    st.session_state.pdf_processing_progress["processed"] += 1
-
-                    processed = st.session_state.pdf_processing_progress["processed"]
-                    if processed % 100 == 0:
-                        current_time = time.time()
-                        elapsed = current_time - processing_start_time
-                        rate = processed / elapsed if elapsed > 0 else 0
-                        remaining = (total - processed) / rate if rate > 0 else 0
-                        logger.info(
-                            f" Progress: {processed}/{total} files processed ({processed * 100 // total if total > 0 else 0}%), {len(all_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining / 60:.1f} min"
-                        )
-
-                        # INCREMENTAL SAVE: Save to disk cache every 100 files
-                        # This prevents losing all progress if app restarts during long loads
-                        # Try to get last save time from disk cache metadata first (survives restarts)
-                        last_save_time = 0
-                        try:
-                            # Read last_save_time with locking to prevent concurrent access
-                            if CACHE_FILE.exists():
-                                with cache_file_lock(CACHE_FILE, timeout=2):
-                                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                                        cached_data = json.load(f)
-                                        last_save_time = cached_data.get(
-                                            "last_save_time", 0
-                                        )
-                        except LockTimeoutError:
-                            # Lock timeout - skip reading last_save_time, will use session state fallback
-                            pass
-                        except Exception:
-                            pass
-                        # Fallback to session state if not in cache
-                        if not last_save_time:
-                            last_save_time = getattr(
-                                st.session_state, "_last_incremental_save_time", 0
-                            )
-                        time_since_last_save = time.time() - last_save_time
-                        # Save every 100 files OR every 1 minute (more frequent saves to prevent data loss on restarts)
-                        should_save = (processed % 100 == 0) or (
-                            time_since_last_save > 60
-                        )
-                        if should_save:
-                            try:
-                                # Deduplicate before incremental save to prevent cache bloat
-                                calls_to_save = deduplicate_calls(all_calls.copy())
-                                if len(calls_to_save) < len(all_calls):
-                                    logger.info(
-                                        f" Deduplicated before incremental save: {len(all_calls)} → {len(calls_to_save)} unique calls"
-                                    )
-
-                                # Use atomic write with locking via save_cached_data_to_disk
-                                save_cached_data_to_disk(
-                                    calls_to_save,
-                                    errors.copy(),
-                                    partial=True,
-                                    processed=processed,
-                                    total=total,
-                                )
-                                st.session_state._last_incremental_save_time = (
-                                    time.time()
-                                )
-                                logger.info(
-                                    f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed}/{total} = {processed * 100 // total if total > 0 else 0}% complete - progress protected)"
-                                )
-                            except Exception as e:
-                                logger.warning(f" Failed incremental save: {e}")
-
-                    # Update dashboard progress in session state (without rerun to avoid cache corruption)
-                    processed = st.session_state.pdf_processing_progress["processed"]
-                    if processed >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
-                        logger.info(
-                            f" Dashboard update: {processed} calls processed, updating progress..."
-                        )
-                        last_dashboard_update = processed
-
-                        # Update session state with progress (no rerun to prevent cache corruption)
-                        # Progress will be visible on next natural rerun (user interaction or completion)
-                        st.session_state["last_progress_update"] = {
-                            "processed": processed,
-                            "total": total,
-                            "timestamp": time.time(),
-                        }
-
-                        # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
-                        # Progress updates will be visible when processing completes or user interacts
-
-        elapsed_total = time.time() - processing_start_time
-        logger.info(
-            f" Completed processing {total} files in {elapsed_total / 60:.1f} minutes. Success: {len(all_calls)}, Errors: {len(errors)}"
-        )
-
-        # Deduplicate before returning (in case of any duplicates from S3 or processing)
-        original_count = len(all_calls)
-        all_calls = deduplicate_calls(all_calls)
-        if len(all_calls) < original_count:
-            logger.info(
-                f" Deduplication after S3 load: {original_count} calls → {len(all_calls)} unique calls (removed {original_count - len(all_calls)} duplicates)"
-            )
-
-        # Sort by call_date if available (already sorted by S3 date, but this ensures call_date order)
+        
+        if csv_errors:
+            logger.warning(f"Encountered {len(csv_errors)} error(s) while loading CSV files")
+            for error in csv_errors[:10]:  # Log first 10 errors
+                logger.warning(f"  {error}")
+        
+        if not csv_calls:
+            return [], "No CSV files found in S3 bucket or no valid data loaded"
+        
+        all_calls = csv_calls
+        
+        # Sort calls by call_date (most recent first) if available
         try:
             all_calls.sort(
                 key=lambda x: x.get("call_date", datetime.min)
@@ -770,8 +744,9 @@ def load_all_calls_internal(max_files=None):
                 reverse=True,
             )
         except Exception:
-            pass  # If sorting fails, just return unsorted
-
+            # If sorting fails, keep original order
+            pass
+        
         # Track processed S3 keys in session state (for smart refresh)
         if "processed_s3_keys" not in st.session_state:
             st.session_state["processed_s3_keys"] = set()
@@ -779,18 +754,30 @@ def load_all_calls_internal(max_files=None):
             call.get("_s3_key") for call in all_calls if call.get("_s3_key")
         }
         st.session_state["processed_s3_keys"].update(processed_keys)
-
-        # Store actual processing time in session state
-        if "processing_start_time" in st.session_state.pdf_processing_progress:
-            actual_processing_time = (
-                time.time()
-                - st.session_state.pdf_processing_progress["processing_start_time"]
+        
+        # Sort calls by call_date (most recent first) if available
+        try:
+            all_calls.sort(
+                key=lambda x: x.get("call_date", datetime.min)
+                if isinstance(x.get("call_date"), datetime)
+                else datetime.min,
+                reverse=True,
             )
-            st.session_state["last_actual_processing_time"] = actual_processing_time
-            st.session_state["last_processing_file_count"] = len(all_calls)
-
-        # Return with info about total vs loaded
-        return all_calls, errors
+        except Exception:
+            # If sorting fails, keep original order
+            pass
+        
+        # Track processed S3 keys in session state (for smart refresh)
+        if "processed_s3_keys" not in st.session_state:
+            st.session_state["processed_s3_keys"] = set()
+        processed_keys = {
+            call.get("_s3_key") for call in all_calls if call.get("_s3_key")
+        }
+        st.session_state["processed_s3_keys"].update(processed_keys)
+        
+        # Return with error message if any
+        error_message = None if not csv_errors else "; ".join(csv_errors[:5])
+        return all_calls, error_message
 
     except NoCredentialsError as e:
         error_msg = (
@@ -989,6 +976,230 @@ def deduplicate_calls(call_data):
         )
 
     return deduplicated
+
+
+def cleanup_pdf_sourced_calls():
+    """
+    One-time cache cleanup to remove PDF-sourced calls from cache.
+    This function checks if cleanup has already been performed and only runs once.
+    """
+    try:
+        # Check if cleanup has already been performed
+        cleanup_flag_key = "cache_cleaned_pdf_calls"
+        
+        # Check both disk and S3 cache for cleanup flag
+        cleanup_performed = False
+        
+        # Check disk cache first
+        if CACHE_FILE.exists():
+            try:
+                with cache_file_lock(CACHE_FILE, timeout=5):
+                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                        cached_data = json.load(f)
+                    if cached_data.get(cleanup_flag_key, False):
+                        cleanup_performed = True
+                        logger.info("Cache cleanup already performed (found flag in disk cache)")
+            except (LockTimeoutError, json.JSONDecodeError, FileNotFoundError, Exception):
+                # If we can't read the cache, assume cleanup not performed
+                pass
+        
+        # Check S3 cache if disk check didn't find flag
+        if not cleanup_performed:
+            s3_client, s3_bucket = get_s3_client_and_bucket()
+            if s3_client and s3_bucket:
+                try:
+                    response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                    body = response["Body"]
+                    chunks = []
+                    for chunk in body.iter_chunks(chunk_size=8192):
+                        chunks.append(chunk)
+                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                    if cached_data.get(cleanup_flag_key, False):
+                        cleanup_performed = True
+                        logger.info("Cache cleanup already performed (found flag in S3 cache)")
+                except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code", "")
+                    if error_code == "NoSuchKey":
+                        # No cache in S3, proceed with cleanup
+                        pass
+                    else:
+                        logger.warning(f"Could not check S3 cache for cleanup flag: {e}")
+                except Exception:
+                    # If we can't read S3 cache, proceed with cleanup
+                    pass
+        
+        if cleanup_performed:
+            return  # Cleanup already done, skip
+        
+        logger.info("Starting one-time cache cleanup to remove PDF-sourced calls...")
+        
+        # Load existing cache from disk and S3
+        call_data = []
+        errors = []
+        cache_timestamp = None
+        
+        # Try disk cache first
+        if CACHE_FILE.exists():
+            try:
+                with cache_file_lock(CACHE_FILE, timeout=5):
+                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                        cached_data = json.load(f)
+                    call_data = cached_data.get("call_data", [])
+                    errors = cached_data.get("errors", [])
+                    cache_timestamp = cached_data.get("timestamp")
+            except Exception as e:
+                logger.warning(f"Could not load disk cache for cleanup: {e}")
+        
+        # If no disk cache or empty, try S3
+        if not call_data:
+            s3_client, s3_bucket = get_s3_client_and_bucket()
+            if s3_client and s3_bucket:
+                try:
+                    response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                    body = response["Body"]
+                    chunks = []
+                    for chunk in body.iter_chunks(chunk_size=8192):
+                        chunks.append(chunk)
+                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                    call_data = cached_data.get("call_data", [])
+                    errors = cached_data.get("errors", [])
+                    cache_timestamp = cached_data.get("timestamp")
+                except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code", "")
+                    if error_code != "NoSuchKey":
+                        logger.warning(f"Could not load S3 cache for cleanup: {e}")
+                except Exception as e:
+                    logger.warning(f"Error loading S3 cache for cleanup: {e}")
+        
+        if not call_data:
+            logger.info("No cache found to clean - marking cleanup as complete")
+            # Mark cleanup as complete even if no cache exists
+            cleanup_metadata = {
+                "call_data": [],
+                "errors": [],
+                "timestamp": datetime.now().isoformat(),
+                cleanup_flag_key: True,
+            }
+            try:
+                with cache_file_lock(CACHE_FILE, timeout=5):
+                    atomic_write_json(CACHE_FILE, cleanup_metadata)
+                # Also save to S3
+                s3_client, s3_bucket = get_s3_client_and_bucket()
+                if s3_client and s3_bucket:
+                    try:
+                        json_str = json.dumps(cleanup_metadata, default=str)
+                        s3_client.put_object(
+                            Bucket=s3_bucket,
+                            Key=S3_CACHE_KEY,
+                            Body=json_str.encode("utf-8"),
+                            ContentType="application/json",
+                        )
+                    except Exception:
+                        pass  # S3 save is optional
+            except Exception:
+                pass
+            return
+        
+        # Identify PDF-sourced calls
+        original_count = len(call_data)
+        pdf_sourced_count = 0
+        
+        cleaned_calls = []
+        for call in call_data:
+            s3_key = call.get("_s3_key", "")
+            filename = call.get("filename", "")
+            
+            # Check if call is PDF-sourced
+            is_pdf_sourced = False
+            if s3_key and str(s3_key).lower().endswith(".pdf"):
+                is_pdf_sourced = True
+            elif filename and str(filename).lower().endswith(".pdf"):
+                is_pdf_sourced = True
+            
+            if is_pdf_sourced:
+                pdf_sourced_count += 1
+            else:
+                cleaned_calls.append(call)
+        
+        if pdf_sourced_count == 0:
+            logger.info("No PDF-sourced calls found in cache - marking cleanup as complete")
+            # Mark cleanup as complete
+            if CACHE_FILE.exists():
+                try:
+                    with cache_file_lock(CACHE_FILE, timeout=5):
+                        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                            cached_data = json.load(f)
+                        cached_data[cleanup_flag_key] = True
+                        atomic_write_json(CACHE_FILE, cached_data)
+                        # Also save to S3
+                        s3_client, s3_bucket = get_s3_client_and_bucket()
+                        if s3_client and s3_bucket:
+                            try:
+                                json_str = json.dumps(cached_data, default=str)
+                                s3_client.put_object(
+                                    Bucket=s3_bucket,
+                                    Key=S3_CACHE_KEY,
+                                    Body=json_str.encode("utf-8"),
+                                    ContentType="application/json",
+                                )
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            return
+        
+        logger.info(
+            f"Removed {pdf_sourced_count} PDF-sourced calls from cache "
+            f"({original_count} → {len(cleaned_calls)} calls, one-time cleanup)"
+        )
+        
+        # Update cache with cleaned data and cleanup flag
+        cleaned_cache = {
+            "call_data": cleaned_calls,
+            "errors": errors,
+            "timestamp": cache_timestamp or datetime.now().isoformat(),
+            cleanup_flag_key: True,  # Mark cleanup as complete
+        }
+        
+        # Preserve other metadata if it exists
+        if CACHE_FILE.exists():
+            try:
+                with cache_file_lock(CACHE_FILE, timeout=5):
+                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                        old_cache = json.load(f)
+                    # Preserve other metadata fields
+                    for key in ["partial", "processed", "total", "last_save_time"]:
+                        if key in old_cache:
+                            cleaned_cache[key] = old_cache[key]
+            except Exception:
+                pass
+        
+        # Save cleaned cache to disk
+        try:
+            with cache_file_lock(CACHE_FILE, timeout=10):
+                atomic_write_json(CACHE_FILE, cleaned_cache)
+            logger.info(f"Saved cleaned cache to disk: {len(cleaned_calls)} calls")
+        except Exception as e:
+            logger.error(f"Failed to save cleaned cache to disk: {e}")
+        
+        # Save cleaned cache to S3
+        s3_client, s3_bucket = get_s3_client_and_bucket()
+        if s3_client and s3_bucket:
+            try:
+                json_str = json.dumps(cleaned_cache, default=str)
+                s3_client.put_object(
+                    Bucket=s3_bucket,
+                    Key=S3_CACHE_KEY,
+                    Body=json_str.encode("utf-8"),
+                    ContentType="application/json",
+                )
+                logger.info(f"Saved cleaned cache to S3: {len(cleaned_calls)} calls")
+            except Exception as e:
+                logger.warning(f"Failed to save cleaned cache to S3: {e}")
+        
+    except Exception as e:
+        logger.error(f"Error during cache cleanup: {e}")
+        logger.exception("Cache cleanup failed")
 
 
 def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
@@ -1593,8 +1804,13 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
 @st.cache_data(ttl=None, max_entries=1, show_spinner=True)
 def load_all_calls_cached(cache_version=0):
     """Cached wrapper - loads ALL data once, then serves from cache indefinitely until manually refreshed.
+    Performs one-time cache cleanup before loading to remove PDF-sourced calls.
 
     cache_version parameter forces cache refresh when incremented (used after refresh completes).
+    """
+    # Perform one-time cache cleanup to remove PDF-sourced calls
+    cleanup_pdf_sourced_calls()
+    
 
     Strategy:
         1. Always check S3 cache first (source of truth, shared across all users)
@@ -1604,6 +1820,9 @@ def load_all_calls_cached(cache_version=0):
 
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
+    # Perform one-time cache cleanup to remove PDF-sourced calls
+    cleanup_pdf_sourced_calls()
+    
     import time
     from datetime import datetime
 
