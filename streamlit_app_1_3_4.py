@@ -2570,8 +2570,8 @@ def load_all_calls_cached(cache_version=0):
         try:
             load_start = time.time()
             result = load_all_calls_internal(max_files=max_files)
-        load_duration = time.time() - load_start
-        elapsed = time.time() - start_time
+            load_duration = time.time() - load_start
+            elapsed = time.time() - start_time
         
         # Ensure we always return a tuple
         if not isinstance(result, tuple) or len(result) != 2:
