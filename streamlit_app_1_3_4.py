@@ -8639,9 +8639,9 @@ if "Rubric Details" in filtered_df.columns:
                 plt.tight_layout()
                 st_pyplot_safe(fig_rubric)
 
-        # Category-level analysis
-        if code_stats:
-            category_stats = {}
+            # Category-level analysis
+            if code_stats:
+                category_stats = {}
             for code, stats in code_stats.items():
                 # Extract category from code (e.g., "A1" from "A1.1")
                 category = (
