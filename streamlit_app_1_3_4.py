@@ -501,12 +501,16 @@ def parse_csv_row(row, filename):
     data["challenges"] = (
         str(row.get("challenges", "")) if pd.notna(row.get("challenges")) else None
     )
-    data["reason"] = (
+    # Normalize reason and outcome during parsing so they're saved normalized to cache
+    reason_raw = (
         str(row.get("call_reason", "")) if pd.notna(row.get("call_reason")) else None
     )
-    data["outcome"] = (
+    data["reason"] = normalize_category(reason_raw) if reason_raw else None
+    
+    outcome_raw = (
         str(row.get("call_outcome", "")) if pd.notna(row.get("call_outcome")) else None
     )
+    data["outcome"] = normalize_category(outcome_raw) if outcome_raw else None
     data["summary"] = (
         str(row.get("call_summary", "")) if pd.notna(row.get("call_summary")) else None
     )
@@ -5651,6 +5655,8 @@ def normalize_categories_in_dataframe(df, column_name):
 
 
 # Normalize Reason and Outcome columns to merge duplicates
+# NOTE: Basic category normalization (shipping merge, refund rename) happens during CSV parsing,
+# but case-insensitive duplicate merging requires seeing all values, so it happens here
 if "Reason" in meta_df.columns:
     meta_df = normalize_categories_in_dataframe(meta_df, "Reason")
 if "Outcome" in meta_df.columns:
@@ -6843,12 +6849,12 @@ with st.expander(" Historical Baseline Comparisons", expanded=False):
 if not user_agent_id:
     # Admin view - show all agents
     st.subheader("Agent Leaderboard")
-    
+
     # Ensure Agent column is normalized (safety check)
     if "Agent" in filtered_df.columns:
         filtered_df = filtered_df.copy()
         filtered_df["Agent"] = filtered_df["Agent"].apply(normalize_agent_id)
-    
+
     agent_performance = (
         filtered_df.groupby("Agent")
         .agg(
@@ -9903,8 +9909,10 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
         # Ensure Agent column is normalized for export (safety check)
         export_filtered_df = filtered_df.copy()
         if "Agent" in export_filtered_df.columns:
-            export_filtered_df["Agent"] = export_filtered_df["Agent"].apply(normalize_agent_id)
-        
+            export_filtered_df["Agent"] = export_filtered_df["Agent"].apply(
+                normalize_agent_id
+            )
+
         # Recalculate agent performance for export
         agent_perf_export = (
             export_filtered_df.groupby("Agent")
