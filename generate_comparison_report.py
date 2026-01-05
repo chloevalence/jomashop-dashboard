@@ -339,10 +339,8 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             return pd.DataFrame()
 
         # Normalize agent IDs - check for both "Agent" and "agent" columns (case-insensitive)
-        agent_col = None
         for col in df.columns:
             if col.lower() == "agent":
-                agent_col = col
                 if col != "Agent":
                     df.rename(columns={col: "Agent"}, inplace=True)
                 break
