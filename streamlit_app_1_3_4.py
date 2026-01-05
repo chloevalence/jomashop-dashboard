@@ -4369,7 +4369,7 @@ def is_regular_admin():
         elif current_username.lower() in ["chloe", "shannon", "jerson"]:
             # Super admins are also regular admins
             return True
-    else:
+        else:
         # No mapping found - default to admin view for now
         # You can add mappings in secrets.toml to restrict access
             return True
