@@ -2767,6 +2767,21 @@ def load_all_calls_cached(cache_version=0):
             
             # Return empty data with error message only if no fallback available
             return [], [f"Failed to load data: {str(e)}"]
+    except Exception as e:
+        # Outer try block error handler
+        elapsed = time.time() - start_time
+        logger.exception(
+            f" Critical error in load_all_calls_cached after {elapsed:.1f} seconds: {e}"
+        )
+        
+        # Clear all flags
+        if "reload_all_triggered" in st.session_state:
+            st.session_state["reload_all_triggered"] = False
+        if load_in_progress_key in st.session_state:
+            del st.session_state[load_in_progress_key]
+        
+        # Return empty data
+        return [], [f"Critical error: {str(e)}"]
 
 
 # Chart caching helper - cache chart figures based on data hash
