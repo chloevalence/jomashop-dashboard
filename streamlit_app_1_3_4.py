@@ -446,7 +446,6 @@ def normalize_agent_id(agent_str):
     # Special case: "unknown" -> Agent 01 (Jesus)
     if agent_str == "unknown":
         return "bpagent01"
-        return "bpagent01"
 
     # Special case: bp016803073 and bp016803074 -> Agent 01 (Jesus)
     if agent_str in ["bp016803073", "bp016803074"]:
@@ -593,7 +592,7 @@ def parse_csv_row(row, filename):
             if pd.notna(agent_value) and str(agent_value).strip():
                 agent_name = str(agent_value).strip()
                 break
-    
+
     if agent_name:
         data["agent"] = normalize_agent_id(agent_name)
     else:
