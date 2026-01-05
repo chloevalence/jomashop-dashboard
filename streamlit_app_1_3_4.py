@@ -873,7 +873,7 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                 error_msg = f"Error processing CSV file {csv_key}: {str(e)}"
                 errors.append(error_msg)
                 logger.error(error_msg)
-                            continue
+                continue
                     
         logger.info(
             f"Successfully loaded {len(all_calls)} calls from {len(csv_keys)} CSV file(s)"
