@@ -2157,130 +2157,130 @@ def load_all_calls_cached(cache_version=0):
 
         # CRITICAL: If reload_all_triggered, delete ALL caches BEFORE trying to load
         if reload_all_triggered:
-        logger.info("Reload ALL Data triggered - clearing all caches before loading")
+            logger.info("Reload ALL Data triggered - clearing all caches before loading")
 
-        # Delete disk cache file
-        try:
-            if CACHE_FILE.exists():
-                with cache_file_lock(CACHE_FILE, timeout=5):
-                    CACHE_FILE.unlink()
-                    logger.info(f" Deleted disk cache file: {CACHE_FILE}")
-        except Exception as e:
-            logger.warning(f" Could not delete disk cache: {e}")
-
-        # Delete S3 cache
-        try:
-            s3_client, s3_bucket = get_s3_client_and_bucket()
-            if s3_client and s3_bucket:
-                try:
-                    s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                    logger.info(f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
-                except ClientError as e:
-                    if e.response.get("Error", {}).get("Code") != "NoSuchKey":
-                        logger.warning(f" Could not delete S3 cache: {e}")
-                    else:
-                        logger.info(" S3 cache does not exist (already deleted)")
-        except Exception as e:
-            logger.warning(f" Could not delete S3 cache: {e}")
-
-        # Clear Streamlit cache
-        try:
-            load_all_calls_cached.clear()
-            logger.info(" Cleared Streamlit cache")
-        except Exception as e:
-            logger.warning(f" Could not clear Streamlit cache: {e}")
-
-        # Clear session state cache
-        if "_s3_cache_result" in st.session_state:
-            del st.session_state["_s3_cache_result"]
-        if "_s3_cache_timestamp" in st.session_state:
-            del st.session_state["_s3_cache_timestamp"]
-        if "_merged_cache_data" in st.session_state:
-            del st.session_state["_merged_cache_data"]
-        if "_merged_cache_errors" in st.session_state:
-            del st.session_state["_merged_cache_errors"]
-        if "_merged_cache_data_timestamp" in st.session_state:
-            del st.session_state["_merged_cache_data_timestamp"]
-        logger.info(" Cleared session state cache")
-
-        # DON'T clear the flag here - keep it set so the load knows to load ALL files
-        # The flag will be cleared after the load completes successfully
-        # Skip S3 cache check - we just deleted it, need fresh load
-        s3_cache_result = None
-        s3_cache_timestamp = None
-        logger.info(
-            " Skipping S3 cache check - caches deleted, will load fresh from S3"
-        )
-    else:
-        # CRITICAL: Always check S3 cache first (source of truth, shared across all users)
-        # This ensures all users get the same up-to-date data
-        # Use session state caching to prevent duplicate S3 loads
-        s3_cache_result = None
-        s3_cache_timestamp = None
-
-        # Check session state first to avoid duplicate S3 loads
-        s3_cache_key = "_s3_cache_result"
-        s3_timestamp_key = "_s3_cache_timestamp"
-        if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
-            cached_timestamp = st.session_state[s3_timestamp_key]
-            # Use cached result if timestamp matches (cache is still valid)
-            # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
-            cached_result = st.session_state[s3_cache_key]
-            if (
-                cached_result is not None
-                and isinstance(cached_result, tuple)
-                and len(cached_result) >= 1
-                and cached_result[0] is not None
-            ):
-                s3_cache_result = cached_result
-                s3_cache_timestamp = cached_timestamp
-                logger.debug(
-                    f" Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
-                )
-            else:
-                # Session state contains invalid data - clear it and reload from S3
-                logger.warning(
-                    "Session state contains invalid S3 cache data, clearing and reloading from S3"
-                )
-                if s3_cache_key in st.session_state:
-                    del st.session_state[s3_cache_key]
-                if s3_timestamp_key in st.session_state:
-                    del st.session_state[s3_timestamp_key]
-                s3_cache_result = None
-                s3_cache_timestamp = None
-        else:
-            # Load from S3 (only if not in session state)
-            s3_client, s3_bucket = get_s3_client_and_bucket()
-        if s3_client and s3_bucket:
+            # Delete disk cache file
             try:
-                response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                s3_cached_data = json.loads(response["Body"].read().decode("utf-8"))
-                if isinstance(s3_cached_data, dict):
-                    s3_cache_result = (
-                        s3_cached_data.get("call_data", []),
-                        s3_cached_data.get("errors", []),
-                    )
-                    s3_cache_timestamp = s3_cached_data.get("timestamp", None)
-                    logger.info(
-                        f" Loaded from S3 cache (source of truth): {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
-                    )
+                if CACHE_FILE.exists():
+                    with cache_file_lock(CACHE_FILE, timeout=5):
+                        CACHE_FILE.unlink()
+                        logger.info(f" Deleted disk cache file: {CACHE_FILE}")
+            except Exception as e:
+                logger.warning(f" Could not delete disk cache: {e}")
 
-                    # Cache in session state to avoid duplicate loads
-                    st.session_state[s3_cache_key] = s3_cache_result
-                    if s3_cache_timestamp:
-                        st.session_state[s3_timestamp_key] = s3_cache_timestamp
-            except ClientError as s3_error:
-                error_code = s3_error.response.get("Error", {}).get("Code", "")
-                if error_code != "NoSuchKey":
-                    logger.warning(f" Failed to load from S3 cache: {s3_error}")
-            except Exception as s3_error:
-                logger.warning(f" Failed to load from S3 cache: {s3_error}")
+            # Delete S3 cache
+            try:
+                s3_client, s3_bucket = get_s3_client_and_bucket()
+                if s3_client and s3_bucket:
+                    try:
+                        s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                        logger.info(f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
+                    except ClientError as e:
+                        if e.response.get("Error", {}).get("Code") != "NoSuchKey":
+                            logger.warning(f" Could not delete S3 cache: {e}")
+                        else:
+                            logger.info(" S3 cache does not exist (already deleted)")
+            except Exception as e:
+                logger.warning(f" Could not delete S3 cache: {e}")
 
-    # CRITICAL: If S3 cache exists, check if Streamlit cache is stale
-    # (Skip this check if we just deleted caches due to reload_all_triggered)
-    # Invalidate Streamlit cache if S3 cache is newer
-    if s3_cache_timestamp:
-        streamlit_cache_timestamp = st.session_state.get("_s3_cache_timestamp", None)
+            # Clear Streamlit cache
+            try:
+                load_all_calls_cached.clear()
+                logger.info(" Cleared Streamlit cache")
+            except Exception as e:
+                logger.warning(f" Could not clear Streamlit cache: {e}")
+
+            # Clear session state cache
+            if "_s3_cache_result" in st.session_state:
+                del st.session_state["_s3_cache_result"]
+            if "_s3_cache_timestamp" in st.session_state:
+                del st.session_state["_s3_cache_timestamp"]
+            if "_merged_cache_data" in st.session_state:
+                del st.session_state["_merged_cache_data"]
+            if "_merged_cache_errors" in st.session_state:
+                del st.session_state["_merged_cache_errors"]
+            if "_merged_cache_data_timestamp" in st.session_state:
+                del st.session_state["_merged_cache_data_timestamp"]
+            logger.info(" Cleared session state cache")
+
+            # DON'T clear the flag here - keep it set so the load knows to load ALL files
+            # The flag will be cleared after the load completes successfully
+            # Skip S3 cache check - we just deleted it, need fresh load
+            s3_cache_result = None
+            s3_cache_timestamp = None
+            logger.info(
+                " Skipping S3 cache check - caches deleted, will load fresh from S3"
+            )
+        else:
+            # CRITICAL: Always check S3 cache first (source of truth, shared across all users)
+            # This ensures all users get the same up-to-date data
+            # Use session state caching to prevent duplicate S3 loads
+            s3_cache_result = None
+            s3_cache_timestamp = None
+
+            # Check session state first to avoid duplicate S3 loads
+            s3_cache_key = "_s3_cache_result"
+            s3_timestamp_key = "_s3_cache_timestamp"
+            if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
+                cached_timestamp = st.session_state[s3_timestamp_key]
+                # Use cached result if timestamp matches (cache is still valid)
+                # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
+                cached_result = st.session_state[s3_cache_key]
+                if (
+                    cached_result is not None
+                    and isinstance(cached_result, tuple)
+                    and len(cached_result) >= 1
+                    and cached_result[0] is not None
+                ):
+                    s3_cache_result = cached_result
+                    s3_cache_timestamp = cached_timestamp
+                    logger.debug(
+                        f" Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
+                    )
+                else:
+                    # Session state contains invalid data - clear it and reload from S3
+                    logger.warning(
+                        "Session state contains invalid S3 cache data, clearing and reloading from S3"
+                    )
+                    if s3_cache_key in st.session_state:
+                        del st.session_state[s3_cache_key]
+                    if s3_timestamp_key in st.session_state:
+                        del st.session_state[s3_timestamp_key]
+                    s3_cache_result = None
+                    s3_cache_timestamp = None
+            else:
+                # Load from S3 (only if not in session state)
+                s3_client, s3_bucket = get_s3_client_and_bucket()
+                if s3_client and s3_bucket:
+                    try:
+                        response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                        s3_cached_data = json.loads(response["Body"].read().decode("utf-8"))
+                        if isinstance(s3_cached_data, dict):
+                            s3_cache_result = (
+                                s3_cached_data.get("call_data", []),
+                                s3_cached_data.get("errors", []),
+                            )
+                            s3_cache_timestamp = s3_cached_data.get("timestamp", None)
+                            logger.info(
+                                f" Loaded from S3 cache (source of truth): {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
+                            )
+
+                            # Cache in session state to avoid duplicate loads
+                            st.session_state[s3_cache_key] = s3_cache_result
+                            if s3_cache_timestamp:
+                                st.session_state[s3_timestamp_key] = s3_cache_timestamp
+                    except ClientError as s3_error:
+                        error_code = s3_error.response.get("Error", {}).get("Code", "")
+                        if error_code != "NoSuchKey":
+                            logger.warning(f" Failed to load from S3 cache: {s3_error}")
+                    except Exception as s3_error:
+                        logger.warning(f" Failed to load from S3 cache: {s3_error}")
+
+        # CRITICAL: If S3 cache exists, check if Streamlit cache is stale
+        # (Skip this check if we just deleted caches due to reload_all_triggered)
+        # Invalidate Streamlit cache if S3 cache is newer
+        if s3_cache_timestamp:
+            streamlit_cache_timestamp = st.session_state.get("_s3_cache_timestamp", None)
         if (
             streamlit_cache_timestamp
             and streamlit_cache_timestamp != s3_cache_timestamp
@@ -2315,44 +2315,44 @@ def load_all_calls_cached(cache_version=0):
                 # Clear the flag even on error
                 if "_cache_clearing_in_progress" in st.session_state:
                     del st.session_state["_cache_clearing_in_progress"]
-        # Store S3 cache timestamp for future comparison
-        st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
+            # Store S3 cache timestamp for future comparison
+            st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
 
-    # CRITICAL: If refresh is in progress, use S3 cache directly (most up-to-date)
-    refresh_in_progress = st.session_state.get("refresh_in_progress", False)
-    if refresh_in_progress:
-        if s3_cache_result and s3_cache_result[0]:
-            # Migrate old cache format to new format
-            migrated_calls = migrate_old_cache_format(s3_cache_result[0])
-            logger.info(
-                f" Refresh in progress - using S3 cache directly: {len(migrated_calls)} calls"
-            )
-            return (
-                migrated_calls,
-                s3_cache_result[1] if len(s3_cache_result) > 1 else [],
-            )
-        else:
-            logger.info(
-                " Refresh in progress but no S3 cache found - continuing with normal load"
-            )
-
-    # Check if there's merged cache data from refresh operation
-    # BUG FIX: Only use _merged_cache_data if S3 cache is not newer
-    # If S3 cache is newer, clear stale _merged_cache_data and reload from S3
-    if "_merged_cache_data" in st.session_state:
-        # Check if S3 cache is newer than when _merged_cache_data was set
-        if s3_cache_timestamp and "_merged_cache_data_timestamp" in st.session_state:
-            merged_data_timestamp = st.session_state["_merged_cache_data_timestamp"]
-            if s3_cache_timestamp > merged_data_timestamp:
-                # S3 cache is newer - clear stale merged data and reload from S3
+        # CRITICAL: If refresh is in progress, use S3 cache directly (most up-to-date)
+        refresh_in_progress = st.session_state.get("refresh_in_progress", False)
+        if refresh_in_progress:
+            if s3_cache_result and s3_cache_result[0]:
+                # Migrate old cache format to new format
+                migrated_calls = migrate_old_cache_format(s3_cache_result[0])
                 logger.info(
-                    f" S3 cache is newer ({s3_cache_timestamp} > {merged_data_timestamp}) - clearing stale _merged_cache_data"
+                    f" Refresh in progress - using S3 cache directly: {len(migrated_calls)} calls"
                 )
-                del st.session_state["_merged_cache_data"]
-                if "_merged_cache_errors" in st.session_state:
-                    del st.session_state["_merged_cache_errors"]
-                if "_merged_cache_data_timestamp" in st.session_state:
-                    del st.session_state["_merged_cache_data_timestamp"]
+                return (
+                    migrated_calls,
+                    s3_cache_result[1] if len(s3_cache_result) > 1 else [],
+                )
+            else:
+                logger.info(
+                    " Refresh in progress but no S3 cache found - continuing with normal load"
+                )
+
+        # Check if there's merged cache data from refresh operation
+        # BUG FIX: Only use _merged_cache_data if S3 cache is not newer
+        # If S3 cache is newer, clear stale _merged_cache_data and reload from S3
+        if "_merged_cache_data" in st.session_state:
+            # Check if S3 cache is newer than when _merged_cache_data was set
+            if s3_cache_timestamp and "_merged_cache_data_timestamp" in st.session_state:
+                merged_data_timestamp = st.session_state["_merged_cache_data_timestamp"]
+                if s3_cache_timestamp > merged_data_timestamp:
+                    # S3 cache is newer - clear stale merged data and reload from S3
+                    logger.info(
+                        f" S3 cache is newer ({s3_cache_timestamp} > {merged_data_timestamp}) - clearing stale _merged_cache_data"
+                    )
+                    del st.session_state["_merged_cache_data"]
+                    if "_merged_cache_errors" in st.session_state:
+                        del st.session_state["_merged_cache_errors"]
+                    if "_merged_cache_data_timestamp" in st.session_state:
+                        del st.session_state["_merged_cache_data_timestamp"]
                 # Fall through to use S3 cache below
             else:
                 # Use merged cache data (it's still current)
@@ -2379,69 +2379,69 @@ def load_all_calls_cached(cache_version=0):
                 st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
             return merged_data, merged_errors
 
-    # CRITICAL: Use S3 cache if available (source of truth)
-    if s3_cache_result and s3_cache_result[0]:
-        # Migrate old cache format to new format
-        migrated_calls = migrate_old_cache_format(s3_cache_result[0])
-        logger.info(f" Using S3 cache (source of truth): {len(migrated_calls)} calls")
-        # Store timestamp for future comparison
-        if s3_cache_timestamp:
-            st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
-        return (migrated_calls, s3_cache_result[1] if len(s3_cache_result) > 1 else [])
+        # CRITICAL: Use S3 cache if available (source of truth)
+        if s3_cache_result and s3_cache_result[0]:
+            # Migrate old cache format to new format
+            migrated_calls = migrate_old_cache_format(s3_cache_result[0])
+            logger.info(f" Using S3 cache (source of truth): {len(migrated_calls)} calls")
+            # Store timestamp for future comparison
+            if s3_cache_timestamp:
+                st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
+            return (migrated_calls, s3_cache_result[1] if len(s3_cache_result) > 1 else [])
 
-    # Fall back to disk cache only if S3 unavailable (backup only)
-    # NOTE: We don't call load_cached_data_from_disk() here because it also loads from S3
-    # We'll call it later only if needed, and it will check session state first
-    # Disk cache is just a local backup, not the source of truth
+        # Fall back to disk cache only if S3 unavailable (backup only)
+        # NOTE: We don't call load_cached_data_from_disk() here because it also loads from S3
+        # We'll call it later only if needed, and it will check session state first
+        # Disk cache is just a local backup, not the source of truth
 
-    # Strategy: Always use the most up-to-date cache
-    # 1. Check disk cache first (if not reloading)
-    # 2. Try to load (will use Streamlit cache if available, or load from S3)
-    # 3. Compare and use the best/most recent data
-    # 4. Update disk cache with the best data
+        # Strategy: Always use the most up-to-date cache
+        # 1. Check disk cache first (if not reloading)
+        # 2. Try to load (will use Streamlit cache if available, or load from S3)
+        # 3. Compare and use the best/most recent data
+        # 4. Update disk cache with the best data
 
-    # CRITICAL: Always check disk cache FIRST to prevent restart loops
-    # The app keeps restarting during loads, losing progress. We MUST use partial caches.
-    disk_call_data = None
-    disk_errors = None
-    is_partial = False
-    partial_processed = 0
-    partial_total = 0
+        # CRITICAL: Always check disk cache FIRST to prevent restart loops
+        # The app keeps restarting during loads, losing progress. We MUST use partial caches.
+        disk_call_data = None
+        disk_errors = None
+        is_partial = False
+        partial_processed = 0
+        partial_total = 0
 
-    # NOTE: Removed duplicate check for _merged_cache_data - it's already checked earlier at line 1271
-    # and returns immediately, making this check unreachable dead code
+        # NOTE: Removed duplicate check for _merged_cache_data - it's already checked earlier at line 1271
+        # and returns immediately, making this check unreachable dead code
 
-    # Load disk cache regardless of reload_all_triggered - we'll check that flag later
-    disk_result = load_cached_data_from_disk()
-    # CRITICAL FIX: Check if disk_result is None before accessing its elements
-    if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
-        disk_call_data, disk_errors = disk_result
-        # Migrate old cache format to new format
-        disk_call_data = migrate_old_cache_format(disk_call_data)
-        cache_count = len(disk_call_data)
+        # Load disk cache regardless of reload_all_triggered - we'll check that flag later
+        disk_result = load_cached_data_from_disk()
+        # CRITICAL FIX: Check if disk_result is None before accessing its elements
+        if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
+            disk_call_data, disk_errors = disk_result
+            # Migrate old cache format to new format
+            disk_call_data = migrate_old_cache_format(disk_call_data)
+            cache_count = len(disk_call_data)
 
-        # Get cache metadata
-        if CACHE_FILE.exists():
-            try:
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    cached_data = json.load(f)
-                    is_partial = cached_data.get("partial", False)
-                    partial_processed = cached_data.get("processed", 0)
-                    partial_total = cached_data.get("total", 0)
-            except Exception as e:
-                logger.warning(f" Failed to read cache metadata: {e}")
+            # Get cache metadata
+            if CACHE_FILE.exists():
+                try:
+                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                        cached_data = json.load(f)
+                        is_partial = cached_data.get("partial", False)
+                        partial_processed = cached_data.get("processed", 0)
+                        partial_total = cached_data.get("total", 0)
+                except Exception as e:
+                    logger.warning(f" Failed to read cache metadata: {e}")
 
-        # Log cache comparison immediately after loading disk cache
-        logger.info(
-            f" Cache Comparison: Disk cache = {cache_count} files (partial={is_partial}, {partial_processed}/{partial_total if partial_total > 0 else '?'} processed)"
-        )
+            # Log cache comparison immediately after loading disk cache
+            logger.info(
+                f" Cache Comparison: Disk cache = {cache_count} files (partial={is_partial}, {partial_processed}/{partial_total if partial_total > 0 else '?'} processed)"
+            )
 
-        # CRITICAL: Only return early if cache is COMPLETE (not partial)
-        # If partial, continue loading to complete it with incremental saves
-        if not reload_all_triggered:
-            if cache_count >= 100:  # Use cache if we have 100+ calls
-                if is_partial:
-                    progress_pct = (
+            # CRITICAL: Only return early if cache is COMPLETE (not partial)
+            # If partial, continue loading to complete it with incremental saves
+            if not reload_all_triggered:
+                if cache_count >= 100:  # Use cache if we have 100+ calls
+                    if is_partial:
+                        progress_pct = (
                         (partial_processed * 100 // partial_total)
                         if partial_total > 0
                         else 0
@@ -2485,144 +2485,144 @@ def load_all_calls_cached(cache_version=0):
                 f" Reload ALL Data triggered - ignoring cache with {cache_count} calls, will load fresh from S3"
             )
 
-    # Only reach here if:
-    # 1. No cache found, OR
-    # 2. Cache has < 100 calls, OR
-    # 3. User explicitly requested reload (reload_all_triggered = True)
-    # 4. Cache is partial (will continue loading remaining files)
+        # Only reach here if:
+        # 1. No cache found, OR
+        # 2. Cache has < 100 calls, OR
+        # 3. User explicitly requested reload (reload_all_triggered = True)
+        # 4. Cache is partial (will continue loading remaining files)
 
-    # Determine what to load
-    if reload_all_triggered:
-        # User explicitly requested full dataset - load ALL files (may take 10-20 min)
-        # NOTE: Caches were already cleared at the beginning of this function (lines 2056-2104)
-        # No need to clear again here to avoid duplicate operations
-        logger.info(
+        # Determine what to load
+        if reload_all_triggered:
+            # User explicitly requested full dataset - load ALL files (may take 10-20 min)
+            # NOTE: Caches were already cleared at the beginning of this function (lines 2056-2104)
+            # No need to clear again here to avoid duplicate operations
+            logger.info(
             "Reload ALL Data triggered - loading ALL files from S3 (this will take 10-20 minutes)"
-        )
-        max_files = None  # Load all files
-        # Clear flag after use (but keep it until load completes to prevent re-triggering)
-        # We'll clear it at the end of the try block
-    elif is_partial and partial_total > 0 and partial_processed < partial_total:
-        # Partial cache exists - but limit auto-continuation to prevent crashes
-        remaining_files = partial_total - partial_processed
-
-        # Only auto-continue if remaining files is small (<= 1000) to prevent long blocking operations
-        # This prevents crashes from trying to load thousands of files synchronously during page load
-        if remaining_files <= 1000:
-            logger.info(
-                f" Continuing partial cache: {partial_processed}/{partial_total} files loaded, {remaining_files} remaining"
             )
-            logger.info(
-                f" Loading remaining {remaining_files} files from S3 with incremental saves (skipping already-processed files)"
-            )
+            max_files = None  # Load all files
+            # Clear flag after use (but keep it until load completes to prevent re-triggering)
+            # We'll clear it at the end of the try block
+        elif is_partial and partial_total > 0 and partial_processed < partial_total:
+            # Partial cache exists - but limit auto-continuation to prevent crashes
+            remaining_files = partial_total - partial_processed
 
-            try:
-                load_start = time.time()
-                new_calls, new_errors, actual_new_count = load_new_calls_only()
-                load_duration = time.time() - load_start
-                elapsed = time.time() - start_time
-
-                if isinstance(new_errors, str):
-                    logger.error(f" Error loading new files: {new_errors}")
-                    # Return existing cache if new load fails
-                    return disk_call_data, [new_errors] if disk_errors else []
-
-                # Merge new calls with existing disk cache
-                all_calls_merged = disk_call_data + new_calls
-                all_calls_merged = deduplicate_calls(all_calls_merged)
-
-                # Save merged data to disk immediately
-                save_cached_data_to_disk(
-                    all_calls_merged, new_errors if new_errors else []
-                )
-
+            # Only auto-continue if remaining files is small (<= 1000) to prevent long blocking operations
+            # This prevents crashes from trying to load thousands of files synchronously during page load
+            if remaining_files <= 1000:
                 logger.info(
-                    f" Loaded {actual_new_count} new files. Total: {len(all_calls_merged)} calls (merged with {len(disk_call_data)} from cache)"
+                    f" Continuing partial cache: {partial_processed}/{partial_total} files loaded, {remaining_files} remaining"
+                )
+                logger.info(
+                    f" Loading remaining {remaining_files} files from S3 with incremental saves (skipping already-processed files)"
                 )
 
-                # Return merged data
-                return all_calls_merged, new_errors if new_errors else []
-            except Exception as e:
-                logger.error(f" Error in load_new_calls_only: {e}")
-                import traceback
+                try:
+                    load_start = time.time()
+                    new_calls, new_errors, actual_new_count = load_new_calls_only()
+                    load_duration = time.time() - load_start
+                    elapsed = time.time() - start_time
 
-                logger.error(traceback.format_exc())
-                # Fallback to disk cache if new load fails
+                    if isinstance(new_errors, str):
+                        logger.error(f" Error loading new files: {new_errors}")
+                        # Return existing cache if new load fails
+                        return disk_call_data, [new_errors] if disk_errors else []
+
+                    # Merge new calls with existing disk cache
+                    all_calls_merged = disk_call_data + new_calls
+                    all_calls_merged = deduplicate_calls(all_calls_merged)
+
+                    # Save merged data to disk immediately
+                    save_cached_data_to_disk(
+                        all_calls_merged, new_errors if new_errors else []
+                    )
+
+                    logger.info(
+                        f" Loaded {actual_new_count} new files. Total: {len(all_calls_merged)} calls (merged with {len(disk_call_data)} from cache)"
+                    )
+
+                    # Return merged data
+                    return all_calls_merged, new_errors if new_errors else []
+                except Exception as e:
+                    logger.error(f" Error in load_new_calls_only: {e}")
+                    import traceback
+
+                    logger.error(traceback.format_exc())
+                    # Fallback to disk cache if new load fails
+                    return disk_call_data, disk_errors if disk_errors else []
+            else:
+                # Too many files remaining - return partial cache and let user manually refresh
+                # This prevents crashes from long-running operations during page load
+                logger.info(
+                    f" Found PARTIAL cache: {partial_processed}/{partial_total} files ({remaining_files} remaining)"
+                )
+                logger.info(
+                    f" Returning partial cache immediately - use 'Refresh New Data' button to load remaining {remaining_files} files"
+                )
+                logger.info(
+                    f" Auto-continuation skipped to prevent crashes (>{1000} files remaining)"
+                )
                 return disk_call_data, disk_errors if disk_errors else []
         else:
-            # Too many files remaining - return partial cache and let user manually refresh
-            # This prevents crashes from long-running operations during page load
+            # No substantial cache - load ALL files from S3
+            logger.info("No substantial cache found - loading ALL files from S3")
+            max_files = None  # Load all files
+
+        try:
+            load_start = time.time()
+            result = load_all_calls_internal(max_files=max_files)
+            load_duration = time.time() - load_start
+            elapsed = time.time() - start_time
+
+            # Ensure we always return a tuple
+            if not isinstance(result, tuple) or len(result) != 2:
+                result = (result if isinstance(result, list) else [], [])
+
+            streamlit_call_data, streamlit_errors = result
+            # Migrate old cache format to new format
+            if streamlit_call_data:
+                streamlit_call_data = migrate_old_cache_format(streamlit_call_data)
+
+            # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
+            streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
+            disk_cache_count = len(disk_call_data) if disk_call_data else 0
             logger.info(
-                f" Found PARTIAL cache: {partial_processed}/{partial_total} files ({remaining_files} remaining)"
+                f" Cache Comparison (after load): Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files"
             )
-            logger.info(
-                f" Returning partial cache immediately - use 'Refresh New Data' button to load remaining {remaining_files} files"
-            )
-            logger.info(
-                f" Auto-continuation skipped to prevent crashes (>{1000} files remaining)"
-            )
-            return disk_call_data, disk_errors if disk_errors else []
-    else:
-        # No substantial cache - load ALL files from S3
-        logger.info("No substantial cache found - loading ALL files from S3")
-        max_files = None  # Load all files
 
-    try:
-        load_start = time.time()
-        result = load_all_calls_internal(max_files=max_files)
-        load_duration = time.time() - load_start
-        elapsed = time.time() - start_time
+            # Determine which cache is better (more recent or more complete)
+            use_streamlit_cache = False
+            use_disk_cache = False
 
-        # Ensure we always return a tuple
-        if not isinstance(result, tuple) or len(result) != 2:
-            result = (result if isinstance(result, list) else [], [])
+            if streamlit_call_data and len(streamlit_call_data) > 0:
+                # Streamlit cache has data - check if it's better than disk cache
+                if load_duration < 2.0:
+                    # Fast load = likely from Streamlit's in-memory cache
+                    logger.info(
+                        f"⚡ Detected Streamlit in-memory cache ({len(streamlit_call_data)} calls loaded in {load_duration:.2f}s)"
+                    )
 
-        streamlit_call_data, streamlit_errors = result
-        # Migrate old cache format to new format
-        if streamlit_call_data:
-            streamlit_call_data = migrate_old_cache_format(streamlit_call_data)
-
-        # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
-        streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
-        disk_cache_count = len(disk_call_data) if disk_call_data else 0
-        logger.info(
-            f" Cache Comparison (after load): Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files"
-        )
-
-        # Determine which cache is better (more recent or more complete)
-        use_streamlit_cache = False
-        use_disk_cache = False
-
-        if streamlit_call_data and len(streamlit_call_data) > 0:
-            # Streamlit cache has data - check if it's better than disk cache
-            if load_duration < 2.0:
-                # Fast load = likely from Streamlit's in-memory cache
-                logger.info(
-                    f"⚡ Detected Streamlit in-memory cache ({len(streamlit_call_data)} calls loaded in {load_duration:.2f}s)"
-                )
-
-                if disk_call_data and len(disk_call_data) > 0:
-                    # CRITICAL: Always prefer disk cache if it has more data, regardless of load speed
-                    # This ensures we never show stale Streamlit cache when disk cache is more complete
-                    if len(disk_call_data) > len(streamlit_call_data):
-                        logger.info(
-                            f" Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - ALWAYS using disk cache"
-                        )
-                        use_disk_cache = True
-                    elif len(streamlit_call_data) > len(disk_call_data):
-                        logger.info(
-                            f" Streamlit cache is more complete ({len(streamlit_call_data)} vs {len(disk_call_data)} calls) - using it"
-                        )
+                    if disk_call_data and len(disk_call_data) > 0:
+                        # CRITICAL: Always prefer disk cache if it has more data, regardless of load speed
+                        # This ensures we never show stale Streamlit cache when disk cache is more complete
+                        if len(disk_call_data) > len(streamlit_call_data):
+                            logger.info(
+                                f" Disk cache is more complete ({len(disk_call_data)} vs {len(streamlit_call_data)} calls) - ALWAYS using disk cache"
+                            )
+                            use_disk_cache = True
+                        elif len(streamlit_call_data) > len(disk_call_data):
+                            logger.info(
+                                f" Streamlit cache is more complete ({len(streamlit_call_data)} vs {len(disk_call_data)} calls) - using it"
+                            )
+                            use_streamlit_cache = True
+                        elif len(streamlit_call_data) == len(disk_call_data):
+                            # Same size - prefer disk cache as source of truth (it persists across restarts)
+                            logger.info(
+                                "Caches match - using disk cache as source of truth (persists across restarts)"
+                            )
+                            use_disk_cache = True
+                    else:
+                        # No disk cache - use Streamlit cache
                         use_streamlit_cache = True
-                    elif len(streamlit_call_data) == len(disk_call_data):
-                        # Same size - prefer disk cache as source of truth (it persists across restarts)
-                        logger.info(
-                            "Caches match - using disk cache as source of truth (persists across restarts)"
-                        )
-                        use_disk_cache = True
-                else:
-                    # No disk cache - use Streamlit cache
-                    use_streamlit_cache = True
             else:
                 # Slow load = loaded from S3, not from cache
                 # This is new data, use it and ALWAYS save to disk (critical for persistence)
@@ -2649,8 +2649,8 @@ def load_all_calls_cached(cache_version=0):
                     logger.info(f" Using disk cache ({len(disk_call_data)} calls)")
                     use_disk_cache = True
 
-        # Use the best cache
-        if use_streamlit_cache:
+            # Use the best cache
+            if use_streamlit_cache:
             final_call_data, final_errors = streamlit_call_data, streamlit_errors
             # Deduplicate Streamlit cache data
             if final_call_data:
