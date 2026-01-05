@@ -584,9 +584,17 @@ def parse_csv_row(row, filename):
         data["time"] = None
 
     # Normalize agent name
-    agent_name = row.get("agent_name")
-    if pd.notna(agent_name) and str(agent_name).strip():
-        data["agent"] = normalize_agent_id(str(agent_name).strip())
+    # Try multiple possible column names (agent_name, agent, Agent, agent_id)
+    agent_name = None
+    for col_name in ["agent_name", "agent", "Agent", "agent_id"]:
+        if col_name in row.index:
+            agent_value = row.get(col_name)
+            if pd.notna(agent_value) and str(agent_value).strip():
+                agent_name = str(agent_value).strip()
+                break
+    
+    if agent_name:
+        data["agent"] = normalize_agent_id(agent_name)
     else:
         data["agent"] = normalize_agent_id("Unknown")
 
@@ -2040,13 +2048,11 @@ def load_all_calls_cached(cache_version=0):
 
     # Check if user explicitly requested full reload - MUST check BEFORE loading cache
     reload_all_triggered = st.session_state.get("reload_all_triggered", False)
-    
+
     # CRITICAL: If reload_all_triggered, delete ALL caches BEFORE trying to load
     if reload_all_triggered:
-        logger.info(
-            "Reload ALL Data triggered - clearing all caches before loading"
-        )
-        
+        logger.info("Reload ALL Data triggered - clearing all caches before loading")
+
         # Delete disk cache file
         try:
             if CACHE_FILE.exists():
@@ -2055,7 +2061,7 @@ def load_all_calls_cached(cache_version=0):
                     logger.info(f" Deleted disk cache file: {CACHE_FILE}")
         except Exception as e:
             logger.warning(f" Could not delete disk cache: {e}")
-        
+
         # Delete S3 cache
         try:
             s3_client, s3_bucket = get_s3_client_and_bucket()
@@ -2070,14 +2076,14 @@ def load_all_calls_cached(cache_version=0):
                         logger.info(" S3 cache does not exist (already deleted)")
         except Exception as e:
             logger.warning(f" Could not delete S3 cache: {e}")
-        
+
         # Clear Streamlit cache
         try:
             load_all_calls_cached.clear()
             logger.info(" Cleared Streamlit cache")
         except Exception as e:
             logger.warning(f" Could not clear Streamlit cache: {e}")
-        
+
         # Clear session state cache
         if "_s3_cache_result" in st.session_state:
             del st.session_state["_s3_cache_result"]
@@ -2090,13 +2096,15 @@ def load_all_calls_cached(cache_version=0):
         if "_merged_cache_data_timestamp" in st.session_state:
             del st.session_state["_merged_cache_data_timestamp"]
         logger.info(" Cleared session state cache")
-        
+
         # Clear the flag so we don't delete again
         st.session_state["reload_all_triggered"] = False
         # Skip S3 cache check - we just deleted it, need fresh load
         s3_cache_result = None
         s3_cache_timestamp = None
-        logger.info(" Skipping S3 cache check - caches deleted, will load fresh from S3")
+        logger.info(
+            " Skipping S3 cache check - caches deleted, will load fresh from S3"
+        )
     else:
         # CRITICAL: Always check S3 cache first (source of truth, shared across all users)
         # This ensures all users get the same up-to-date data
