@@ -8911,9 +8911,9 @@ if user_agent_id:
                     alpha=0.5,
                     label=f"Threshold ({alert_threshold}%)",
                 )
-            ax_agent.legend()
-            plt.xticks(rotation=45)
-            plt.tight_layout()
+                ax_agent.legend()
+                plt.xticks(rotation=45)
+                plt.tight_layout()
                 st_pyplot_safe(fig_agent)
     
     with agent_trends_col2:
