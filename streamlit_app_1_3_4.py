@@ -2576,8 +2576,8 @@ def load_all_calls_cached(cache_version=0):
             # Ensure we always return a tuple
             if not isinstance(result, tuple) or len(result) != 2:
                 result = (result if isinstance(result, list) else [], [])
-        
-        streamlit_call_data, streamlit_errors = result
+
+            streamlit_call_data, streamlit_errors = result
             # Migrate old cache format to new format
             if streamlit_call_data:
                 streamlit_call_data = migrate_old_cache_format(streamlit_call_data)
