@@ -7214,6 +7214,350 @@ else:
 
     st.dataframe(comparison_table, hide_index=True)
 
+# --- Call Reason & Outcome Analysis ---
+with st.expander("Call Reason & Outcome Analysis", expanded=False):
+    st.subheader("Call Reason & Outcome Analysis")
+    if (
+        "Reason" in filtered_df.columns
+        or "Outcome" in filtered_df.columns
+        or "Summary" in filtered_df.columns
+    ):
+        reason_tab1, reason_tab2, reason_tab3 = st.tabs(
+            ["Reasons", "Outcomes", "Products"]
+        )
+
+        with reason_tab1:
+            if "Reason" in filtered_df.columns:
+                reason_col1, reason_col2 = st.columns(2)
+
+                with reason_col1:
+                    st.write("**Most Common Call Reasons**")
+                    reason_counts = filtered_df["Reason"].value_counts().head(10)
+                    if len(reason_counts) > 0:
+                        fig_reason, ax_reason = plt.subplots(figsize=(8, 6))
+                        reason_counts.plot(kind="barh", ax=ax_reason, color="steelblue")
+                        ax_reason.set_xlabel("Number of Calls")
+                        ax_reason.set_title("Top 10 Call Reasons")
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_reason)
+
+                with reason_col2:
+                    st.write("**Reason Distribution**")
+                    reason_counts_all = filtered_df["Reason"].value_counts()
+                    if len(reason_counts_all) > 0:
+                        # Show top 10 in pie chart, rest as "Other"
+                        top_reasons = reason_counts_all.head(10)
+                        other_count = (
+                            reason_counts_all.iloc[10:].sum()
+                            if len(reason_counts_all) > 10
+                            else 0
+                        )
+
+                        if other_count > 0:
+                            pie_data = pd.concat(
+                                [top_reasons, pd.Series({"Other": other_count})]
+                            )
+                        else:
+                            pie_data = top_reasons
+
+                        fig_reason_pie, ax_reason_pie = plt.subplots(figsize=(8, 6))
+                        ax_reason_pie.pie(
+                            pie_data.values,
+                            labels=pie_data.index,
+                            autopct="%1.1f%%",
+                            startangle=90,
+                        )
+                        ax_reason_pie.set_title("Call Reasons Distribution")
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_reason_pie)
+
+                # Trend over time
+                if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
+                    st.write("**Reason Trends Over Time**")
+                    # Get top 5 reasons for trend
+                    top_5_reasons = (
+                        filtered_df["Reason"].value_counts().head(5).index.tolist()
+                    )
+                    filtered_df_reason = filtered_df[
+                        filtered_df["Reason"].isin(top_5_reasons)
+                    ].copy()
+                    filtered_df_reason["Call Date"] = pd.to_datetime(
+                        filtered_df_reason["Call Date"], errors="coerce"
+                    )
+                    filtered_df_reason = filtered_df_reason.dropna(subset=["Call Date"])
+
+                    if len(filtered_df_reason) > 0:
+                        # Group by date and reason
+                        reason_trend = (
+                            filtered_df_reason.groupby(
+                                [filtered_df_reason["Call Date"].dt.date, "Reason"]
+                            )
+                            .size()
+                            .reset_index()
+                        )
+                        reason_trend.columns = ["Date", "Reason", "Count"]
+                        reason_trend_pivot = reason_trend.pivot(
+                            index="Date", columns="Reason", values="Count"
+                        ).fillna(0)
+
+                        fig_reason_trend, ax_reason_trend = plt.subplots(figsize=(12, 6))
+                        for reason in top_5_reasons:
+                            if reason in reason_trend_pivot.columns:
+                                ax_reason_trend.plot(
+                                    reason_trend_pivot.index,
+                                    reason_trend_pivot[reason],
+                                    marker="o",
+                                    label=reason,
+                                    linewidth=2,
+                                )
+                        ax_reason_trend.set_xlabel("Date")
+                        ax_reason_trend.set_ylabel("Number of Calls")
+                        ax_reason_trend.set_title("Top 5 Call Reasons Over Time")
+                        ax_reason_trend.legend()
+                        ax_reason_trend.grid(True, alpha=0.3)
+                        plt.xticks(rotation=45)
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_reason_trend)
+
+        with reason_tab2:
+            if "Outcome" in filtered_df.columns:
+                outcome_col1, outcome_col2 = st.columns(2)
+
+                with outcome_col1:
+                    st.write("**Most Common Outcomes**")
+                    outcome_counts = filtered_df["Outcome"].value_counts().head(10)
+                    if len(outcome_counts) > 0:
+                        fig_outcome, ax_outcome = plt.subplots(figsize=(8, 6))
+                        outcome_counts.plot(kind="barh", ax=ax_outcome, color="green")
+                        ax_outcome.set_xlabel("Number of Calls")
+                        ax_outcome.set_title("Top 10 Outcomes")
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_outcome)
+
+                with outcome_col2:
+                    st.write("**Outcome Distribution**")
+                    outcome_counts_all = filtered_df["Outcome"].value_counts()
+                    if len(outcome_counts_all) > 0:
+                        # Show top 10 in pie chart, rest as "Other"
+                        top_outcomes = outcome_counts_all.head(10)
+                        other_count = (
+                            outcome_counts_all.iloc[10:].sum()
+                            if len(outcome_counts_all) > 10
+                            else 0
+                        )
+
+                        if other_count > 0:
+                            pie_data = pd.concat(
+                                [top_outcomes, pd.Series({"Other": other_count})]
+                            )
+                        else:
+                            pie_data = top_outcomes
+
+                        fig_outcome_pie, ax_outcome_pie = plt.subplots(figsize=(8, 6))
+                        ax_outcome_pie.pie(
+                            pie_data.values,
+                            labels=pie_data.index,
+                            autopct="%1.1f%%",
+                            startangle=90,
+                        )
+                        ax_outcome_pie.set_title("Outcomes Distribution")
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_outcome_pie)
+
+                # Trend over time
+                if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
+                    st.write("**Outcome Trends Over Time**")
+                    # Get top 5 outcomes for trend
+                    top_5_outcomes = (
+                        filtered_df["Outcome"].value_counts().head(5).index.tolist()
+                    )
+                    filtered_df_outcome = filtered_df[
+                        filtered_df["Outcome"].isin(top_5_outcomes)
+                    ].copy()
+                    filtered_df_outcome["Call Date"] = pd.to_datetime(
+                        filtered_df_outcome["Call Date"], errors="coerce"
+                    )
+                    filtered_df_outcome = filtered_df_outcome.dropna(subset=["Call Date"])
+
+                    if len(filtered_df_outcome) > 0:
+                        # Group by date and outcome
+                        outcome_trend = (
+                            filtered_df_outcome.groupby(
+                                [filtered_df_outcome["Call Date"].dt.date, "Outcome"]
+                            )
+                            .size()
+                            .reset_index()
+                        )
+                        outcome_trend.columns = ["Date", "Outcome", "Count"]
+                        outcome_trend_pivot = outcome_trend.pivot(
+                            index="Date", columns="Outcome", values="Count"
+                        ).fillna(0)
+
+                        fig_outcome_trend, ax_outcome_trend = plt.subplots(figsize=(12, 6))
+                        for outcome in top_5_outcomes:
+                            if outcome in outcome_trend_pivot.columns:
+                                ax_outcome_trend.plot(
+                                    outcome_trend_pivot.index,
+                                    outcome_trend_pivot[outcome],
+                                    marker="o",
+                                    label=outcome,
+                                    linewidth=2,
+                                )
+                        ax_outcome_trend.set_xlabel("Date")
+                        ax_outcome_trend.set_ylabel("Number of Calls")
+                        ax_outcome_trend.set_title("Top 5 Outcomes Over Time")
+                        ax_outcome_trend.legend()
+                        ax_outcome_trend.grid(True, alpha=0.3)
+                        plt.xticks(rotation=45)
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_outcome_trend)
+
+        with reason_tab3:
+            # Extract products from Summary, Reason, and Outcome fields
+            if (
+                "Summary" in filtered_df.columns
+                or "Reason" in filtered_df.columns
+                or "Outcome" in filtered_df.columns
+            ):
+                # Combine text from all three fields for product extraction
+                product_data = []
+                for idx, row in filtered_df.iterrows():
+                    combined_text = " ".join(
+                        [
+                            str(row.get("Summary", "") or ""),
+                            str(row.get("Reason", "") or ""),
+                            str(row.get("Outcome", "") or ""),
+                        ]
+                    )
+                    products = extract_products_from_text(combined_text)
+                    product_data.extend(products)
+
+                if len(product_data) > 0:
+                    product_col1, product_col2 = st.columns(2)
+
+                    with product_col1:
+                        st.write("**Most Discussed Products**")
+                        product_counts = pd.Series(product_data).value_counts().head(10)
+                        if len(product_counts) > 0:
+                            fig_product, ax_product = plt.subplots(figsize=(8, 6))
+                            product_counts.plot(kind="barh", ax=ax_product, color="orange")
+                            ax_product.set_xlabel("Number of Mentions")
+                            ax_product.set_title("Top 10 Products Discussed")
+                            plt.tight_layout()
+                            st_pyplot_safe(fig_product)
+
+                    with product_col2:
+                        st.write("**Product Distribution**")
+                        product_counts_all = pd.Series(product_data).value_counts()
+                        if len(product_counts_all) > 0:
+                            # Show top 10 in pie chart, rest as "Other"
+                            top_products = product_counts_all.head(10)
+                            other_count = (
+                                product_counts_all.iloc[10:].sum()
+                                if len(product_counts_all) > 10
+                                else 0
+                            )
+
+                            if other_count > 0:
+                                pie_data = pd.concat(
+                                    [top_products, pd.Series({"Other": other_count})]
+                                )
+                            else:
+                                pie_data = top_products
+
+                            fig_product_pie, ax_product_pie = plt.subplots(figsize=(8, 6))
+                            ax_product_pie.pie(
+                                pie_data.values,
+                                labels=pie_data.index,
+                                autopct="%1.1f%%",
+                                startangle=90,
+                            )
+                            ax_product_pie.set_title("Products Distribution")
+                            plt.tight_layout()
+                            st_pyplot_safe(fig_product_pie)
+
+                    # Trend over time
+                    if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
+                        st.write("**Product Mentions Over Time**")
+                        # Create a DataFrame with products per call
+                        call_products = []
+                        for idx, row in filtered_df.iterrows():
+                            combined_text = " ".join(
+                                [
+                                    str(row.get("Summary", "") or ""),
+                                    str(row.get("Reason", "") or ""),
+                                    str(row.get("Outcome", "") or ""),
+                                ]
+                            )
+                            products = extract_products_from_text(combined_text)
+                            call_date = row.get("Call Date")
+                            if call_date and len(products) > 0:
+                                for product in products:
+                                    call_products.append(
+                                        {"Date": call_date, "Product": product}
+                                    )
+
+                        if len(call_products) > 0:
+                            products_df = pd.DataFrame(call_products)
+                            products_df["Date"] = pd.to_datetime(
+                                products_df["Date"], errors="coerce"
+                            )
+                            products_df = products_df.dropna(subset=["Date"])
+
+                            if len(products_df) > 0:
+                                # Get top 5 products for trend
+                                top_5_products = (
+                                    pd.Series(product_data)
+                                    .value_counts()
+                                    .head(5)
+                                    .index.tolist()
+                                )
+                                products_df_filtered = products_df[
+                                    products_df["Product"].isin(top_5_products)
+                                ].copy()
+
+                                if len(products_df_filtered) > 0:
+                                    # Group by date and product
+                                    product_trend = (
+                                        products_df_filtered.groupby(
+                                            [
+                                                products_df_filtered["Date"].dt.date,
+                                                "Product",
+                                            ]
+                                        )
+                                        .size()
+                                        .reset_index()
+                                    )
+                                    product_trend.columns = ["Date", "Product", "Count"]
+                                    product_trend_pivot = product_trend.pivot(
+                                        index="Date", columns="Product", values="Count"
+                                    ).fillna(0)
+
+                                    fig_product_trend, ax_product_trend = plt.subplots(
+                                        figsize=(12, 6)
+                                    )
+                                    for product in top_5_products:
+                                        if product in product_trend_pivot.columns:
+                                            ax_product_trend.plot(
+                                                product_trend_pivot.index,
+                                                product_trend_pivot[product],
+                                                marker="o",
+                                                label=product,
+                                                linewidth=2,
+                                            )
+                                    ax_product_trend.set_xlabel("Date")
+                                    ax_product_trend.set_ylabel("Number of Mentions")
+                                    ax_product_trend.set_title("Top 5 Products Over Time")
+                                    ax_product_trend.legend()
+                                    ax_product_trend.grid(True, alpha=0.3)
+                                    plt.xticks(rotation=45)
+                                    plt.tight_layout()
+                                    st_pyplot_safe(fig_product_trend)
+                else:
+                    st.info(
+                        "No products found in call data. Products are extracted from Summary, Reason, and Outcome fields."
+                    )
+
 # --- AHT Root Cause Analysis ---
 if (
     "Call Duration (min)" in filtered_df.columns
@@ -8388,112 +8732,6 @@ with st.expander("Trend Forecasting", expanded=False):
     else:
         st.info(" No data available for forecasting")
 
-# --- Rubric Code Analysis ---
-st.subheader("Rubric Code Analysis")
-if "Rubric Details" in filtered_df.columns:
-    # Collect all rubric code statistics
-    code_stats = {}
-    for idx, row in filtered_df.iterrows():
-        rubric_details = row.get("Rubric Details", {})
-        if isinstance(rubric_details, dict):
-            for code, details in rubric_details.items():
-                if isinstance(details, dict):
-                    status = details.get("status", "N/A")
-                    note = details.get("note", "")
-
-                    if code not in code_stats:
-                        code_stats[code] = {
-                            "total": 0,
-                            "pass": 0,
-                            "fail": 0,
-                            "na": 0,
-                            "fail_notes": [],
-                        }
-
-                    code_stats[code]["total"] += 1
-                    if status == "Pass":
-                        code_stats[code]["pass"] += 1
-                    elif status == "Fail":
-                        code_stats[code]["fail"] += 1
-                        if note:
-                            code_stats[code]["fail_notes"].append(note)
-                    elif status == "N/A":
-                        code_stats[code]["na"] += 1
-
-    if code_stats:
-        rubric_analysis = pd.DataFrame(
-            [
-                {
-                    "Code": code,
-                    "Total": stats["total"],
-                    "Pass": stats["pass"],
-                    "Fail": stats["fail"],
-                    "N/A": stats["na"],
-                    "Pass_Rate": (stats["pass"] / stats["total"] * 100)
-                    if stats["total"] > 0
-                    else 0,
-                    "Fail_Rate": (stats["fail"] / stats["total"] * 100)
-                    if stats["total"] > 0
-                    else 0,
-                    "Most_Common_Fail_Reason": max(
-                        set(stats["fail_notes"]), key=stats["fail_notes"].count
-                    )
-                    if stats["fail_notes"]
-                    else "N/A",
-                }
-                for code, stats in code_stats.items()
-            ]
-        ).sort_values("Fail_Rate", ascending=False)
-
-        st.dataframe(rubric_analysis.round(1))
-
-        # Top failing codes chart
-        col_rub1, col_rub2 = st.columns(2)
-        with col_rub1:
-            st.write("**Top 10 Failing Rubric Codes**")
-            top_fail = rubric_analysis[rubric_analysis["Fail"] > 0].head(10)
-            if len(top_fail) > 0:
-                fig_fail, ax_fail = plt.subplots(figsize=(10, 6))
-                top_fail.plot(
-                    x="Code", y="Fail_Rate", kind="barh", ax=ax_fail, color="red"
-                )
-                ax_fail.set_xlabel("Fail Rate (%)")
-                ax_fail.set_ylabel("Rubric Code")
-                ax_fail.set_title("Top 10 Failing Rubric Codes")
-                plt.tight_layout()
-                st_pyplot_safe(fig_fail)
-
-        with col_rub2:
-            # Rubric Code Heatmap (simplified - showing pass/fail rates)
-            st.write("**Rubric Code Performance Heatmap**")
-            # Group codes by major category (e.g., 1.x.x, 2.x.x)
-            rubric_analysis["Category"] = rubric_analysis["Code"].str.split(".").str[0]
-            category_stats = (
-                rubric_analysis.groupby("Category")
-                .agg(
-                    Avg_Pass_Rate=("Pass_Rate", "mean"),
-                    Avg_Fail_Rate=("Fail_Rate", "mean"),
-                    Total_Fails=("Fail", "sum"),
-                )
-                .reset_index()
-                .sort_values("Avg_Fail_Rate", ascending=False)
-            )
-
-            fig_heat, ax_heat = plt.subplots(figsize=(8, 6))
-            colors = [
-                "green" if x < 20 else "orange" if x < 40 else "red"
-                for x in category_stats["Avg_Fail_Rate"]
-            ]
-            category_stats.plot(
-                x="Category", y="Avg_Fail_Rate", kind="bar", ax=ax_heat, color=colors
-            )
-            ax_heat.set_ylabel("Average Fail Rate (%)")
-            ax_heat.set_xlabel("Rubric Category")
-            ax_heat.set_title("Fail Rate by Rubric Category")
-            plt.xticks(rotation=0)
-            plt.tight_layout()
-            st_pyplot_safe(fig_heat)
-
 # --- Agent-Specific Trends ---
 if user_agent_id:
     # Agent view - show their trend with team comparison
@@ -8730,10 +8968,10 @@ else:
     # Admin view - agent selection and comparison
     with st.expander("Agent-Specific Performance Trends", expanded=False):
         st.subheader("Agent-Specific Performance Trends")
-    if len(filtered_df) > 0 and len(selected_agents) > 0:
-        agent_trends_col1, agent_trends_col2 = st.columns(2)
+        if len(filtered_df) > 0 and len(selected_agents) > 0:
+            agent_trends_col1, agent_trends_col2 = st.columns(2)
 
-        with agent_trends_col1:
+            with agent_trends_col1:
             selected_agent_for_trend = st.selectbox(
                 "Select Agent for Trend Analysis", selected_agents
             )
@@ -8799,7 +9037,7 @@ else:
                     plt.tight_layout()
                     st_pyplot_safe(fig_aht_agent)
 
-        with agent_trends_col2:
+            with agent_trends_col2:
             # Agent Comparison
             st.write("**Agent Comparison**")
             compare_agents = st.multiselect(
@@ -8889,6 +9127,8 @@ else:
                         )
                         plt.tight_layout()
                         st_pyplot_safe(fig_aht_compare)
+        else:
+            st.info("No agent data available for trend analysis")
 
 # --- QA Score Distribution and Label Distribution ---
 with st.expander("Score & Label Distribution Analysis", expanded=False):
@@ -9569,350 +9809,6 @@ with st.expander("Time of Day Analysis", expanded=False):
                 ax_time_vol.set_xticks(range(0, 24, 2))
                 plt.tight_layout()
                 st_pyplot_safe(fig_time_vol)
-
-# --- Reason and Outcome Analysis ---
-with st.expander("Call Reason & Outcome Analysis", expanded=False):
-    st.subheader("Call Reason & Outcome Analysis")
-    if (
-        "Reason" in filtered_df.columns
-        or "Outcome" in filtered_df.columns
-        or "Summary" in filtered_df.columns
-    ):
-        reason_tab1, reason_tab2, reason_tab3 = st.tabs(
-            ["Reasons", "Outcomes", "Products"]
-        )
-
-    with reason_tab1:
-        if "Reason" in filtered_df.columns:
-            reason_col1, reason_col2 = st.columns(2)
-
-            with reason_col1:
-                st.write("**Most Common Call Reasons**")
-                reason_counts = filtered_df["Reason"].value_counts().head(10)
-                if len(reason_counts) > 0:
-                    fig_reason, ax_reason = plt.subplots(figsize=(8, 6))
-                    reason_counts.plot(kind="barh", ax=ax_reason, color="steelblue")
-                    ax_reason.set_xlabel("Number of Calls")
-                    ax_reason.set_title("Top 10 Call Reasons")
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_reason)
-
-            with reason_col2:
-                st.write("**Reason Distribution**")
-                reason_counts_all = filtered_df["Reason"].value_counts()
-                if len(reason_counts_all) > 0:
-                    # Show top 10 in pie chart, rest as "Other"
-                    top_reasons = reason_counts_all.head(10)
-                    other_count = (
-                        reason_counts_all.iloc[10:].sum()
-                        if len(reason_counts_all) > 10
-                        else 0
-                    )
-
-                    if other_count > 0:
-                        pie_data = pd.concat(
-                            [top_reasons, pd.Series({"Other": other_count})]
-                        )
-                    else:
-                        pie_data = top_reasons
-
-                    fig_reason_pie, ax_reason_pie = plt.subplots(figsize=(8, 6))
-                    ax_reason_pie.pie(
-                        pie_data.values,
-                        labels=pie_data.index,
-                        autopct="%1.1f%%",
-                        startangle=90,
-                    )
-                    ax_reason_pie.set_title("Call Reasons Distribution")
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_reason_pie)
-
-            # Trend over time
-            if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
-                st.write("**Reason Trends Over Time**")
-                # Get top 5 reasons for trend
-                top_5_reasons = (
-                    filtered_df["Reason"].value_counts().head(5).index.tolist()
-                )
-                filtered_df_reason = filtered_df[
-                    filtered_df["Reason"].isin(top_5_reasons)
-                ].copy()
-                filtered_df_reason["Call Date"] = pd.to_datetime(
-                    filtered_df_reason["Call Date"], errors="coerce"
-                )
-                filtered_df_reason = filtered_df_reason.dropna(subset=["Call Date"])
-
-                if len(filtered_df_reason) > 0:
-                    # Group by date and reason
-                    reason_trend = (
-                        filtered_df_reason.groupby(
-                            [filtered_df_reason["Call Date"].dt.date, "Reason"]
-                        )
-                        .size()
-                        .reset_index()
-                    )
-                    reason_trend.columns = ["Date", "Reason", "Count"]
-                    reason_trend_pivot = reason_trend.pivot(
-                        index="Date", columns="Reason", values="Count"
-                    ).fillna(0)
-
-                    fig_reason_trend, ax_reason_trend = plt.subplots(figsize=(12, 6))
-                    for reason in top_5_reasons:
-                        if reason in reason_trend_pivot.columns:
-                            ax_reason_trend.plot(
-                                reason_trend_pivot.index,
-                                reason_trend_pivot[reason],
-                                marker="o",
-                                label=reason,
-                                linewidth=2,
-                            )
-                    ax_reason_trend.set_xlabel("Date")
-                    ax_reason_trend.set_ylabel("Number of Calls")
-                    ax_reason_trend.set_title("Top 5 Call Reasons Over Time")
-                    ax_reason_trend.legend()
-                    ax_reason_trend.grid(True, alpha=0.3)
-                    plt.xticks(rotation=45)
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_reason_trend)
-
-    with reason_tab2:
-        if "Outcome" in filtered_df.columns:
-            outcome_col1, outcome_col2 = st.columns(2)
-
-            with outcome_col1:
-                st.write("**Most Common Outcomes**")
-                outcome_counts = filtered_df["Outcome"].value_counts().head(10)
-                if len(outcome_counts) > 0:
-                    fig_outcome, ax_outcome = plt.subplots(figsize=(8, 6))
-                    outcome_counts.plot(kind="barh", ax=ax_outcome, color="green")
-                    ax_outcome.set_xlabel("Number of Calls")
-                    ax_outcome.set_title("Top 10 Outcomes")
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_outcome)
-
-            with outcome_col2:
-                st.write("**Outcome Distribution**")
-                outcome_counts_all = filtered_df["Outcome"].value_counts()
-                if len(outcome_counts_all) > 0:
-                    # Show top 10 in pie chart, rest as "Other"
-                    top_outcomes = outcome_counts_all.head(10)
-                    other_count = (
-                        outcome_counts_all.iloc[10:].sum()
-                        if len(outcome_counts_all) > 10
-                        else 0
-                    )
-
-                    if other_count > 0:
-                        pie_data = pd.concat(
-                            [top_outcomes, pd.Series({"Other": other_count})]
-                        )
-                    else:
-                        pie_data = top_outcomes
-
-                    fig_outcome_pie, ax_outcome_pie = plt.subplots(figsize=(8, 6))
-                    ax_outcome_pie.pie(
-                        pie_data.values,
-                        labels=pie_data.index,
-                        autopct="%1.1f%%",
-                        startangle=90,
-                    )
-                    ax_outcome_pie.set_title("Outcomes Distribution")
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_outcome_pie)
-
-            # Trend over time
-            if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
-                st.write("**Outcome Trends Over Time**")
-                # Get top 5 outcomes for trend
-                top_5_outcomes = (
-                    filtered_df["Outcome"].value_counts().head(5).index.tolist()
-                )
-                filtered_df_outcome = filtered_df[
-                    filtered_df["Outcome"].isin(top_5_outcomes)
-                ].copy()
-                filtered_df_outcome["Call Date"] = pd.to_datetime(
-                    filtered_df_outcome["Call Date"], errors="coerce"
-                )
-                filtered_df_outcome = filtered_df_outcome.dropna(subset=["Call Date"])
-
-                if len(filtered_df_outcome) > 0:
-                    # Group by date and outcome
-                    outcome_trend = (
-                        filtered_df_outcome.groupby(
-                            [filtered_df_outcome["Call Date"].dt.date, "Outcome"]
-                        )
-                        .size()
-                        .reset_index()
-                    )
-                    outcome_trend.columns = ["Date", "Outcome", "Count"]
-                    outcome_trend_pivot = outcome_trend.pivot(
-                        index="Date", columns="Outcome", values="Count"
-                    ).fillna(0)
-
-                    fig_outcome_trend, ax_outcome_trend = plt.subplots(figsize=(12, 6))
-                    for outcome in top_5_outcomes:
-                        if outcome in outcome_trend_pivot.columns:
-                            ax_outcome_trend.plot(
-                                outcome_trend_pivot.index,
-                                outcome_trend_pivot[outcome],
-                                marker="o",
-                                label=outcome,
-                                linewidth=2,
-                            )
-                    ax_outcome_trend.set_xlabel("Date")
-                    ax_outcome_trend.set_ylabel("Number of Calls")
-                    ax_outcome_trend.set_title("Top 5 Outcomes Over Time")
-                    ax_outcome_trend.legend()
-                    ax_outcome_trend.grid(True, alpha=0.3)
-                    plt.xticks(rotation=45)
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_outcome_trend)
-
-    with reason_tab3:
-        # Extract products from Summary, Reason, and Outcome fields
-        if (
-            "Summary" in filtered_df.columns
-            or "Reason" in filtered_df.columns
-            or "Outcome" in filtered_df.columns
-        ):
-            # Combine text from all three fields for product extraction
-            product_data = []
-            for idx, row in filtered_df.iterrows():
-                combined_text = " ".join(
-                    [
-                        str(row.get("Summary", "") or ""),
-                        str(row.get("Reason", "") or ""),
-                        str(row.get("Outcome", "") or ""),
-                    ]
-                )
-                products = extract_products_from_text(combined_text)
-                product_data.extend(products)
-
-            if len(product_data) > 0:
-                product_col1, product_col2 = st.columns(2)
-
-                with product_col1:
-                    st.write("**Most Discussed Products**")
-                    product_counts = pd.Series(product_data).value_counts().head(10)
-                    if len(product_counts) > 0:
-                        fig_product, ax_product = plt.subplots(figsize=(8, 6))
-                        product_counts.plot(kind="barh", ax=ax_product, color="orange")
-                        ax_product.set_xlabel("Number of Mentions")
-                        ax_product.set_title("Top 10 Products Discussed")
-                        plt.tight_layout()
-                        st_pyplot_safe(fig_product)
-
-                with product_col2:
-                    st.write("**Product Distribution**")
-                    product_counts_all = pd.Series(product_data).value_counts()
-                    if len(product_counts_all) > 0:
-                        # Show top 10 in pie chart, rest as "Other"
-                        top_products = product_counts_all.head(10)
-                        other_count = (
-                            product_counts_all.iloc[10:].sum()
-                            if len(product_counts_all) > 10
-                            else 0
-                        )
-
-                        if other_count > 0:
-                            pie_data = pd.concat(
-                                [top_products, pd.Series({"Other": other_count})]
-                            )
-                        else:
-                            pie_data = top_products
-
-                        fig_product_pie, ax_product_pie = plt.subplots(figsize=(8, 6))
-                        ax_product_pie.pie(
-                            pie_data.values,
-                            labels=pie_data.index,
-                            autopct="%1.1f%%",
-                            startangle=90,
-                        )
-                        ax_product_pie.set_title("Products Distribution")
-                        plt.tight_layout()
-                        st_pyplot_safe(fig_product_pie)
-
-                # Trend over time
-                if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
-                    st.write("**Product Mentions Over Time**")
-                    # Create a DataFrame with products per call
-                    call_products = []
-                    for idx, row in filtered_df.iterrows():
-                        combined_text = " ".join(
-                            [
-                                str(row.get("Summary", "") or ""),
-                                str(row.get("Reason", "") or ""),
-                                str(row.get("Outcome", "") or ""),
-                            ]
-                        )
-                        products = extract_products_from_text(combined_text)
-                        call_date = row.get("Call Date")
-                        if call_date and len(products) > 0:
-                            for product in products:
-                                call_products.append(
-                                    {"Date": call_date, "Product": product}
-                                )
-
-                    if len(call_products) > 0:
-                        products_df = pd.DataFrame(call_products)
-                        products_df["Date"] = pd.to_datetime(
-                            products_df["Date"], errors="coerce"
-                        )
-                        products_df = products_df.dropna(subset=["Date"])
-
-                        if len(products_df) > 0:
-                            # Get top 5 products for trend
-                            top_5_products = (
-                                pd.Series(product_data)
-                                .value_counts()
-                                .head(5)
-                                .index.tolist()
-                            )
-                            products_df_filtered = products_df[
-                                products_df["Product"].isin(top_5_products)
-                            ].copy()
-
-                            if len(products_df_filtered) > 0:
-                                # Group by date and product
-                                product_trend = (
-                                    products_df_filtered.groupby(
-                                        [
-                                            products_df_filtered["Date"].dt.date,
-                                            "Product",
-                                        ]
-                                    )
-                                    .size()
-                                    .reset_index()
-                                )
-                                product_trend.columns = ["Date", "Product", "Count"]
-                                product_trend_pivot = product_trend.pivot(
-                                    index="Date", columns="Product", values="Count"
-                                ).fillna(0)
-
-                                fig_product_trend, ax_product_trend = plt.subplots(
-                                    figsize=(12, 6)
-                                )
-                                for product in top_5_products:
-                                    if product in product_trend_pivot.columns:
-                                        ax_product_trend.plot(
-                                            product_trend_pivot.index,
-                                            product_trend_pivot[product],
-                                            marker="o",
-                                            label=product,
-                                            linewidth=2,
-                                        )
-                                ax_product_trend.set_xlabel("Date")
-                                ax_product_trend.set_ylabel("Number of Mentions")
-                                ax_product_trend.set_title("Top 5 Products Over Time")
-                                ax_product_trend.legend()
-                                ax_product_trend.grid(True, alpha=0.3)
-                                plt.xticks(rotation=45)
-                                plt.tight_layout()
-                                st_pyplot_safe(fig_product_trend)
-            else:
-                st.info(
-                    "No products found in call data. Products are extracted from Summary, Reason, and Outcome fields."
-                )
 
 # --- Anomaly Detection ---
 with st.expander("Anomaly Detection", expanded=False):
