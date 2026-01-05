@@ -8875,9 +8875,9 @@ if user_agent_id:
                     .agg(Avg_QA_Score=("QA Score", "mean"))
                     .reset_index()
                 )
-            overall_daily.columns = ["Date", "Team_Avg"]
-            
-            # Merge on date
+                overall_daily.columns = ["Date", "Team_Avg"]
+                
+                # Merge on date
                 trend_comparison = pd.merge(
                     agent_daily, overall_daily, on="Date", how="outer"
                 ).sort_values("Date")
