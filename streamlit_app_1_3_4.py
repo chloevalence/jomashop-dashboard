@@ -3522,9 +3522,19 @@ def load_new_calls_only():
                             batch_calls.append(parsed_data)  # Track for this batch
 
                             # Check if this call is already in cache
-                            call_key = parsed_data.get("_s3_key") or parsed_data.get(
-                                "_id"
-                            )
+                            # For CSV files, use call_id as the key (since _s3_key is filename)
+                            # For PDFs, use _s3_key
+                            call_id = parsed_data.get("call_id")
+                            _id = parsed_data.get("_id", "")
+                            _s3_key = parsed_data.get("_s3_key", "")
+                            
+                            # If _id contains a colon, it's from a CSV (format: filename:call_id)
+                            if call_id and (":" in str(_id) or ":" in str(_s3_key)):
+                                call_key = str(call_id)
+                            else:
+                                # For PDFs or legacy format, use _s3_key
+                                call_key = _s3_key or _id
+                            
                             if call_key and call_key in existing_cache_keys:
                                 # Already in cache - skip (already added to new_calls above)
                                 pass
