@@ -2429,23 +2429,57 @@ def load_all_calls_cached(cache_version=0):
                 f"Data load already in progress (started {load_duration:.1f}s ago), "
                 f"waiting for completion or using cache"
             )
-            # Wait a short time for the first load to complete (max 5 seconds)
-            max_wait = 5.0
-            wait_interval = 0.5
+            # Wait for the first load to complete (max 60 seconds, check every 1 second)
+            # This allows time for the full load to complete (typically 30-40 seconds)
+            max_wait = 60.0
+            wait_interval = 1.0
             waited = 0.0
             while waited < max_wait:
                 time.sleep(wait_interval)
                 waited += wait_interval
+
                 # Check if load completed
                 if not st.session_state.get(load_in_progress_key, False):
                     # Load completed, try to get cached result
-                    break
-                # Check if we should give up and use cache
-                if waited >= max_wait:
+                    logger.info("First load completed, retrieving cached data")
                     break
 
-            # Try multiple sources for data
-            # 1. Try Streamlit cache (if load completed)
+                # Check for cache availability periodically (every 2 seconds)
+                if int(waited) % 2 == 0:
+                    # Try disk cache
+                    try:
+                        disk_result = load_cached_data_from_disk()
+                        if disk_result and disk_result[0] and len(disk_result[0]) > 0:
+                            migrated = migrate_old_cache_format(disk_result[0])
+                            logger.info(
+                                f"Found disk cache during wait: {len(migrated)} calls (waited {waited:.1f}s)"
+                            )
+                            return migrated, disk_result[1] if disk_result[1] else []
+                    except Exception as e:
+                        logger.debug(f"Disk cache not available yet: {e}")
+
+                    # Try session state cache
+                    if "_s3_cache_result" in st.session_state:
+                        cached_result = st.session_state["_s3_cache_result"]
+                        if cached_result and len(cached_result) >= 100:
+                            logger.info(
+                                f"Found session cache during wait: {len(cached_result)} calls (waited {waited:.1f}s)"
+                            )
+                            return cached_result, st.session_state.get(
+                                "_last_load_errors", []
+                            )
+
+            # Try multiple sources for data after wait
+            # 1. Try session state cache first (fastest)
+            if "_s3_cache_result" in st.session_state:
+                cached_result = st.session_state["_s3_cache_result"]
+                if cached_result and len(cached_result) >= 100:
+                    logger.info(
+                        f"Returning session cache after wait: {len(cached_result)} calls"
+                    )
+                    return cached_result, st.session_state.get("_last_load_errors", [])
+
+            # 2. Try Streamlit cache (if load completed)
             try:
                 # Force cache refresh by using a dummy cache key
                 # The actual cache will be used if available
@@ -2463,17 +2497,17 @@ def load_all_calls_cached(cache_version=0):
             except Exception as e:
                 logger.debug(f"Could not get from Streamlit cache: {e}")
 
-            # 2. Try disk cache
+            # 3. Try disk cache
             try:
                 disk_result = load_cached_data_from_disk()
                 if disk_result and disk_result[0] and len(disk_result[0]) > 0:
                     migrated = migrate_old_cache_format(disk_result[0])
                     logger.info(
-                        f"Returning disk cache during concurrent load: {len(migrated)} calls"
+                        f"Returning disk cache after wait: {len(migrated)} calls"
                     )
                     return migrated, disk_result[1] if disk_result[1] else []
             except Exception as e:
-                logger.warning(f"Could not load disk cache during concurrent load: {e}")
+                logger.warning(f"Could not load disk cache after wait: {e}")
 
             # 3. Try S3 cache from session state (most up-to-date, shared across users)
             try:
