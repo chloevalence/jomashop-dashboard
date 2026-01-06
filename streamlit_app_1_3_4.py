@@ -10106,55 +10106,55 @@ with analytics_tab1:
 with analytics_tab2:
     st.markdown("### Agent Improvement Trends")
     
-        if (
-            "Agent" in filtered_df.columns
-            and "Call Date" in filtered_df.columns
-            and "QA Score" in filtered_df.columns
-        ):
+    if (
+        "Agent" in filtered_df.columns
+        and "Call Date" in filtered_df.columns
+        and "QA Score" in filtered_df.columns
+    ):
         # Group by agent and week
-            filtered_df["Week"] = (
-                pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
-            )
-            agent_weekly = (
-                filtered_df.groupby(["Agent", "Week"])
-                .agg({"QA Score": "mean", "Call ID": "count"})
-                .reset_index()
-            )
+        filtered_df["Week"] = (
+            pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
+        )
+        agent_weekly = (
+            filtered_df.groupby(["Agent", "Week"])
+            .agg({"QA Score": "mean", "Call ID": "count"})
+            .reset_index()
+        )
         agent_weekly.columns = ["Agent", "Week", "Avg_QA_Score", "Call_Count"]
         
         # Calculate improvement (first week vs last week for each agent)
         agent_improvement = []
         for agent in agent_weekly["Agent"].unique():
-                agent_data = agent_weekly[agent_weekly["Agent"] == agent].sort_values(
-                    "Week"
-                )
+            agent_data = agent_weekly[agent_weekly["Agent"] == agent].sort_values(
+                "Week"
+            )
             if len(agent_data) > 1:
                 first_score = agent_data.iloc[0]["Avg_QA_Score"]
                 last_score = agent_data.iloc[-1]["Avg_QA_Score"]
                 improvement = last_score - first_score
-                    agent_improvement.append(
-                        {
-                    "Agent": agent,
-                    "First Week Score": f"{first_score:.1f}%",
-                    "Last Week Score": f"{last_score:.1f}%",
-                    "Improvement": f"{improvement:+.1f}%",
-                            "Trend": " Improving"
-                            if improvement > 0
-                            else " Declining"
-                            if improvement < 0
-                            else " Stable",
-                        }
-                    )
+                agent_improvement.append(
+                    {
+                        "Agent": agent,
+                        "First Week Score": f"{first_score:.1f}%",
+                        "Last Week Score": f"{last_score:.1f}%",
+                        "Improvement": f"{improvement:+.1f}%",
+                        "Trend": " Improving"
+                        if improvement > 0
+                        else " Declining"
+                        if improvement < 0
+                        else " Stable",
+                    }
+                )
         
         if agent_improvement:
             improvement_df = pd.DataFrame(agent_improvement)
-                improvement_df = improvement_df.sort_values(
-                    "Improvement",
-                    key=lambda x: x.str.replace("%", "")
-                    .str.replace("+", "")
-                    .astype(float),
-                    ascending=False,
-                )
+            improvement_df = improvement_df.sort_values(
+                "Improvement",
+                key=lambda x: x.str.replace("%", "")
+                .str.replace("+", "")
+                .astype(float),
+                ascending=False,
+            )
             st.dataframe(improvement_df, hide_index=True)
             
             # Show trend chart for selected agents
@@ -10183,11 +10183,11 @@ with analytics_tab2:
                 ax_agent_trend.set_xlabel("Week")
                 ax_agent_trend.set_ylabel("Average QA Score (%)")
                 ax_agent_trend.set_title("Agent Performance Trends Over Time")
-                    ax_agent_trend.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+                ax_agent_trend.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
                 ax_agent_trend.grid(True, alpha=0.3)
-                    plt.xticks(rotation=45, ha="right")
+                plt.xticks(rotation=45, ha="right")
                 plt.tight_layout()
-                    st_pyplot_safe(fig_agent_trend)
+                st_pyplot_safe(fig_agent_trend)
         else:
                 st.info(
                     " Need multiple weeks of data per agent to show improvement trends"
@@ -10205,27 +10205,27 @@ with analytics_tab3:
             rubric_details = row.get("Rubric Details", {})
             if isinstance(rubric_details, dict):
                 for code, details in rubric_details.items():
-                        if (
-                            isinstance(details, dict)
-                            and details.get("status", "").lower() == "fail"
-                        ):
+                    if (
+                        isinstance(details, dict)
+                        and details.get("status", "").lower() == "fail"
+                    ):
                         if code not in failure_reasons:
                             failure_reasons[code] = {
-                                    "count": 0,
-                                    "calls": set(),
-                                    "notes": [],
-                                }
-                            failure_reasons[code]["count"] += 1
-                            failure_reasons[code]["calls"].add(row.get("Call ID", ""))
-                            note = details.get("note", "")
-                            if note and note not in failure_reasons[code]["notes"]:
-                                failure_reasons[code]["notes"].append(note)
+                                "count": 0,
+                                "calls": set(),
+                                "notes": [],
+                            }
+                        failure_reasons[code]["count"] += 1
+                        failure_reasons[code]["calls"].add(row.get("Call ID", ""))
+                        note = details.get("note", "")
+                        if note and note not in failure_reasons[code]["notes"]:
+                            failure_reasons[code]["notes"].append(note)
         
         if failure_reasons:
             # Sort by frequency
-                sorted_failures = sorted(
-                    failure_reasons.items(), key=lambda x: x[1]["count"], reverse=True
-                )
+            sorted_failures = sorted(
+                failure_reasons.items(), key=lambda x: x[1]["count"], reverse=True
+            )
             
             failure_col1, failure_col2 = st.columns([2, 1])
             
@@ -10251,7 +10251,7 @@ with analytics_tab3:
                 st.write("**Failure Distribution**")
                 top_10_failures = sorted_failures[:10]
                 codes = [item[0] for item in top_10_failures]
-                    counts = [item[1]["count"] for item in top_10_failures]
+                counts = [item[1]["count"] for item in top_10_failures]
                 
                 fig_fail, ax_fail = plt.subplots(figsize=(8, 6))
                 ax_fail.barh(range(len(codes)), counts, color="red", alpha=0.7)
@@ -10260,30 +10260,30 @@ with analytics_tab3:
                 ax_fail.set_xlabel("Failure Count")
                 ax_fail.set_title("Top 10 Failure Reasons")
                 plt.tight_layout()
-                    st_pyplot_safe(fig_fail)
+                st_pyplot_safe(fig_fail)
             
             # Show detailed view for selected failure code
             selected_failure_code = st.selectbox(
                 "View details for failure code:",
                 options=[code for code, _ in sorted_failures],
-                    help="Select a failure code to see detailed information",
+                help="Select a failure code to see detailed information",
             )
             
             if selected_failure_code:
                 failure_info = failure_reasons[selected_failure_code]
                 st.markdown(f"### Failure Code: {selected_failure_code}")
-                    st.metric("Total Failures", failure_info["count"])
-                    st.metric("Affected Calls", len(failure_info["calls"]))
+                st.metric("Total Failures", failure_info["count"])
+                st.metric("Affected Calls", len(failure_info["calls"]))
                 
-                    if failure_info["notes"]:
+                if failure_info["notes"]:
                     st.write("**Sample Failure Notes:**")
-                        for note in failure_info["notes"][:5]:  # Show first 5 notes
-                            st.text_area(
-                                "Note",
-                                value=note,
-                                height=68,
-                                disabled=True,
-                                key=f"note_{hash(note)}",
+                    for note in failure_info["notes"][:5]:  # Show first 5 notes
+                        st.text_area(
+                            "Note",
+                            value=note,
+                            height=68,
+                            disabled=True,
+                            key=f"note_{hash(note)}",
                                 label_visibility="collapsed",
                             )
         else:
