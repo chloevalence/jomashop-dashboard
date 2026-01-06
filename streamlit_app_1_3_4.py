@@ -714,25 +714,44 @@ def get_or_create_agent_mapping(agent_id_lower):
 
 
 def normalize_agent_id(agent_str):
-    """Normalize agent ID to Agent ## format using stable mapping system."""
+    """Normalize agent ID by extracting first two digits after 'bpagent'.
+    
+    Format: 'bpagent###########' → extract first two digits → 'Agent ##'
+    Exceptions: Special cases for Jesus (unknown, bp016803073, bp016803074, bp01*)
+    This same normalized value is used everywhere (display and filtering).
+    """
     if pd.isna(agent_str) or not agent_str:
         return agent_str
 
     agent_str_lower = str(agent_str).lower().strip()
 
-    # CRITICAL: Skip normalization if already in "Agent X" format to prevent double normalization
-    # This prevents "Agent 1" → hash → "Agent 52" issues
-    if agent_str_lower.startswith("agent "):
-        agent_num_str = agent_str_lower.replace("agent ", "").strip()
+    # Check if already in "Agent X" or "BPO Agent X" format - return as-is
+    if agent_str_lower.startswith("agent ") or agent_str_lower.startswith("bpo agent "):
+        # Extract number and return in consistent format
+        agent_str_clean = agent_str_lower.replace("bpo agent ", "").replace("agent ", "").strip()
         try:
-            agent_num = int(agent_num_str)
-            # Return properly formatted (capitalized)
+            agent_num = int(agent_str_clean)
             return f"Agent {agent_num}"
         except ValueError:
-            # Not a valid number, continue with mapping logic
             pass
 
-    # Use mapping system
+    # Special cases for Jesus (Agent 1)
+    agent_id_normalized = agent_str_lower.replace(" ", "").replace("_", "")
+    if agent_id_normalized == "unknown" or agent_str_lower == "unknown":
+        return "Agent 1"
+    if agent_id_normalized in ["bp016803073", "bp016803074"]:
+        return "Agent 1"
+    if agent_id_normalized.startswith("bp01"):
+        return "Agent 1"
+
+    # Extract first two digits after "bpagent"
+    # Pattern: bpagent########### → extract first two digits (##)
+    match = re.search(r"bpagent(\d{2})", agent_id_normalized)
+    if match:
+        agent_num = int(match.group(1))
+        return f"Agent {agent_num}"
+
+    # If no match, try the mapping system as fallback
     return get_or_create_agent_mapping(agent_str_lower)
 
 
@@ -4899,12 +4918,14 @@ def is_super_admin():
 
 
 # Set user_agent_id and is_admin for backward compatibility
+# Normalize agent ID immediately: extract first two digits after 'bpagent'
+# This same normalized value is used everywhere (sidebar, heading, filtering)
 try:
     user_mapping = st.secrets.get("user_mapping", {})
     if current_username and current_username in user_mapping:
         agent_id_value = user_mapping[current_username].get("agent_id", "")
         if agent_id_value:
-            user_agent_id = agent_id_value
+            user_agent_id = normalize_agent_id(agent_id_value)
 except Exception:
     pass
 
@@ -4913,7 +4934,7 @@ is_admin = is_regular_admin()
 
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
-# Show view mode - display raw agent ID in sidebar (this is the correct value)
+# Show view mode
 if is_anonymous_user:
     st.sidebar.info(" Anonymous View: De-identified Data")
 elif user_agent_id:
@@ -6686,16 +6707,15 @@ if is_anonymous_user:
     )
 
 # --- Determine if agent view or admin view ---
-# Normalize user_agent_id for data filtering (but keep raw value for display)
-user_agent_id_normalized = normalize_agent_id(user_agent_id) if user_agent_id else None
+# user_agent_id is already normalized above (when set from user mapping)
 
 # If user has agent_id, automatically filter to their data
 if user_agent_id:
     # Agent view - filter to their calls only
-    agent_calls_df = meta_df[meta_df["Agent"] == user_agent_id_normalized].copy()
+    agent_calls_df = meta_df[meta_df["Agent"] == user_agent_id].copy()
 
     if agent_calls_df.empty:
-        st.warning(f" No calls found for agent: {user_agent_id_normalized}")
+        st.warning(f" No calls found for agent: {user_agent_id}")
         st.info(
             "If this is incorrect, please contact your administrator to update your agent ID mapping."
         )
@@ -7155,7 +7175,7 @@ if show_comparison and user_agent_id:
 
     for agent in overall_df["Agent"].unique():
         # Skip if this is the current user's agent (we want peer average)
-        if agent == user_agent_id_normalized:
+        if agent == user_agent_id:
             continue
 
         agent_data = overall_df[overall_df["Agent"] == agent]
@@ -7266,9 +7286,7 @@ if filtered_df.empty:
 
 # --- Main Dashboard ---
 if user_agent_id:
-    # Use normalized agent ID for heading display
-    normalized_display = normalize_agent_id(user_agent_id) if user_agent_id else None
-    st.title(f" My QA Performance Dashboard - {normalized_display}")
+    st.title(f" My QA Performance Dashboard - {user_agent_id}")
 else:
     st.title(" QA Rubric Dashboard")
 
@@ -9485,9 +9503,9 @@ if user_agent_id:
         st.subheader("My Performance Trend vs Team Average")
 
         # Add trajectory analysis
-        agent_data = filtered_df[filtered_df["Agent"] == user_agent_id_normalized]
+        agent_data = filtered_df[filtered_df["Agent"] == user_agent_id]
         if len(agent_data) > 0:
-            trajectory = classify_trajectory(filtered_df, agent=user_agent_id_normalized)
+            trajectory = classify_trajectory(filtered_df, agent=user_agent_id)
 
         traj_col1, traj_col2, traj_col3, traj_col4 = st.columns(4)
         with traj_col1:
