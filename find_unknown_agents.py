@@ -107,10 +107,6 @@ def main():
             | (df["Agent"].astype(str).str.strip().str.lower() == "unknown")
         ].copy()
 
-        # Normalize agent IDs after finding unknown agents
-        print("🔄 Normalizing agent IDs...")
-        df["Agent"] = df["Agent"].apply(normalize_agent_id)
-
         print()
         print("=" * 80)
         print("RESULTS")
