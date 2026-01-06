@@ -812,5 +812,5 @@ The Jomashop QA Dashboard is a powerful tool for tracking, analyzing, and improv
 
 ---
 
-*Made with ❤️ by [Valence](https://www.getvalenceai.com) | Jomashop QA Dashboard © 2025*
+*Made with ❤️ by [Valence](https://www.getvalenceai.com) | Jomashop QA Dashboard © 2026*
 
