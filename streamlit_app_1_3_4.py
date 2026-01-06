@@ -6936,6 +6936,7 @@ if show_comparison and user_agent_id:
 else:
     overall_avg_score = None
     overall_pass_rate = None
+    overall_avg_aht = None
     overall_total_calls = None
 
 if score_range:
