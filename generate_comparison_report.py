@@ -1727,13 +1727,29 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
 
     agent_metrics = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
 
-    agent_metrics.columns = [
-        "Agent",
-        "Avg_Score",
-        "Call_Count",
-        "Pass_Count",
-        "Fail_Count",
-    ]
+    # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
+    # When using ["mean", "count"], pandas creates MultiIndex like ('QA Score', 'mean'), ('QA Score', 'count')
+    if isinstance(agent_metrics.columns, pd.MultiIndex):
+        agent_metrics.columns = ['_'.join(col).strip() if col[1] else col[0] for col in agent_metrics.columns.values]
+    
+    # Build column mapping based on what columns actually exist
+    column_mapping = {}
+    if "QA Score_mean" in agent_metrics.columns:
+        column_mapping["QA Score_mean"] = "Avg_Score"
+    if "QA Score_count" in agent_metrics.columns:
+        column_mapping["QA Score_count"] = "Call_Count"
+    if "Rubric Pass Count_sum" in agent_metrics.columns:
+        column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
+    if "Rubric Fail Count_sum" in agent_metrics.columns:
+        column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
+    
+    agent_metrics.rename(columns=column_mapping, inplace=True)
+    
+    # Ensure all expected columns exist, create with 0 if missing
+    if "Pass_Count" not in agent_metrics.columns:
+        agent_metrics["Pass_Count"] = 0
+    if "Fail_Count" not in agent_metrics.columns:
+        agent_metrics["Fail_Count"] = 0
 
     # Calculate pass rate
     agent_metrics["Pass_Rate"] = (
@@ -1755,7 +1771,7 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
     heatmap_data["Call_Count"] = (
         (heatmap_data["Call_Count"] / heatmap_data["Call_Count"].max() * 100)
         if heatmap_data["Call_Count"].max() > 0
-        else 0
+        else pd.Series([0] * len(heatmap_data), index=heatmap_data.index)
     )
 
     fig, ax = plt.subplots(figsize=(14, max(8, len(agent_metrics) * 0.5)))
@@ -1829,13 +1845,28 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
 
     monthly_metrics = bpo_df.groupby("Month").agg(agg_dict).reset_index()
 
-    monthly_metrics.columns = [
-        "Month",
-        "Avg_Score",
-        "Call_Count",
-        "Pass_Count",
-        "Fail_Count",
-    ]
+    # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
+    if isinstance(monthly_metrics.columns, pd.MultiIndex):
+        monthly_metrics.columns = ['_'.join(col).strip() if col[1] else col[0] for col in monthly_metrics.columns.values]
+    
+    # Build column mapping based on what columns actually exist
+    column_mapping = {}
+    if "QA Score_mean" in monthly_metrics.columns:
+        column_mapping["QA Score_mean"] = "Avg_Score"
+    if "QA Score_count" in monthly_metrics.columns:
+        column_mapping["QA Score_count"] = "Call_Count"
+    if "Rubric Pass Count_sum" in monthly_metrics.columns:
+        column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
+    if "Rubric Fail Count_sum" in monthly_metrics.columns:
+        column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
+    
+    monthly_metrics.rename(columns=column_mapping, inplace=True)
+    
+    # Ensure all expected columns exist, create with 0 if missing
+    if "Pass_Count" not in monthly_metrics.columns:
+        monthly_metrics["Pass_Count"] = 0
+    if "Fail_Count" not in monthly_metrics.columns:
+        monthly_metrics["Fail_Count"] = 0
     monthly_metrics["Pass_Rate"] = (
         monthly_metrics["Pass_Count"]
         / (monthly_metrics["Pass_Count"] + monthly_metrics["Fail_Count"])
@@ -1850,8 +1881,9 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
 
     # 1. Average QA Score Trend
     ax1 = axes[0, 0]
+    x_indices = range(len(monthly_metrics))
     ax1.plot(
-        monthly_metrics["Month_Str"],
+        x_indices,
         monthly_metrics["Avg_Score"],
         marker="o",
         linewidth=2,
@@ -1859,21 +1891,23 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         color="#2E86AB",
     )
     ax1.fill_between(
-        monthly_metrics["Month_Str"],
+        x_indices,
         monthly_metrics["Avg_Score"],
         alpha=0.3,
         color="#2E86AB",
     )
     ax1.set_title("Average QA Score Trend", fontsize=12, fontweight="bold")
     ax1.set_ylabel("QA Score", fontsize=10)
+    ax1.set_xticks(x_indices)
+    ax1.set_xticklabels(monthly_metrics["Month_Str"], rotation=45, ha="right")
     ax1.grid(True, alpha=0.3)
     ax1.set_ylim(bottom=0, top=100)
-    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
     # 2. Pass Rate Trend
     ax2 = axes[0, 1]
+    x_indices = range(len(monthly_metrics))
     ax2.plot(
-        monthly_metrics["Month_Str"],
+        x_indices,
         monthly_metrics["Pass_Rate"],
         marker="s",
         linewidth=2,
@@ -1881,11 +1915,13 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         color="#A23B72",
     )
     ax2.fill_between(
-        monthly_metrics["Month_Str"],
+        x_indices,
         monthly_metrics["Pass_Rate"],
         alpha=0.3,
         color="#A23B72",
     )
+    ax2.set_xticks(x_indices)
+    ax2.set_xticklabels(monthly_metrics["Month_Str"], rotation=45, ha="right")
     ax2.set_title("Pass Rate Trend", fontsize=12, fontweight="bold")
     ax2.set_ylabel("Pass Rate (%)", fontsize=10)
     ax2.grid(True, alpha=0.3)
@@ -2273,13 +2309,28 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
 
     agent_perf = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
 
-    agent_perf.columns = [
-        "Agent",
-        "Avg_Score",
-        "Call_Count",
-        "Pass_Count",
-        "Fail_Count",
-    ]
+    # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
+    if isinstance(agent_perf.columns, pd.MultiIndex):
+        agent_perf.columns = ['_'.join(col).strip() if col[1] else col[0] for col in agent_perf.columns.values]
+    
+    # Build column mapping based on what columns actually exist
+    column_mapping = {}
+    if "QA Score_mean" in agent_perf.columns:
+        column_mapping["QA Score_mean"] = "Avg_Score"
+    if "QA Score_count" in agent_perf.columns:
+        column_mapping["QA Score_count"] = "Call_Count"
+    if "Rubric Pass Count_sum" in agent_perf.columns:
+        column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
+    if "Rubric Fail Count_sum" in agent_perf.columns:
+        column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
+    
+    agent_perf.rename(columns=column_mapping, inplace=True)
+    
+    # Ensure all expected columns exist, create with 0 if missing
+    if "Pass_Count" not in agent_perf.columns:
+        agent_perf["Pass_Count"] = 0
+    if "Fail_Count" not in agent_perf.columns:
+        agent_perf["Fail_Count"] = 0
     agent_perf["Pass_Rate"] = (
         agent_perf["Pass_Count"]
         / (agent_perf["Pass_Count"] + agent_perf["Fail_Count"])
