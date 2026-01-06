@@ -7182,7 +7182,9 @@ if show_comparison and user_agent_id:
         if "Call Duration (min)" in agent_data.columns:
             aht_values = agent_data["Call Duration (min)"].dropna()
             if len(aht_values) > 0:
-                agent_metric["avg_aht"] = aht_values.mean()
+                agent_avg_aht = aht_values.mean()
+                if not pd.isna(agent_avg_aht):
+                    agent_metric["avg_aht"] = agent_avg_aht
 
         if agent_metric:
             agent_metrics.append(agent_metric)
@@ -7470,7 +7472,7 @@ if is_super_admin():
 # Summary Metrics
 if show_comparison and user_agent_id:
     # Agent view with comparison
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
 
     with col1:
         my_calls = len(filtered_df)
@@ -7550,6 +7552,12 @@ if show_comparison and user_agent_id:
         st.metric(
             "Overall Pass Rate",
             f"{overall_pass_rate:.1f}%" if overall_pass_rate else "N/A",
+        )
+
+    with col7:
+        st.metric(
+            "Overall Avg AHT",
+            f"{overall_avg_aht:.1f} min" if overall_avg_aht is not None else "N/A",
         )
 
     # Comparison section
@@ -9531,137 +9539,139 @@ if user_agent_id:
 
         with agent_trends_col1:
             st.write("**My QA Score Trend**")
-        if len(agent_data) > 0:
-            agent_daily = (
-                agent_data.groupby(agent_data["Call Date"].dt.date)
-                .agg(Avg_QA_Score=("QA Score", "mean"))
-                .reset_index()
-            )
-            agent_daily.columns = ["Date", "My_Score"]
+            if len(agent_data) > 0:
+                agent_daily = (
+                    agent_data.groupby(agent_data["Call Date"].dt.date)
+                    .agg(Avg_QA_Score=("QA Score", "mean"))
+                    .reset_index()
+                )
+                agent_daily.columns = ["Date", "My_Score"]
 
-            # Get team average for same dates
-            overall_daily = (
-                overall_df.groupby(overall_df["Call Date"].dt.date)
-                .agg(Avg_QA_Score=("QA Score", "mean"))
-                .reset_index()
-            )
-            overall_daily.columns = ["Date", "Team_Avg"]
+                # Get team average for same dates
+                overall_daily = (
+                    overall_df.groupby(overall_df["Call Date"].dt.date)
+                    .agg(Avg_QA_Score=("QA Score", "mean"))
+                    .reset_index()
+                )
+                overall_daily.columns = ["Date", "Team_Avg"]
 
-            # Merge on date
-            trend_comparison = pd.merge(
-                agent_daily, overall_daily, on="Date", how="outer"
-            ).sort_values("Date")
+                # Merge on date
+                trend_comparison = pd.merge(
+                    agent_daily, overall_daily, on="Date", how="outer"
+                ).sort_values("Date")
 
-            fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
-            ax_agent.plot(
-                trend_comparison["Date"],
-                trend_comparison["My_Score"],
-                marker="o",
-                linewidth=2,
-                label="My Score",
-                color="steelblue",
-            )
-            ax_agent.plot(
-                trend_comparison["Date"],
-                trend_comparison["Team_Avg"],
-                marker="s",
-                linewidth=2,
-                label="Team Average",
-                color="orange",
-                linestyle="--",
-            )
-            ax_agent.set_xlabel("Date")
-            ax_agent.set_ylabel("Average QA Score (%)")
-            ax_agent.set_title("My Performance Trend vs Team Average")
-            ax_agent.grid(True, alpha=0.3)
-            ax_agent.axhline(
-                y=alert_threshold,
-                color="r",
-                linestyle="--",
-                alpha=0.5,
-                label=f"Threshold ({alert_threshold}%)",
-            )
-            ax_agent.legend()
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            st_pyplot_safe(fig_agent)
+                fig_agent, ax_agent = plt.subplots(figsize=(8, 5))
+                ax_agent.plot(
+                    trend_comparison["Date"],
+                    trend_comparison["My_Score"],
+                    marker="o",
+                    linewidth=2,
+                    label="My Score",
+                    color="steelblue",
+                )
+                ax_agent.plot(
+                    trend_comparison["Date"],
+                    trend_comparison["Team_Avg"],
+                    marker="s",
+                    linewidth=2,
+                    label="Team Average",
+                    color="orange",
+                    linestyle="--",
+                )
+                ax_agent.set_xlabel("Date")
+                ax_agent.set_ylabel("Average QA Score (%)")
+                ax_agent.set_title("My Performance Trend vs Team Average")
+                ax_agent.grid(True, alpha=0.3)
+                ax_agent.axhline(
+                    y=alert_threshold,
+                    color="r",
+                    linestyle="--",
+                    alpha=0.5,
+                    label=f"Threshold ({alert_threshold}%)",
+                )
+                ax_agent.legend()
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st_pyplot_safe(fig_agent)
 
         with agent_trends_col2:
             st.write("**My Pass Rate Trend vs Team**")
-        if len(agent_data) > 0:
-            agent_pass_daily = (
-                agent_data.groupby(agent_data["Call Date"].dt.date)
-                .agg(
-                    Total_Pass=("Rubric Pass Count", "sum"),
-                    Total_Fail=("Rubric Fail Count", "sum"),
-                )
-                .reset_index()
-            )
-            agent_pass_daily["Total"] = (
-                agent_pass_daily["Total_Pass"] + agent_pass_daily["Total_Fail"]
-            )
-            agent_pass_daily["My_Pass_Rate"] = (
-                agent_pass_daily["Total_Pass"] / agent_pass_daily["Total"] * 100
-            ).fillna(0)
-
-            team_pass_daily = (
-                overall_df.groupby(overall_df["Call Date"].dt.date)
-                .agg(
-                    Total_Pass=("Rubric Pass Count", "sum"),
-                    Total_Fail=("Rubric Fail Count", "sum"),
-                )
-                .reset_index()
-            )
-            team_pass_daily["Total"] = (
-                team_pass_daily["Total_Pass"] + team_pass_daily["Total_Fail"]
-            )
-            team_pass_daily["Team_Pass_Rate"] = (
-                team_pass_daily["Total_Pass"] / team_pass_daily["Total"] * 100
-            ).fillna(0)
-
-            pass_comparison = pd.merge(
-                agent_pass_daily[["Call Date", "My_Pass_Rate"]],
-                team_pass_daily[["Call Date", "Team_Pass_Rate"]],
-                on="Call Date",
-                how="outer",
-            ).sort_values("Call Date")
-
-            fig_pass_trend, ax_pass_trend = plt.subplots(figsize=(10, 5))
-            ax_pass_trend.plot(
-                pass_comparison["Call Date"],
-                pass_comparison["My_Pass_Rate"],
-                marker="o",
-                linewidth=2,
-                label="My Pass Rate",
-                color="green",
-            )
-            ax_pass_trend.plot(
-                pass_comparison["Call Date"],
-                pass_comparison["Team_Pass_Rate"],
-                marker="s",
-                linewidth=2,
-                label="Team Pass Rate",
-                color="lightgreen",
-                linestyle="--",
-            )
-            ax_pass_trend.set_xlabel("Date")
-            ax_pass_trend.set_ylabel("Pass Rate (%)")
-            ax_pass_trend.set_title("My Pass Rate Trend vs Team Average")
-            ax_pass_trend.grid(True, alpha=0.3)
-            ax_pass_trend.legend()
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            st_pyplot_safe(fig_pass_trend)
-
-            # AHT Trend
-            st.write("**My AHT Trend vs Team**")
-            if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
-                agent_aht_daily = (
+            if len(agent_data) > 0:
+                agent_pass_daily = (
                     agent_data.groupby(agent_data["Call Date"].dt.date)
-                    .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                    .agg(
+                        Total_Pass=("Rubric Pass Count", "sum"),
+                        Total_Fail=("Rubric Fail Count", "sum"),
+                    )
                     .reset_index()
                 )
-                agent_aht_daily.columns = ["Call Date", "My_AHT"]
+                agent_pass_daily["Total"] = (
+                    agent_pass_daily["Total_Pass"] + agent_pass_daily["Total_Fail"]
+                )
+                agent_pass_daily["My_Pass_Rate"] = (
+                    agent_pass_daily["Total_Pass"] / agent_pass_daily["Total"] * 100
+                ).fillna(0)
+
+                team_pass_daily = (
+                    overall_df.groupby(overall_df["Call Date"].dt.date)
+                    .agg(
+                        Total_Pass=("Rubric Pass Count", "sum"),
+                        Total_Fail=("Rubric Fail Count", "sum"),
+                    )
+                    .reset_index()
+                )
+                team_pass_daily["Total"] = (
+                    team_pass_daily["Total_Pass"] + team_pass_daily["Total_Fail"]
+                )
+                team_pass_daily["Team_Pass_Rate"] = (
+                    team_pass_daily["Total_Pass"] / team_pass_daily["Total"] * 100
+                ).fillna(0)
+
+                pass_comparison = pd.merge(
+                    agent_pass_daily[["Call Date", "My_Pass_Rate"]],
+                    team_pass_daily[["Call Date", "Team_Pass_Rate"]],
+                    on="Call Date",
+                    how="outer",
+                ).sort_values("Call Date")
+
+                fig_pass_trend, ax_pass_trend = plt.subplots(figsize=(8, 5))
+                ax_pass_trend.plot(
+                    pass_comparison["Call Date"],
+                    pass_comparison["My_Pass_Rate"],
+                    marker="o",
+                    linewidth=2,
+                    label="My Pass Rate",
+                    color="green",
+                )
+                ax_pass_trend.plot(
+                    pass_comparison["Call Date"],
+                    pass_comparison["Team_Pass_Rate"],
+                    marker="s",
+                    linewidth=2,
+                    label="Team Pass Rate",
+                    color="lightgreen",
+                    linestyle="--",
+                )
+                ax_pass_trend.set_xlabel("Date")
+                ax_pass_trend.set_ylabel("Pass Rate (%)")
+                ax_pass_trend.set_title("My Pass Rate Trend vs Team Average")
+                ax_pass_trend.grid(True, alpha=0.3)
+                ax_pass_trend.legend()
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st_pyplot_safe(fig_pass_trend)
+
+        # AHT Trend - in a new row with two columns (AHT in first column)
+        aht_col1, aht_col2 = st.columns(2)
+        with aht_col1:
+            st.write("**My AHT Trend vs Team**")
+            if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
+            agent_aht_daily = (
+                agent_data.groupby(agent_data["Call Date"].dt.date)
+                .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                .reset_index()
+            )
+            agent_aht_daily.columns = ["Call Date", "My_AHT"]
 
             team_aht_daily = (
                 overall_df.groupby(overall_df["Call Date"].dt.date)
@@ -9677,35 +9687,35 @@ if user_agent_id:
                 how="outer",
             ).sort_values("Call Date")
 
-            if len(aht_comparison) > 0 and aht_comparison["My_AHT"].notna().any():
-                fig_aht_trend, ax_aht_trend = plt.subplots(figsize=(10, 5))
-                ax_aht_trend.plot(
-                    aht_comparison["Call Date"],
-                    aht_comparison["My_AHT"],
-                    marker="o",
-                    linewidth=2,
-                    label="My AHT",
-                    color="purple",
-                )
-                ax_aht_trend.plot(
-                    aht_comparison["Call Date"],
-                    aht_comparison["Team_AHT"],
-                    marker="s",
-                    linewidth=2,
-                    label="Team AHT",
-                    color="lavender",
-                    linestyle="--",
-                )
-                ax_aht_trend.set_xlabel("Date")
-                ax_aht_trend.set_ylabel("Average Handle Time (min)")
-                ax_aht_trend.set_title("My AHT Trend vs Team Average")
-                ax_aht_trend.grid(True, alpha=0.3)
-                ax_aht_trend.legend()
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                st_pyplot_safe(fig_aht_trend)
-            else:
-                st.info("AHT trend data not available")
+                if len(aht_comparison) > 0 and aht_comparison["My_AHT"].notna().any():
+                    fig_aht_trend, ax_aht_trend = plt.subplots(figsize=(8, 5))
+                    ax_aht_trend.plot(
+                        aht_comparison["Call Date"],
+                        aht_comparison["My_AHT"],
+                        marker="o",
+                        linewidth=2,
+                        label="My AHT",
+                        color="purple",
+                    )
+                    ax_aht_trend.plot(
+                        aht_comparison["Call Date"],
+                        aht_comparison["Team_AHT"],
+                        marker="s",
+                        linewidth=2,
+                        label="Team AHT",
+                        color="lavender",
+                        linestyle="--",
+                    )
+                    ax_aht_trend.set_xlabel("Date")
+                    ax_aht_trend.set_ylabel("Average Handle Time (min)")
+                    ax_aht_trend.set_title("My AHT Trend vs Team Average")
+                    ax_aht_trend.grid(True, alpha=0.3)
+                    ax_aht_trend.legend()
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_aht_trend)
+                else:
+                    st.info("AHT trend data not available")
 
 else:
     # Admin view - agent selection and comparison
