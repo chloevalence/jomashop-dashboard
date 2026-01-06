@@ -519,7 +519,23 @@ def load_agent_mapping():
                 
                 # Merge with known mappings (known mappings take precedence)
                 # This ensures KNOWN_AGENT_MAPPINGS always override file mappings
-                merged_mapping = {**valid_mapping, **KNOWN_AGENT_MAPPINGS}
+                # Also, remove any incorrect mappings for known agents from the file
+                merged_mapping = {}
+                # First, add all file mappings
+                for key, value in valid_mapping.items():
+                    key_normalized = key.replace(" ", "").replace("_", "").lower()
+                    # Check if this key matches a known agent ID
+                    is_known_agent = False
+                    for known_id in KNOWN_AGENT_MAPPINGS.keys():
+                        known_id_normalized = known_id.replace(" ", "").replace("_", "").lower()
+                        if key_normalized == known_id_normalized or key.lower() == known_id.lower():
+                            is_known_agent = True
+                            break
+                    # Only add if it's not a known agent (known mappings will override)
+                    if not is_known_agent:
+                        merged_mapping[key] = value
+                # Then, add known mappings (these take precedence)
+                merged_mapping.update(KNOWN_AGENT_MAPPINGS)
                 return merged_mapping
         except json.JSONDecodeError as e:
             logger.warning(
