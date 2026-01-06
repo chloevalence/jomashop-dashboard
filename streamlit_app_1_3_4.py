@@ -9224,11 +9224,11 @@ with st.expander("Score & Label Distribution Analysis", expanded=False):
                 alpha=0.5,
                 label=f"Threshold ({alert_threshold}%)",
             )
-        ax_dist.legend()
-        plt.tight_layout()
-        st_pyplot_safe(fig_dist)
+            ax_dist.legend()
+            plt.tight_layout()
+            st_pyplot_safe(fig_dist)
 
-with col_right:
+    with col_right:
         st.subheader("Label Distribution")
         if "Label" in filtered_df.columns:
             label_counts = filtered_df["Label"].value_counts()
@@ -9928,56 +9928,56 @@ with st.expander("Anomaly Detection", expanded=False):
                 st.dataframe(drop_display, hide_index=True)
             else:
                 st.info("No significant score drops detected")
-        
-        with anomaly_col2:
-            st.write("**Score Spikes (Sudden Increases)**")
-            spikes = anomalies[
-                anomalies["Score_Change"] > anomaly_threshold
-            ].sort_values("Score_Change", ascending=False)
-            if len(spikes) > 0:
-                spike_display = spikes[
-                    ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
-                ].head(10)
-                spike_display["Score_Change"] = spike_display["Score_Change"].apply(
-                    lambda x: f"+{x:.1f}%"
-                )
-                st.dataframe(spike_display, hide_index=True)
-            else:
-                st.info("No significant score spikes detected")
-        
-        # Anomaly trend chart
-        st.write("**Anomaly Timeline**")
-        fig_anomaly, ax_anomaly = plt.subplots(figsize=(14, 6))
-        ax_anomaly.plot(
-            filtered_df_sorted["Call Date"],
-            filtered_df_sorted["QA Score"],
-            alpha=0.3,
-            label="QA Score",
-            color="gray",
-        )
-        ax_anomaly.plot(
-            filtered_df_sorted["Call Date"],
-            filtered_df_sorted["Rolling_Avg"],
-            label="Rolling Average",
-            color="blue",
-            linewidth=2,
-        )
-        ax_anomaly.scatter(
-            anomalies["Call Date"],
-            anomalies["QA Score"],
-            color="red",
-            s=100,
-            label="Anomalies",
-            zorder=5,
-        )
-        ax_anomaly.set_xlabel("Call Date")
-        ax_anomaly.set_ylabel("QA Score (%)")
-        ax_anomaly.set_title("QA Score with Anomaly Detection")
-        ax_anomaly.legend()
-        ax_anomaly.grid(True, alpha=0.3)
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-        st_pyplot_safe(fig_anomaly)
+            
+            with anomaly_col2:
+                st.write("**Score Spikes (Sudden Increases)**")
+                spikes = anomalies[
+                    anomalies["Score_Change"] > anomaly_threshold
+                ].sort_values("Score_Change", ascending=False)
+                if len(spikes) > 0:
+                    spike_display = spikes[
+                        ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
+                    ].head(10)
+                    spike_display["Score_Change"] = spike_display["Score_Change"].apply(
+                        lambda x: f"+{x:.1f}%"
+                    )
+                    st.dataframe(spike_display, hide_index=True)
+                else:
+                    st.info("No significant score spikes detected")
+            
+            # Anomaly trend chart
+            st.write("**Anomaly Timeline**")
+            fig_anomaly, ax_anomaly = plt.subplots(figsize=(14, 6))
+            ax_anomaly.plot(
+                filtered_df_sorted["Call Date"],
+                filtered_df_sorted["QA Score"],
+                alpha=0.3,
+                label="QA Score",
+                color="gray",
+            )
+            ax_anomaly.plot(
+                filtered_df_sorted["Call Date"],
+                filtered_df_sorted["Rolling_Avg"],
+                label="Rolling Average",
+                color="blue",
+                linewidth=2,
+            )
+            ax_anomaly.scatter(
+                anomalies["Call Date"],
+                anomalies["QA Score"],
+                color="red",
+                s=100,
+                label="Anomalies",
+                zorder=5,
+            )
+            ax_anomaly.set_xlabel("Call Date")
+            ax_anomaly.set_ylabel("QA Score (%)")
+            ax_anomaly.set_title("QA Score with Anomaly Detection")
+            ax_anomaly.legend()
+            ax_anomaly.grid(True, alpha=0.3)
+            plt.xticks(rotation=45, ha="right")
+            plt.tight_layout()
+            st_pyplot_safe(fig_anomaly)
         else:
             st.success(" No anomalies detected in the filtered data")
     else:
@@ -10026,12 +10026,12 @@ with analytics_tab1:
                 / (weekly_stats["Total_Pass"] + weekly_stats["Total_Fail"])
                 * 100
             ).fillna(0)
-        weekly_stats = weekly_stats.sort_values("Week")
-        
-        if len(weekly_stats) > 1:
-            # Calculate week-over-week change
-            weekly_stats["WoW_Score_Change"] = weekly_stats["Avg_QA_Score"].diff()
-            weekly_stats["WoW_PassRate_Change"] = weekly_stats["Pass_Rate"].diff()
+            weekly_stats = weekly_stats.sort_values("Week")
+            
+            if len(weekly_stats) > 1:
+                # Calculate week-over-week change
+                weekly_stats["WoW_Score_Change"] = weekly_stats["Avg_QA_Score"].diff()
+                weekly_stats["WoW_PassRate_Change"] = weekly_stats["Pass_Rate"].diff()
             weekly_stats["WoW_CallCount_Change"] = weekly_stats["Call_Count"].diff()
             
             wow_col1, wow_col2 = st.columns(2)
@@ -10039,42 +10039,42 @@ with analytics_tab1:
             with wow_col1:
                 st.write("**QA Score Week-over-Week**")
                 fig_wow_score, ax_wow_score = plt.subplots(figsize=(12, 6))
-                    ax_wow_score.plot(
-                        weekly_stats["Week"],
-                        weekly_stats["Avg_QA_Score"],
-                        marker="o",
-                        linewidth=2,
-                        label="Avg QA Score",
-                    )
+                ax_wow_score.plot(
+                    weekly_stats["Week"],
+                    weekly_stats["Avg_QA_Score"],
+                    marker="o",
+                    linewidth=2,
+                    label="Avg QA Score",
+                )
                 ax_wow_score.set_xlabel("Week")
                 ax_wow_score.set_ylabel("Average QA Score (%)")
                 ax_wow_score.set_title("Week-over-Week QA Score Trend")
                 ax_wow_score.grid(True, alpha=0.3)
                 ax_wow_score.legend()
-                    plt.xticks(rotation=45, ha="right")
+                plt.xticks(rotation=45, ha="right")
                 plt.tight_layout()
-                    st_pyplot_safe(fig_wow_score)
+                st_pyplot_safe(fig_wow_score)
                 
                 # Show WoW changes
                 st.write("**Week-over-Week Changes**")
-                    wow_display = weekly_stats[
-                        [
-                            "Week",
-                            "Avg_QA_Score",
-                            "WoW_Score_Change",
-                            "Call_Count",
-                            "WoW_CallCount_Change",
-                        ]
-                    ].copy()
-                    wow_display["WoW_Score_Change"] = wow_display[
-                        "WoW_Score_Change"
-                    ].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
-                    wow_display["WoW_CallCount_Change"] = wow_display[
-                        "WoW_CallCount_Change"
-                    ].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
-                    wow_display.columns = [
+                wow_display = weekly_stats[
+                    [
                         "Week",
-                        "Avg QA Score",
+                        "Avg_QA_Score",
+                        "WoW_Score_Change",
+                        "Call_Count",
+                        "WoW_CallCount_Change",
+                    ]
+                ].copy()
+                wow_display["WoW_Score_Change"] = wow_display[
+                    "WoW_Score_Change"
+                ].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+                wow_display["WoW_CallCount_Change"] = wow_display[
+                    "WoW_CallCount_Change"
+                ].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
+                wow_display.columns = [
+                    "Week",
+                    "Avg QA Score",
                         "WoW Change",
                         "Call Count",
                         "WoW Count Change",
