@@ -2367,17 +2367,7 @@ def load_all_calls_cached(cache_version=0):
                 if s3_cache_timestamp:
                     st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
                 return merged_data, merged_errors
-        else:
-            # No S3 timestamp to compare - use merged cache data
-            merged_data = st.session_state["_merged_cache_data"]
-            merged_errors = st.session_state.get("_merged_cache_errors", [])
-            logger.info(
-                f" Using merged cache data from refresh: {len(merged_data)} calls"
-            )
-            # Store S3 timestamp if available
-            if s3_cache_timestamp:
-                st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
-            return merged_data, merged_errors
+        # If _merged_cache_data doesn't exist, fall through to use S3 cache or disk cache
 
         # CRITICAL: Use S3 cache if available (source of truth)
         if s3_cache_result and s3_cache_result[0]:
