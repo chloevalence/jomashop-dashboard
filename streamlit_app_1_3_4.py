@@ -8462,51 +8462,51 @@ if (
 # --- QA Score Trends Over Time ---
 with st.expander("QA Score Trends Over Time", expanded=False):
     st.subheader("QA Score Trends Over Time")
-col_trend1, col_trend2 = st.columns(2)
+    col_trend1, col_trend2 = st.columns(2)
 
-with col_trend1:
+    with col_trend1:
         st.write("**QA Score Trend**")
         if len(filtered_df) > 0 and "QA Score" in filtered_df.columns:
-        # Daily average QA scores
+            # Daily average QA scores
             daily_scores = (
                 filtered_df.groupby(filtered_df["Call Date"].dt.date)["QA Score"]
                 .mean()
                 .reset_index()
             )
-        daily_scores.columns = ["Date", "Avg QA Score"]
-        
-        fig_trend, ax_trend = plt.subplots(figsize=(10, 5))
-        ax_trend.plot(
+            daily_scores.columns = ["Date", "Avg QA Score"]
+            
+            fig_trend, ax_trend = plt.subplots(figsize=(10, 5))
+            ax_trend.plot(
                 daily_scores["Date"],
                 daily_scores["Avg QA Score"],
                 marker="o",
                 linewidth=2,
                 color="steelblue",
             )
-        ax_trend.set_xlabel("Date")
-        ax_trend.set_ylabel("Average QA Score (%)")
-        ax_trend.set_title("QA Score Trend Over Time")
-        ax_trend.grid(True, alpha=0.3)
-        ax_trend.axhline(
+            ax_trend.set_xlabel("Date")
+            ax_trend.set_ylabel("Average QA Score (%)")
+            ax_trend.set_title("QA Score Trend Over Time")
+            ax_trend.grid(True, alpha=0.3)
+            ax_trend.axhline(
                 y=alert_threshold,
                 color="r",
                 linestyle="--",
                 alpha=0.5,
                 label=f"Threshold ({alert_threshold}%)",
             )
-        ax_trend.legend()
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        st_pyplot_safe(fig_trend)
+            ax_trend.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st_pyplot_safe(fig_trend)
 
-with col_trend2:
-    # Pass/Fail Rate Trends
-    st.write("**Pass/Fail Rate Trends**")
-    if len(filtered_df) > 0:
+    with col_trend2:
+        # Pass/Fail Rate Trends
+        st.write("**Pass/Fail Rate Trends**")
+        if len(filtered_df) > 0:
             daily_stats = (
                 filtered_df.groupby(filtered_df["Call Date"].dt.date)
                 .agg(
-            Total_Pass=("Rubric Pass Count", "sum"),
+                    Total_Pass=("Rubric Pass Count", "sum"),
                     Total_Fail=("Rubric Fail Count", "sum"),
                 )
                 .reset_index()
@@ -8550,14 +8550,14 @@ with col_trend2:
 # --- Rubric Code Analysis ---
 with st.expander("Rubric Code Analysis", expanded=False):
     st.subheader("Rubric Code Analysis")
-if "Rubric Details" in filtered_df.columns:
-    # Collect all rubric code statistics
-    code_stats = {}
-    for idx, row in filtered_df.iterrows():
-        rubric_details = row.get("Rubric Details", {})
-        if isinstance(rubric_details, dict):
-            for code, details in rubric_details.items():
-                if isinstance(details, dict):
+    if "Rubric Details" in filtered_df.columns:
+        # Collect all rubric code statistics
+        code_stats = {}
+        for idx, row in filtered_df.iterrows():
+            rubric_details = row.get("Rubric Details", {})
+            if isinstance(rubric_details, dict):
+                for code, details in rubric_details.items():
+                    if isinstance(details, dict):
                         status = details.get("status", "N/A")
                         note = details.get("note", "")
                         
@@ -8576,11 +8576,11 @@ if "Rubric Details" in filtered_df.columns:
                         elif status == "Fail":
                             code_stats[code]["fail"] += 1
                         if note:
-                                code_stats[code]["fail_notes"].append(note)
+                            code_stats[code]["fail_notes"].append(note)
                         elif status == "N/A":
                             code_stats[code]["na"] += 1
-    
-    if code_stats:
+        
+        if code_stats:
             rubric_analysis = pd.DataFrame(
                 [
                     {
@@ -8600,8 +8600,8 @@ if "Rubric Details" in filtered_df.columns:
                         )
                         if stats["fail_notes"]
                         else "N/A",
-            }
-            for code, stats in code_stats.items()
+                    }
+                    for code, stats in code_stats.items()
                 ]
             )
             rubric_analysis = rubric_analysis.sort_values("Fail_Rate", ascending=False)
@@ -8640,62 +8640,62 @@ if "Rubric Details" in filtered_df.columns:
             # Category-level analysis
             if code_stats:
                 category_stats = {}
-            for code, stats in code_stats.items():
-                # Extract category from code (e.g., "A1" from "A1.1")
-                category = (
-                    code.split(".")[0] if "." in code else code[0] if code else "Other"
-                )
+                for code, stats in code_stats.items():
+                    # Extract category from code (e.g., "A1" from "A1.1")
+                    category = (
+                        code.split(".")[0] if "." in code else code[0] if code else "Other"
+                    )
 
-                if category not in category_stats:
-                    category_stats[category] = {
-                        "total": 0,
-                        "fail": 0,
-                        "fail_rates": [],
-                    }
-
-                category_stats[category]["total"] += stats["total"]
-                category_stats[category]["fail"] += stats["fail"]
-                if stats["total"] > 0:
-                    fail_rate = (stats["fail"] / stats["total"]) * 100
-                    category_stats[category]["fail_rates"].append(fail_rate)
-
-            if category_stats:
-                category_df = pd.DataFrame(
-                    [
-                        {
-                            "Category": cat,
-                            "Total": stats["total"],
-                            "Total_Fail": stats["fail"],
-                            "Avg_Fail_Rate": (
-                                sum(stats["fail_rates"]) / len(stats["fail_rates"])
-                                if stats["fail_rates"]
-                                else 0
-                            ),
+                    if category not in category_stats:
+                        category_stats[category] = {
+                            "total": 0,
+                            "fail": 0,
+                            "fail_rates": [],
                         }
-                        for cat, stats in category_stats.items()
-                    ]
-                )
-                category_df = category_df.sort_values("Avg_Fail_Rate", ascending=False)
 
-                st.write("**Fail Rate by Rubric Category**")
-            fig_heat, ax_heat = plt.subplots(figsize=(8, 6))
-            colors = [
-                    "green" if x < 20 else "orange" if x < 40 else "red"
-                    for x in category_df["Avg_Fail_Rate"]
-            ]
-            category_df.plot(
-                    x="Category",
-                    y="Avg_Fail_Rate",
-                    kind="bar",
-                    ax=ax_heat,
-                    color=colors,
-                )
-            ax_heat.set_ylabel("Average Fail Rate (%)")
-            ax_heat.set_xlabel("Rubric Category")
-            ax_heat.set_title("Fail Rate by Rubric Category")
-            plt.xticks(rotation=0)
-            plt.tight_layout()
-            st_pyplot_safe(fig_heat)
+                    category_stats[category]["total"] += stats["total"]
+                    category_stats[category]["fail"] += stats["fail"]
+                    if stats["total"] > 0:
+                        fail_rate = (stats["fail"] / stats["total"]) * 100
+                        category_stats[category]["fail_rates"].append(fail_rate)
+
+                if category_stats:
+                    category_df = pd.DataFrame(
+                        [
+                            {
+                                "Category": cat,
+                                "Total": stats["total"],
+                                "Total_Fail": stats["fail"],
+                                "Avg_Fail_Rate": (
+                                    sum(stats["fail_rates"]) / len(stats["fail_rates"])
+                                    if stats["fail_rates"]
+                                    else 0
+                                ),
+                            }
+                            for cat, stats in category_stats.items()
+                        ]
+                    )
+                    category_df = category_df.sort_values("Avg_Fail_Rate", ascending=False)
+
+                    st.write("**Fail Rate by Rubric Category**")
+                    fig_heat, ax_heat = plt.subplots(figsize=(6, 4))
+                    colors = [
+                        "green" if x < 20 else "orange" if x < 40 else "red"
+                        for x in category_df["Avg_Fail_Rate"]
+                    ]
+                    category_df.plot(
+                        x="Category",
+                        y="Avg_Fail_Rate",
+                        kind="bar",
+                        ax=ax_heat,
+                        color=colors,
+                    )
+                    ax_heat.set_ylabel("Average Fail Rate (%)")
+                    ax_heat.set_xlabel("Rubric Category")
+                    ax_heat.set_title("Fail Rate by Rubric Category")
+                    plt.xticks(rotation=0)
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_heat)
 
 # --- Trend Forecasting (Predictive Analytics) ---
 with st.expander("Trend Forecasting", expanded=False):
