@@ -6016,6 +6016,7 @@ try:
                 "No merged calls found, proceeding with normal load from cache or S3"
             )
             # Check if data is already loaded and not stale - skip reload if so
+            # Only use cached data if it's substantial (at least 100 calls) to avoid using stale/partial data
             if (
                 "_s3_cache_result" in st.session_state
                 and st.session_state["_s3_cache_result"] is not None
@@ -6023,10 +6024,12 @@ try:
                 and not st.session_state.get("_data_load_in_progress", False)
             ):
                 logger.debug(
-                    "Data already loaded in session state, using cached result"
+                    "Data already loaded in session state, checking cached result"
                 )
                 cached_result = st.session_state["_s3_cache_result"]
-                if cached_result and len(cached_result) > 0:
+                # Only use cached data if it's substantial (at least 100 calls)
+                # This prevents using stale/partial data from previous sessions
+                if cached_result and len(cached_result) >= 100:
                     call_data = cached_result
                     errors = st.session_state.get("_last_load_errors", [])
                     elapsed = time.time() - t0
@@ -6035,94 +6038,13 @@ try:
                         f"Using cached data from session: {len(call_data)} calls"
                     )
                 else:
-                    # Cached result is empty, proceed with normal load
-                    logger.debug("Cached result is empty, proceeding with normal load")
-                    # Fall through to normal load below
-                    # Normal load from cache or S3
-                    # Load all files - first load will process all CSV files, then cached indefinitely for instant access
-                    # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
-                    logger.debug("Setting up progress tracking...")
-
-                    # Initialize progress tracking
-                    if "csv_processing_progress" not in st.session_state:
-                        st.session_state.csv_processing_progress = {
-                            "processed": 0,
-                            "total": 0,
-                            "errors": 0,
-                        }
-                        logger.debug(
-                            "Initialized new progress tracking in session state"
-                        )
-                    else:
-                        logger.debug(
-                            "Using existing progress tracking from session state"
-                        )
-
-                    # Create progress bar placeholder
-                    progress_placeholder = st.empty()
-                    progress_bar = None
-                    logger.debug("Progress placeholder created")
-
-                    # Show progress if we're processing files
-                    def update_progress():
-                        if st.session_state.csv_processing_progress["total"] > 0:
-                            processed = st.session_state.csv_processing_progress[
-                                "processed"
-                            ]
-                            total = st.session_state.csv_processing_progress["total"]
-                            errors = st.session_state.csv_processing_progress["errors"]
-                            progress = processed / total if total > 0 else 0
-                            progress_placeholder.progress(
-                                progress,
-                                text=f"Processing CSV files: {processed}/{total} ({errors} errors)",
-                            )
-
-                    # Load data (this will trigger processing if not cached)
-                    # SIMPLE approach: Just call the cached function. Streamlit's cache handles everything.
-                    # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
+                    # Cached result is too small or empty, proceed with normal load
                     logger.debug(
-                        "Loading data - Streamlit cache will handle it automatically"
+                        f"Cached result is too small ({len(cached_result) if cached_result else 0} calls), proceeding with normal load"
                     )
-
-                    try:
-                        # Add timeout wrapper
-                        def timeout_handler(signum, frame):
-                            raise TimeoutError("Data loading timed out after 5 minutes")
-
-                        # Try to load with better error visibility
-                        loading_placeholder = st.empty()
-                        with loading_placeholder.container():
-                            st.spinner(
-                                "Loading PDFs from S3... This may take a few minutes for large datasets."
-                            )
-
-                        # Use cache_version to force cache refresh when refresh completes
-                        cache_version = st.session_state.get("_cache_version", 0)
-                        call_data, errors = load_all_calls_cached(
-                            cache_version=cache_version
-                        )
-                        # Store errors in session state for potential cache updates
-                        st.session_state["_last_load_errors"] = errors
-                        logger.info(
-                            f"Data loaded. Got {len(call_data) if call_data else 0} calls"
-                        )
-
-                        # Clear loading messages
-                        loading_placeholder.empty()
-                    except TimeoutError:
-                        logger.exception("Timeout during data loading")
-                        loading_placeholder.empty()
-                        status_text.empty()
-                        st.error(" ⏱️ Data loading timed out. Please try again.")
-                        call_data = []
-                        errors = ["Data loading timed out"]
-                    except Exception as load_error:
-                        logger.exception(f"Error during data loading: {load_error}")
-                        loading_placeholder.empty()
-                        status_text.empty()
-                        st.error(f" ❌ Error loading data: {load_error}")
-                        call_data = []
-                        errors = [str(load_error)]
+                    # Clear the invalid cache and proceed to normal load
+                    if "_s3_cache_result" in st.session_state:
+                        del st.session_state["_s3_cache_result"]
             else:
                 # Normal load from cache or S3
                 # Load all files - first load will process all CSV files, then cached indefinitely for instant access
@@ -6183,8 +6105,11 @@ try:
                     call_data, errors = load_all_calls_cached(
                         cache_version=cache_version
                     )
-                    # Store errors in session state for potential cache updates
+                    # Store data and errors in session state for reuse
+                    st.session_state["_s3_cache_result"] = call_data
                     st.session_state["_last_load_errors"] = errors
+                    if call_data:
+                        st.session_state["_s3_cache_timestamp"] = time.time()
                     logger.info(
                         f"Data loaded. Got {len(call_data) if call_data else 0} calls"
                     )
