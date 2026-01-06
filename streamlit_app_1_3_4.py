@@ -7387,13 +7387,21 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             pie_data = top_reasons
 
                         fig_reason_pie, ax_reason_pie = plt.subplots(figsize=(8, 6))
-                        ax_reason_pie.pie(
+                        wedges, texts, autotexts = ax_reason_pie.pie(
                             pie_data.values,
-                            labels=pie_data.index,
+                            labels=None,  # Remove labels from pie chart
                             autopct="%1.1f%%",
                             startangle=90,
                         )
                         ax_reason_pie.set_title("Call Reasons Distribution")
+                        # Add legend with labels
+                        ax_reason_pie.legend(
+                            wedges,
+                            pie_data.index,
+                            title="Call Reasons",
+                            loc="center left",
+                            bbox_to_anchor=(1, 0, 0.5, 1),
+                        )
                         plt.tight_layout()
                         st_pyplot_safe(fig_reason_pie)
 
@@ -7480,13 +7488,21 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             pie_data = top_outcomes
 
                         fig_outcome_pie, ax_outcome_pie = plt.subplots(figsize=(8, 6))
-                        ax_outcome_pie.pie(
+                        wedges, texts, autotexts = ax_outcome_pie.pie(
                             pie_data.values,
-                            labels=pie_data.index,
+                            labels=None,  # Remove labels from pie chart
                             autopct="%1.1f%%",
                             startangle=90,
                         )
                         ax_outcome_pie.set_title("Outcomes Distribution")
+                        # Add legend with labels
+                        ax_outcome_pie.legend(
+                            wedges,
+                            pie_data.index,
+                            title="Call Outcomes",
+                            loc="center left",
+                            bbox_to_anchor=(1, 0, 0.5, 1),
+                        )
                         plt.tight_layout()
                         st_pyplot_safe(fig_outcome_pie)
 
@@ -7592,13 +7608,21 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                                 pie_data = top_products
 
                             fig_product_pie, ax_product_pie = plt.subplots(figsize=(8, 6))
-                            ax_product_pie.pie(
+                            wedges, texts, autotexts = ax_product_pie.pie(
                                 pie_data.values,
-                                labels=pie_data.index,
+                                labels=None,  # Remove labels from pie chart
                                 autopct="%1.1f%%",
                                 startangle=90,
                             )
                             ax_product_pie.set_title("Products Distribution")
+                            # Add legend with labels
+                            ax_product_pie.legend(
+                                wedges,
+                                pie_data.index,
+                                title="Products",
+                                loc="center left",
+                                bbox_to_anchor=(1, 0, 0.5, 1),
+                            )
                             plt.tight_layout()
                             st_pyplot_safe(fig_product_pie)
 
