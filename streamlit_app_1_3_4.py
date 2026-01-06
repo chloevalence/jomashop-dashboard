@@ -2368,18 +2368,25 @@ def load_all_calls_cached(cache_version=0):
             except Exception as e:
                 logger.warning(f"Could not load disk cache during concurrent load: {e}")
             
-            # 3. Try S3 cache as last resort
+            # 3. Try S3 cache from session state (most up-to-date, shared across users)
             try:
-                s3_result = load_cached_data_from_s3()
-                if s3_result and s3_result[0] and len(s3_result[0]) > 0:
-                    migrated = migrate_old_cache_format(s3_result[0])
-                    logger.info(f"Returning S3 cache during concurrent load: {len(migrated)} calls")
-                    return migrated, s3_result[1] if s3_result[1] else []
+                s3_cache_key = "_s3_cache_result"
+                s3_timestamp_key = "_s3_cache_timestamp"
+                if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
+                    s3_cached_data = st.session_state[s3_cache_key]
+                    if s3_cached_data and isinstance(s3_cached_data, tuple) and len(s3_cached_data) >= 1:
+                        if s3_cached_data[0] and len(s3_cached_data[0]) > 0:
+                            migrated = migrate_old_cache_format(s3_cached_data[0])
+                            logger.info(f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls")
+                            return migrated, s3_cached_data[1] if len(s3_cached_data) > 1 and s3_cached_data[1] else []
             except Exception as e:
-                logger.warning(f"Could not load S3 cache during concurrent load: {e}")
+                logger.debug(f"Could not get S3 cache from session state during concurrent load: {e}")
             
             # If all else fails, return empty (will retry on next run)
-            logger.warning("No cached data available during concurrent load, returning empty")
+            if st.session_state.get(load_in_progress_key, False):
+                logger.warning("Load still in progress and no cache available, returning empty (will retry)")
+            else:
+                logger.warning("Load completed but no cached data found, returning empty")
             return [], []
     
     # Mark load as in progress with timestamp
