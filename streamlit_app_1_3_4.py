@@ -9617,139 +9617,95 @@ st.markdown("---")
 # --- Individual Call Details ---
 with st.expander("Individual Call Details", expanded=False):
     st.subheader("Individual Call Details")
-if len(filtered_df) > 0:
-    call_options = filtered_df["Call ID"].tolist()
-    if call_options:
-        # Call selection for export
-        st.markdown("### Select Calls for Export")
-        select_all_col1, select_all_col2 = st.columns([1, 4])
-        with select_all_col1:
-            if st.button("Select All"):
-                st.session_state.selected_call_ids = call_options.copy()
-                st.rerun()
-        with select_all_col2:
-            if st.button("Clear Selection"):
-                st.session_state.selected_call_ids = []
-                st.rerun()
-        
-        # Multi-select for calls
-        if "selected_call_ids" not in st.session_state:
-            st.session_state.selected_call_ids = []
-        
-        # Filter out invalid default values (calls that no longer exist in options)
-        # This prevents StreamlitAPIException when old selections are not in current options
-        valid_defaults = [
-            call_id
-            for call_id in st.session_state.selected_call_ids
-            if call_id in call_options
-        ]
-        if len(valid_defaults) != len(st.session_state.selected_call_ids):
-            removed_count = len(st.session_state.selected_call_ids) - len(
-                valid_defaults
+    if len(filtered_df) > 0:
+        call_options = filtered_df["Call ID"].tolist()
+        if call_options:
+            st.markdown("### View Call Details")
+            selected_call_id = st.selectbox(
+                "Select a call to view details:",
+                options=call_options,
+                format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID'] == x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0]) else 'N/A'}%",
             )
-            logger.debug(
-                f"Removed {removed_count} invalid call IDs from selection defaults"
-            )
-            st.session_state.selected_call_ids = valid_defaults
-        
-        selected_for_export = st.multiselect(
-            "Choose calls to export (you can select multiple):",
-            options=call_options,
-            default=valid_defaults,
-            format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID'] == x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0]) else 'N/A'}%",
-        )
-        st.session_state.selected_call_ids = selected_for_export
-        
-        if selected_for_export:
-            st.info(f" {len(selected_for_export)} call(s) selected for export")
-        
-        st.markdown("---")
-        st.markdown("### View Call Details")
-        selected_call_id = st.selectbox(
-            "Select a call to view details:",
-            options=call_options,
-            format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID'] == x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0]) else 'N/A'}%",
-        )
-        
-        if selected_call_id:
-            call_details = filtered_df[filtered_df["Call ID"] == selected_call_id].iloc[
-                0
-            ]
             
-            detail_col1, detail_col2 = st.columns(2)
-            
-            with detail_col1:
-                st.write("**Call Information**")
-                st.write(f"**Call ID:** {call_details.get('Call ID', 'N/A')}")
-                st.write(f"**Agent:** {call_details.get('Agent', 'N/A')}")
-                st.write(f"**Date:** {call_details.get('Call Date', 'N/A')}")
-                st.write(f"**Time:** {call_details.get('Call Time', 'N/A')}")
-                qa_score = call_details.get("QA Score", "N/A")
-                st.write(
-                    f"**QA Score:** {qa_score}%"
-                    if isinstance(qa_score, (int, float))
-                    else f"**QA Score:** {qa_score}"
-                )
-                st.write(f"**Label:** {call_details.get('Label', 'N/A')}")
-                call_dur = call_details.get("Call Duration (min)", "N/A")
-                if isinstance(call_dur, (int, float)):
-                    st.write(f"**Call Length:** {call_dur:.2f} min")
-                else:
-                    st.write(f"**Call Length:** {call_dur}")
+            if selected_call_id:
+                call_details = filtered_df[filtered_df["Call ID"] == selected_call_id].iloc[
+                    0
+                ]
                 
-                st.write("**Reason:**")
-                st.write(call_details.get("Reason", "N/A"))
+                detail_col1, detail_col2 = st.columns(2)
                 
-                st.write("**Outcome:**")
-                st.write(call_details.get("Outcome", "N/A"))
-            
-            with detail_col2:
-                st.write("**Summary**")
-                st.write(call_details.get("Summary", "N/A"))
+                with detail_col1:
+                    st.write("**Call Information**")
+                    st.write(f"**Call ID:** {call_details.get('Call ID', 'N/A')}")
+                    st.write(f"**Agent:** {call_details.get('Agent', 'N/A')}")
+                    st.write(f"**Date:** {call_details.get('Call Date', 'N/A')}")
+                    st.write(f"**Time:** {call_details.get('Call Time', 'N/A')}")
+                    qa_score = call_details.get("QA Score", "N/A")
+                    st.write(
+                        f"**QA Score:** {qa_score}%"
+                        if isinstance(qa_score, (int, float))
+                        else f"**QA Score:** {qa_score}"
+                    )
+                    st.write(f"**Label:** {call_details.get('Label', 'N/A')}")
+                    call_dur = call_details.get("Call Duration (min)", "N/A")
+                    if isinstance(call_dur, (int, float)):
+                        st.write(f"**Call Length:** {call_dur:.2f} min")
+                    else:
+                        st.write(f"**Call Length:** {call_dur}")
+                    
+                    st.write("**Reason:**")
+                    st.write(call_details.get("Reason", "N/A"))
+                    
+                    st.write("**Outcome:**")
+                    st.write(call_details.get("Outcome", "N/A"))
                 
-                st.write("**Strengths**")
-                st.write(call_details.get("Strengths", "N/A"))
+                with detail_col2:
+                    st.write("**Summary**")
+                    st.write(call_details.get("Summary", "N/A"))
+                    
+                    st.write("**Strengths**")
+                    st.write(call_details.get("Strengths", "N/A"))
+                    
+                    st.write("**Challenges**")
+                    st.write(call_details.get("Challenges", "N/A"))
+                    
+                    st.write("**Coaching Suggestions**")
+                    coaching = call_details.get("Coaching Suggestions", [])
+                    if isinstance(coaching, list):
+                        for suggestion in coaching:
+                            st.write(f"- {suggestion}")
+                    else:
+                        st.write(coaching if coaching else "N/A")
                 
-                st.write("**Challenges**")
-                st.write(call_details.get("Challenges", "N/A"))
-                
-                st.write("**Coaching Suggestions**")
-                coaching = call_details.get("Coaching Suggestions", [])
-                if isinstance(coaching, list):
-                    for suggestion in coaching:
-                        st.write(f"- {suggestion}")
-                else:
-                    st.write(coaching if coaching else "N/A")
-            
-            # Rubric Details
-            st.write("**Rubric Details**")
-            rubric_details = call_details.get("Rubric Details", {})
-            if isinstance(rubric_details, dict) and rubric_details:
-                rubric_df = pd.DataFrame(
-                    [
-                        {
-                            "Code": code,
-                            "Status": details.get("status", "N/A")
-                            if isinstance(details, dict)
-                            else "N/A",
-                            "Note": details.get("note", "")
-                            if isinstance(details, dict)
-                            else "",
-                    }
-                    for code, details in rubric_details.items()
-                    ]
-                )
-                st.dataframe(rubric_df)
-                
-                # Export individual call report
-                st.markdown("---")
-                call_dur_export = call_details.get("Call Duration (min)", "N/A")
-                if isinstance(call_dur_export, (int, float)):
-                    call_dur_formatted = f"{call_dur_export:.2f}"
-                else:
-                    call_dur_formatted = call_dur_export
-                
-                report_text = f"""
+                # Rubric Details
+                st.write("**Rubric Details**")
+                rubric_details = call_details.get("Rubric Details", {})
+                if isinstance(rubric_details, dict) and rubric_details:
+                    rubric_df = pd.DataFrame(
+                        [
+                            {
+                                "Code": code,
+                                "Status": details.get("status", "N/A")
+                                if isinstance(details, dict)
+                                else "N/A",
+                                "Note": details.get("note", "")
+                                if isinstance(details, dict)
+                                else "",
+                            }
+                            for code, details in rubric_details.items()
+                        ]
+                    )
+                    st.dataframe(rubric_df)
+                    
+                    # Export individual call report
+                    st.markdown("---")
+                    call_dur_export = call_details.get("Call Duration (min)", "N/A")
+                    if isinstance(call_dur_export, (int, float)):
+                        call_dur_formatted = f"{call_dur_export:.2f}"
+                    else:
+                        call_dur_formatted = call_dur_export
+                    
+                    report_text = f"""
 # QA Call Report
 
 ## Call Information
@@ -9784,14 +9740,14 @@ if len(filtered_df) > 0:
 ---
 Generated by QA Dashboard • {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 """
-                st.download_button(
-                    label=" Export Call Report (TXT)",
-                    data=report_text,
-                    file_name=f"call_report_{call_details.get('Call ID', 'unknown')}.txt",
-                    mime="text/plain",
-                )
-            else:
-                st.write("No rubric details available")
+                    st.download_button(
+                        label=" Export Call Report (TXT)",
+                        data=report_text,
+                        file_name=f"call_report_{call_details.get('Call ID', 'unknown')}.txt",
+                        mime="text/plain",
+                    )
+                else:
+                    st.write("No rubric details available")
 
 # --- Call Volume Analysis ---
 with st.expander("Call Volume Analysis", expanded=False):
@@ -10575,8 +10531,56 @@ if len(filtered_df) > 0:
             st.rerun()
     else:
         st.caption(
-            " No calls selected. Select calls from the 'Individual Call Details' section above."
+            " No calls selected. Select calls below."
         )
+
+# --- Select Calls for Export ---
+st.markdown("---")
+st.markdown("### Select Calls for Export")
+if len(filtered_df) > 0:
+    call_options = filtered_df["Call ID"].tolist()
+    if call_options:
+        select_all_col1, select_all_col2 = st.columns([1, 4])
+        with select_all_col1:
+            if st.button("Select All", key="select_all_bottom"):
+                st.session_state.selected_call_ids = call_options.copy()
+                st.rerun()
+        with select_all_col2:
+            if st.button("Clear Selection", key="clear_selection_bottom"):
+                st.session_state.selected_call_ids = []
+                st.rerun()
+        
+        # Multi-select for calls
+        if "selected_call_ids" not in st.session_state:
+            st.session_state.selected_call_ids = []
+        
+        # Filter out invalid default values (calls that no longer exist in options)
+        # This prevents StreamlitAPIException when old selections are not in current options
+        valid_defaults = [
+            call_id
+            for call_id in st.session_state.selected_call_ids
+            if call_id in call_options
+        ]
+        if len(valid_defaults) != len(st.session_state.selected_call_ids):
+            removed_count = len(st.session_state.selected_call_ids) - len(
+                valid_defaults
+            )
+            logger.debug(
+                f"Removed {removed_count} invalid call IDs from selection defaults"
+            )
+            st.session_state.selected_call_ids = valid_defaults
+        
+        selected_for_export = st.multiselect(
+            "Choose calls to export (you can select multiple):",
+            options=call_options,
+            default=valid_defaults,
+            key="select_calls_export_bottom",
+            format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID'] == x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0]) else 'N/A'}%",
+        )
+        st.session_state.selected_call_ids = selected_for_export
+        
+        if selected_for_export:
+            st.info(f" {len(selected_for_export)} call(s) selected for export")
 
 st.markdown("---")
 st.markdown(
