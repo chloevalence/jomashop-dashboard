@@ -5321,6 +5321,9 @@ except Exception as e:
 
 # Now load the actual data
 logger.debug("Entering data loading section...")
+# Initialize call_data and errors to prevent undefined variable errors
+call_data = []
+errors = []
 try:
     status_text.text(" Loading CSV files from S3...")
     logger.debug("Status text updated, starting timer...")
@@ -5492,6 +5495,7 @@ try:
         status_text.empty()
     
     # Check if we got valid data
+    logger.debug(f"Checking call_data: type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}")
     if not call_data and not errors:
         status_text.empty()
         st.warning(
@@ -5530,6 +5534,7 @@ try:
             st.error(f" {errors}")
             st.stop()
     
+    logger.debug(f"Before final check: call_data type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}")
     if call_data:
         # Only show cache messages if we actually processed files or refresh was triggered
         refresh_in_progress = st.session_state.get("refresh_in_progress", False)
@@ -5555,13 +5560,16 @@ try:
                 st.success(
                     f" Loaded {len(call_data)} calls (from cache, originally processed in {time_str})"
                 )
-        else:
-            st.error(" No call data found!")
-            st.error("Possible issues:")
-            st.error("1. No CSV files in S3 bucket (check bucket name and prefix)")
-            st.error("2. CSV files couldn't be parsed")
-            st.error("3. Check the prefix path if CSV files are in a subfolder")
-            st.stop()
+        # If call_data exists but we don't need to show processing messages, just continue silently
+        # The data is loaded and will be used below
+    else:
+        # call_data is empty or falsy - show error
+        st.error(" No call data found!")
+        st.error("Possible issues:")
+        st.error("1. No CSV files in S3 bucket (check bucket name and prefix)")
+        st.error("2. CSV files couldn't be parsed")
+        st.error("3. Check the prefix path if CSV files are in a subfolder")
+        st.stop()
 except Exception as e:
     status_text.empty()
     st.error(f" Error loading data: {e}")
