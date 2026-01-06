@@ -4905,8 +4905,6 @@ try:
         agent_id_value = user_mapping[current_username].get("agent_id", "")
         if agent_id_value:
             user_agent_id = agent_id_value
-            # Normalize agent ID immediately so it's consistent everywhere
-            user_agent_id = normalize_agent_id(user_agent_id)
 except Exception:
     pass
 
@@ -4915,7 +4913,7 @@ is_admin = is_regular_admin()
 
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
-# Show view mode
+# Show view mode - display raw agent ID in sidebar (this is the correct value)
 if is_anonymous_user:
     st.sidebar.info(" Anonymous View: De-identified Data")
 elif user_agent_id:
@@ -6688,15 +6686,16 @@ if is_anonymous_user:
     )
 
 # --- Determine if agent view or admin view ---
-# user_agent_id is already normalized above (when set from user mapping)
+# Normalize user_agent_id for data filtering (but keep raw value for display)
+user_agent_id_normalized = normalize_agent_id(user_agent_id) if user_agent_id else None
 
 # If user has agent_id, automatically filter to their data
 if user_agent_id:
     # Agent view - filter to their calls only
-    agent_calls_df = meta_df[meta_df["Agent"] == user_agent_id].copy()
+    agent_calls_df = meta_df[meta_df["Agent"] == user_agent_id_normalized].copy()
 
     if agent_calls_df.empty:
-        st.warning(f" No calls found for agent: {user_agent_id}")
+        st.warning(f" No calls found for agent: {user_agent_id_normalized}")
         st.info(
             "If this is incorrect, please contact your administrator to update your agent ID mapping."
         )
@@ -7156,7 +7155,7 @@ if show_comparison and user_agent_id:
 
     for agent in overall_df["Agent"].unique():
         # Skip if this is the current user's agent (we want peer average)
-        if agent == user_agent_id:
+        if agent == user_agent_id_normalized:
             continue
 
         agent_data = overall_df[overall_df["Agent"] == agent]
@@ -7267,7 +7266,9 @@ if filtered_df.empty:
 
 # --- Main Dashboard ---
 if user_agent_id:
-    st.title(f" My QA Performance Dashboard - {user_agent_id}")
+    # Use normalized agent ID for heading display
+    normalized_display = normalize_agent_id(user_agent_id) if user_agent_id else None
+    st.title(f" My QA Performance Dashboard - {normalized_display}")
 else:
     st.title(" QA Rubric Dashboard")
 
@@ -9484,9 +9485,9 @@ if user_agent_id:
         st.subheader("My Performance Trend vs Team Average")
 
         # Add trajectory analysis
-        agent_data = filtered_df[filtered_df["Agent"] == user_agent_id]
+        agent_data = filtered_df[filtered_df["Agent"] == user_agent_id_normalized]
         if len(agent_data) > 0:
-            trajectory = classify_trajectory(filtered_df, agent=user_agent_id)
+            trajectory = classify_trajectory(filtered_df, agent=user_agent_id_normalized)
 
         traj_col1, traj_col2, traj_col3, traj_col4 = st.columns(4)
         with traj_col1:
