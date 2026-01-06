@@ -10419,14 +10419,61 @@ with export_col2:
         mime="text/csv",
     )
 
+# --- Select Calls for Export ---
+st.markdown("---")
+st.markdown("### Select Calls for Export")
+if len(filtered_df) > 0:
+    call_options = filtered_df["Call ID"].tolist()
+    if call_options:
+        select_all_col1, select_all_col2 = st.columns([1, 4])
+        with select_all_col1:
+            if st.button("Select All", key="select_all_bottom"):
+                st.session_state.selected_call_ids = call_options.copy()
+                st.rerun()
+        with select_all_col2:
+            if st.button("Clear Selection", key="clear_selection_bottom"):
+                st.session_state.selected_call_ids = []
+                st.rerun()
+        
+        # Multi-select for calls
+        if "selected_call_ids" not in st.session_state:
+            st.session_state.selected_call_ids = []
+        
+        # Filter out invalid default values (calls that no longer exist in options)
+        # This prevents StreamlitAPIException when old selections are not in current options
+        valid_defaults = [
+            call_id
+            for call_id in st.session_state.selected_call_ids
+            if call_id in call_options
+        ]
+        if len(valid_defaults) != len(st.session_state.selected_call_ids):
+            removed_count = len(st.session_state.selected_call_ids) - len(
+                valid_defaults
+            )
+            logger.debug(
+                f"Removed {removed_count} invalid call IDs from selection defaults"
+            )
+            st.session_state.selected_call_ids = valid_defaults
+        
+        selected_for_export = st.multiselect(
+            "Choose calls to export (you can select multiple):",
+            options=call_options,
+            default=valid_defaults,
+            key="select_calls_export_bottom",
+            format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID'] == x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0]) else 'N/A'}%",
+        )
+        st.session_state.selected_call_ids = selected_for_export
+        
+        if selected_for_export:
+            st.info(f" {len(selected_for_export)} call(s) selected for export")
+
 # Export selected individual calls (if any are selected)
 if "selected_call_ids" not in st.session_state:
     st.session_state.selected_call_ids = []
 
 if len(filtered_df) > 0:
-    st.markdown("### Export Selected Calls")
     st.caption(
-        "Select calls from the 'Individual Call Details' section above, then export them here"
+        "Export the calls selected above"
     )
     
     # Show selected calls count
@@ -10478,56 +10525,8 @@ if len(filtered_df) > 0:
             st.rerun()
     else:
         st.caption(
-            " No calls selected. Select calls below."
+            " No calls selected. Select calls above."
         )
-
-# --- Select Calls for Export ---
-st.markdown("---")
-st.markdown("### Select Calls for Export")
-if len(filtered_df) > 0:
-    call_options = filtered_df["Call ID"].tolist()
-    if call_options:
-        select_all_col1, select_all_col2 = st.columns([1, 4])
-        with select_all_col1:
-            if st.button("Select All", key="select_all_bottom"):
-                st.session_state.selected_call_ids = call_options.copy()
-                st.rerun()
-        with select_all_col2:
-            if st.button("Clear Selection", key="clear_selection_bottom"):
-                st.session_state.selected_call_ids = []
-                st.rerun()
-        
-        # Multi-select for calls
-        if "selected_call_ids" not in st.session_state:
-            st.session_state.selected_call_ids = []
-        
-        # Filter out invalid default values (calls that no longer exist in options)
-        # This prevents StreamlitAPIException when old selections are not in current options
-        valid_defaults = [
-            call_id
-            for call_id in st.session_state.selected_call_ids
-            if call_id in call_options
-        ]
-        if len(valid_defaults) != len(st.session_state.selected_call_ids):
-            removed_count = len(st.session_state.selected_call_ids) - len(
-                valid_defaults
-            )
-            logger.debug(
-                f"Removed {removed_count} invalid call IDs from selection defaults"
-            )
-            st.session_state.selected_call_ids = valid_defaults
-        
-        selected_for_export = st.multiselect(
-            "Choose calls to export (you can select multiple):",
-            options=call_options,
-            default=valid_defaults,
-            key="select_calls_export_bottom",
-            format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID'] == x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0]) else 'N/A'}%",
-        )
-        st.session_state.selected_call_ids = selected_for_export
-        
-        if selected_for_export:
-            st.info(f" {len(selected_for_export)} call(s) selected for export")
 
 st.markdown("---")
 st.markdown(
