@@ -7,5 +7,17 @@ __pycache__/
 logs/
 .cursor/debug.log
 .vscode/
+qa_results_jomashop.csv
 # PDF files (may contain sensitive data in filenames)
 *.pdf
+# Generated reports
+*_report.pdf
+*_review_report.pdf
+bpo_review_report.pdf
+# Data files (except template/rubric files)
+*.csv
+!template*.csv
+!example*.csv
+# Generated Excel reports
+*_report.xlsx
+*_export.xlsx
