@@ -7213,12 +7213,12 @@ if show_comparison and user_agent_id:
             and filtered_df["Call Duration (min)"].notna().any()
             else None
         )
-        overall_avg_aht = (
-            overall_df["Call Duration (min)"].mean()
-            if "Call Duration (min)" in overall_df.columns
-            and overall_df["Call Duration (min)"].notna().any()
-            else None
-        )
+        # Calculate overall AHT - check both column existence and non-null values
+        overall_avg_aht = None
+        if "Call Duration (min)" in overall_df.columns:
+            aht_values = overall_df["Call Duration (min)"].dropna()
+            if len(aht_values) > 0:
+                overall_avg_aht = aht_values.mean()
         delta_aht = (
             my_avg_aht - overall_avg_aht
             if my_avg_aht is not None and overall_avg_aht is not None
@@ -7244,8 +7244,8 @@ if show_comparison and user_agent_id:
 
     with col6:
         st.metric(
-            "Overall Pass Rate",
-            f"{overall_pass_rate:.1f}%" if overall_pass_rate else "N/A",
+            "Overall Avg AHT",
+            f"{overall_avg_aht:.1f} min" if overall_avg_aht is not None else "N/A",
         )
     
     # Comparison section
@@ -9022,7 +9022,7 @@ with st.expander("Rubric Code Analysis", expanded=False):
                     category_df = category_df.sort_values("Avg_Fail_Rate", ascending=False)
 
                     st.write("**Fail Rate by Rubric Category**")
-                    fig_heat, ax_heat = plt.subplots(figsize=(5, 3))
+                    fig_heat, ax_heat = plt.subplots(figsize=(4, 2.5))
                     colors = [
                         "green" if x < 20 else "orange" if x < 40 else "red"
                         for x in category_df["Avg_Fail_Rate"]
