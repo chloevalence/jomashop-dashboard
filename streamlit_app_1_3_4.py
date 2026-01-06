@@ -10584,5 +10584,5 @@ if len(filtered_df) > 0:
 
 st.markdown("---")
 st.markdown(
-    "Built with ❤️ by [Valence](https://www.getvalenceai.com) | QA Dashboard © 2025"
+    "Built with ❤️ by [Valence](https://www.getvalenceai.com) | QA Dashboard © 2026"
 )
