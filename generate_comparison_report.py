@@ -1820,6 +1820,19 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
+    # Check for required QA Score column
+    if "QA Score" not in bpo_df.columns:
+        fig, ax = plt.subplots(figsize=(14, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "QA Score column not found for trend analysis",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
     # Ensure Call Date is datetime
     bpo_df = bpo_df.copy()
     bpo_df["Call Date"] = pd.to_datetime(bpo_df["Call Date"], errors="coerce")
@@ -1842,13 +1855,26 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
 
     # Calculate monthly metrics
     # Build aggregation dictionary conditionally to avoid KeyError for missing columns
-    agg_dict = {
-        "QA Score": ["mean", "count"],
-    }
+    agg_dict = {}
+    if "QA Score" in bpo_df.columns:
+        agg_dict["QA Score"] = ["mean", "count"]
     if "Rubric Pass Count" in bpo_df.columns:
         agg_dict["Rubric Pass Count"] = "sum"
     if "Rubric Fail Count" in bpo_df.columns:
         agg_dict["Rubric Fail Count"] = "sum"
+    
+    # If no aggregation columns available, return error
+    if not agg_dict:
+        fig, ax = plt.subplots(figsize=(14, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No valid metrics available for trend analysis",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
 
     monthly_metrics = bpo_df.groupby("Month").agg(agg_dict).reset_index()
 
@@ -1884,6 +1910,19 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     monthly_metrics["Pass_Rate"] = (
         monthly_metrics["Pass_Count"] / total_rubric * 100
     ).where(total_rubric > 0, pd.NA)
+
+    # Ensure Avg_Score exists (should always exist if QA Score was validated, but check defensively)
+    if "Avg_Score" not in monthly_metrics.columns:
+        fig, ax = plt.subplots(figsize=(14, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "Average score data not available for trend analysis",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
 
     # Convert Month to string for plotting
     monthly_metrics["Month_Str"] = monthly_metrics["Month"].astype(str)
@@ -2317,15 +2356,41 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
+    # Check for required QA Score column
+    if "QA Score" not in bpo_df.columns:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "QA Score column not found for leaderboard",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
+
     # Calculate agent performance
     # Build aggregation dictionary conditionally to avoid KeyError for missing columns
-    agg_dict = {
-        "QA Score": ["mean", "count"],
-    }
+    agg_dict = {}
+    if "QA Score" in bpo_df.columns:
+        agg_dict["QA Score"] = ["mean", "count"]
     if "Rubric Pass Count" in bpo_df.columns:
         agg_dict["Rubric Pass Count"] = "sum"
     if "Rubric Fail Count" in bpo_df.columns:
         agg_dict["Rubric Fail Count"] = "sum"
+    
+    # If no aggregation columns available, return error
+    if not agg_dict:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "No valid metrics available for leaderboard",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
 
     agent_perf = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
 
@@ -2361,6 +2426,19 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
     agent_perf["Pass_Rate"] = (agent_perf["Pass_Count"] / total_rubric * 100).where(
         total_rubric > 0, pd.NA
     )
+
+    # Ensure Avg_Score exists (should always exist if QA Score was validated, but check defensively)
+    if "Avg_Score" not in agent_perf.columns:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(
+            0.5,
+            0.5,
+            "Average score data not available for leaderboard",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        return fig
 
     # Sort by average score
     agent_perf = agent_perf.sort_values("Avg_Score", ascending=False)
