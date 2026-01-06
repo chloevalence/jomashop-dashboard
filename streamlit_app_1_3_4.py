@@ -7472,7 +7472,7 @@ if is_super_admin():
 # Summary Metrics
 if show_comparison and user_agent_id:
     # Agent view with comparison
-    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
         my_calls = len(filtered_df)
@@ -7552,12 +7552,6 @@ if show_comparison and user_agent_id:
         st.metric(
             "Overall Pass Rate",
             f"{overall_pass_rate:.1f}%" if overall_pass_rate else "N/A",
-        )
-
-    with col7:
-        st.metric(
-            "Overall Avg AHT",
-            f"{overall_avg_aht:.1f} min" if overall_avg_aht is not None else "N/A",
         )
 
     # Comparison section
@@ -7965,7 +7959,7 @@ else:
                 str(overall_total_calls) if overall_total_calls else "0",
                 f"{overall_avg_score:.1f}%" if overall_avg_score else "0.0%",
                 f"{overall_pass_rate:.1f}%" if overall_pass_rate else "0.0%",
-                "N/A",  # Could calculate if needed
+                f"{overall_avg_aht:.1f}" if overall_avg_aht is not None else "N/A",
             ],
         }
     )
