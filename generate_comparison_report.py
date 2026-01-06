@@ -20,12 +20,12 @@ import re
 from typing import List, Dict, Optional
 import warnings
 
+# Configure matplotlib (must be imported before warnings)
+import matplotlib
+
 # Suppress warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 warnings.filterwarnings("ignore", category=FutureWarning)
-
-# Configure matplotlib
-import matplotlib
 
 matplotlib.use("Agg")
 matplotlib.rcParams["figure.max_open_warning"] = 0
@@ -454,7 +454,7 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
                                 if len(parts) == 2:
                                     minutes, seconds = map(int, parts)
                                     total_seconds += minutes * 60 + seconds
-                            except:
+                            except (ValueError, IndexError):
                                 pass
                     return total_seconds / 60.0 if total_seconds > 0 else None
                 return None
@@ -463,7 +463,7 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
 
         # Include ALL data (don't filter by start_date for comprehensive report)
         # If user wants date filtering, they can specify a different start_date
-        print(f"📊 BPO Centers data loaded:")
+        print("📊 BPO Centers data loaded:")
         print(f"   Total calls: {len(df)}")
         if len(df) > 0 and "Call Date" in df.columns:
             print(f"   Date range: {df['Call Date'].min()} to {df['Call Date'].max()}")
@@ -1730,8 +1730,11 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
     # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
     # When using ["mean", "count"], pandas creates MultiIndex like ('QA Score', 'mean'), ('QA Score', 'count')
     if isinstance(agent_metrics.columns, pd.MultiIndex):
-        agent_metrics.columns = ['_'.join(col).strip() if col[1] else col[0] for col in agent_metrics.columns.values]
-    
+        agent_metrics.columns = [
+            "_".join(col).strip() if col[1] else col[0]
+            for col in agent_metrics.columns.values
+        ]
+
     # Build column mapping based on what columns actually exist
     column_mapping = {}
     if "QA Score_mean" in agent_metrics.columns:
@@ -1742,9 +1745,9 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
         column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
     if "Rubric Fail Count_sum" in agent_metrics.columns:
         column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
-    
+
     agent_metrics.rename(columns=column_mapping, inplace=True)
-    
+
     # Ensure all expected columns exist, create with 0 if missing
     if "Pass_Count" not in agent_metrics.columns:
         agent_metrics["Pass_Count"] = 0
@@ -1847,8 +1850,11 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
 
     # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
     if isinstance(monthly_metrics.columns, pd.MultiIndex):
-        monthly_metrics.columns = ['_'.join(col).strip() if col[1] else col[0] for col in monthly_metrics.columns.values]
-    
+        monthly_metrics.columns = [
+            "_".join(col).strip() if col[1] else col[0]
+            for col in monthly_metrics.columns.values
+        ]
+
     # Build column mapping based on what columns actually exist
     column_mapping = {}
     if "QA Score_mean" in monthly_metrics.columns:
@@ -1859,9 +1865,9 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
     if "Rubric Fail Count_sum" in monthly_metrics.columns:
         column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
-    
+
     monthly_metrics.rename(columns=column_mapping, inplace=True)
-    
+
     # Ensure all expected columns exist, create with 0 if missing
     if "Pass_Count" not in monthly_metrics.columns:
         monthly_metrics["Pass_Count"] = 0
@@ -1982,7 +1988,7 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
 
     # Combine legends
     lines = line1 + line2
-    labels = [l.get_label() for l in lines]
+    labels = [line.get_label() for line in lines]
     ax4.legend(lines, labels, loc="upper left")
 
     plt.tight_layout()
@@ -2310,8 +2316,11 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
 
     # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
     if isinstance(agent_perf.columns, pd.MultiIndex):
-        agent_perf.columns = ['_'.join(col).strip() if col[1] else col[0] for col in agent_perf.columns.values]
-    
+        agent_perf.columns = [
+            "_".join(col).strip() if col[1] else col[0]
+            for col in agent_perf.columns.values
+        ]
+
     # Build column mapping based on what columns actually exist
     column_mapping = {}
     if "QA Score_mean" in agent_perf.columns:
@@ -2322,9 +2331,9 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
     if "Rubric Fail Count_sum" in agent_perf.columns:
         column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
-    
+
     agent_perf.rename(columns=column_mapping, inplace=True)
-    
+
     # Ensure all expected columns exist, create with 0 if missing
     if "Pass_Count" not in agent_perf.columns:
         agent_perf["Pass_Count"] = 0
@@ -2852,7 +2861,7 @@ def generate_pdf_report(
 
         summary_lines.extend(["", "KEY METRICS"])
         if has_previous_data:
-            summary_lines.append(f"Previous Contact Center:")
+            summary_lines.append("Previous Contact Center:")
             summary_lines.append(
                 f"  • Total Calls: {previous_metrics.get('total_calls', 'N/A')}"
             )
