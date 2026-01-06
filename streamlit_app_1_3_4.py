@@ -479,10 +479,54 @@ def load_agent_mapping():
     if AGENT_MAPPING_FILE.exists():
         try:
             with open(AGENT_MAPPING_FILE, "r", encoding="utf-8") as f:
-                mapping = json.load(f)
+                file_content = f.read()
+                if not file_content.strip():
+                    logger.warning("Agent mapping file is empty, using known mappings only")
+                    return KNOWN_AGENT_MAPPINGS.copy()
+                
+                mapping = json.loads(file_content)
+                
+                # Validate that mapping is a dictionary
+                if not isinstance(mapping, dict):
+                    logger.warning(
+                        f"Agent mapping file contains invalid data type: {type(mapping).__name__}, "
+                        "expected dict. Using known mappings only."
+                    )
+                    # Try to backup corrupted file
+                    try:
+                        backup_path = AGENT_MAPPING_FILE.with_suffix(".json.backup")
+                        AGENT_MAPPING_FILE.rename(backup_path)
+                        logger.info(f"Backed up corrupted mapping file to {backup_path}")
+                    except Exception as backup_error:
+                        logger.warning(f"Could not backup corrupted mapping file: {backup_error}")
+                    return KNOWN_AGENT_MAPPINGS.copy()
+                
+                # Validate mapping values are strings in "Agent X" format
+                valid_mapping = {}
+                for key, value in mapping.items():
+                    if isinstance(value, str) and value.startswith("Agent "):
+                        valid_mapping[key] = value
+                    else:
+                        logger.warning(
+                            f"Invalid mapping value for '{key}': {value} (expected 'Agent X' format)"
+                        )
+                
                 # Merge with known mappings (known mappings take precedence)
-                merged_mapping = {**mapping, **KNOWN_AGENT_MAPPINGS}
+                # This ensures KNOWN_AGENT_MAPPINGS always override file mappings
+                merged_mapping = {**valid_mapping, **KNOWN_AGENT_MAPPINGS}
                 return merged_mapping
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"Agent mapping file contains invalid JSON: {e}, using known mappings only"
+            )
+            # Try to backup corrupted file
+            try:
+                backup_path = AGENT_MAPPING_FILE.with_suffix(".json.backup")
+                AGENT_MAPPING_FILE.rename(backup_path)
+                logger.info(f"Backed up corrupted mapping file to {backup_path}")
+            except Exception as backup_error:
+                logger.warning(f"Could not backup corrupted mapping file: {backup_error}")
+            return KNOWN_AGENT_MAPPINGS.copy()
         except Exception as e:
             logger.warning(f"Failed to load agent mapping file: {e}, using known mappings only")
             return KNOWN_AGENT_MAPPINGS.copy()
@@ -524,7 +568,16 @@ def get_or_create_agent_mapping(agent_id_lower):
         except ValueError:
             pass  # Not a valid number, continue with mapping logic
     
-    # Check special cases first (normalize these too)
+    # CRITICAL: Check KNOWN_AGENT_MAPPINGS FIRST before hash assignment
+    # This prevents known agents from getting wrong numbers due to hash collisions
+    # Normalize known mapping keys for comparison
+    for known_id, known_name in KNOWN_AGENT_MAPPINGS.items():
+        known_id_normalized = known_id.replace(" ", "").replace("_", "")
+        if agent_id_normalized == known_id_normalized or agent_id_lower == known_id.lower():
+            logger.debug(f"Matched known agent mapping: {agent_id_lower} -> {known_name}")
+            return known_name
+    
+    # Check special cases (normalize these too)
     if agent_id_normalized == "unknown" or agent_id_lower == "unknown":
         return "Agent 1"
     if agent_id_normalized in ["bp016803073", "bp016803074"] or agent_id_lower in ["bp016803073", "bp016803074"]:
@@ -559,6 +612,18 @@ def normalize_agent_id(agent_str):
         return agent_str
 
     agent_str_lower = str(agent_str).lower().strip()
+    
+    # CRITICAL: Skip normalization if already in "Agent X" format to prevent double normalization
+    # This prevents "Agent 1" → hash → "Agent 52" issues
+    if agent_str_lower.startswith("agent "):
+        agent_num_str = agent_str_lower.replace("agent ", "").strip()
+        try:
+            agent_num = int(agent_num_str)
+            # Return properly formatted (capitalized)
+            return f"Agent {agent_num}"
+        except ValueError:
+            # Not a valid number, continue with mapping logic
+            pass
     
     # Use mapping system
     return get_or_create_agent_mapping(agent_str_lower)
@@ -2170,22 +2235,44 @@ def load_all_calls_cached(cache_version=0):
     
     # Prevent concurrent loads - check if a load is already in progress
     load_in_progress_key = "_data_load_in_progress"
-    if st.session_state.get(load_in_progress_key, False):
-        logger.warning("Data load already in progress, skipping duplicate load")
-        # Try to return cached data if available instead of empty DataFrame
-        try:
-            disk_result = load_cached_data_from_disk()
-            if disk_result and disk_result[0] and len(disk_result[0]) > 0:
-                migrated = migrate_old_cache_format(disk_result[0])
-                logger.info(f"Returning disk cache during concurrent load: {len(migrated)} calls")
-                return migrated, disk_result[1] if disk_result[1] else []
-        except Exception as e:
-            logger.warning(f"Could not load disk cache during concurrent load: {e}")
-        # Return empty data to prevent crash, will retry on next run
-        return [], []
+    load_start_time_key = "_data_load_start_time"
     
-    # Mark load as in progress
+    if st.session_state.get(load_in_progress_key, False):
+        # Check if load has been in progress for too long (timeout after 30 minutes)
+        load_start_time = st.session_state.get(load_start_time_key, time.time())
+        load_duration = time.time() - load_start_time
+        timeout_seconds = 30 * 60  # 30 minutes
+        
+        if load_duration > timeout_seconds:
+            logger.warning(
+                f"Data load has been in progress for {load_duration/60:.1f} minutes "
+                f"(exceeded {timeout_seconds/60:.0f} minute timeout), clearing flag and retrying"
+            )
+            # Clear the flag and start a new load
+            if load_in_progress_key in st.session_state:
+                del st.session_state[load_in_progress_key]
+            if load_start_time_key in st.session_state:
+                del st.session_state[load_start_time_key]
+        else:
+            logger.warning(
+                f"Data load already in progress (started {load_duration:.1f}s ago), "
+                f"skipping duplicate load"
+            )
+            # Try to return cached data if available instead of empty DataFrame
+            try:
+                disk_result = load_cached_data_from_disk()
+                if disk_result and disk_result[0] and len(disk_result[0]) > 0:
+                    migrated = migrate_old_cache_format(disk_result[0])
+                    logger.info(f"Returning disk cache during concurrent load: {len(migrated)} calls")
+                    return migrated, disk_result[1] if disk_result[1] else []
+            except Exception as e:
+                logger.warning(f"Could not load disk cache during concurrent load: {e}")
+            # Return empty data to prevent crash, will retry on next run
+            return [], []
+    
+    # Mark load as in progress with timestamp
     st.session_state[load_in_progress_key] = True
+    st.session_state[load_start_time_key] = time.time()
     try:
         # Check if user explicitly requested full reload - MUST check BEFORE loading cache
         reload_all_triggered = st.session_state.get("reload_all_triggered", False)
@@ -2194,52 +2281,89 @@ def load_all_calls_cached(cache_version=0):
         if reload_all_triggered:
             logger.info("Reload ALL Data triggered - clearing all caches before loading")
 
-            # Delete disk cache file
+            # Delete disk cache file with retry and validation
+            disk_cache_deleted = False
             try:
                 if CACHE_FILE.exists():
                     with cache_file_lock(CACHE_FILE, timeout=5):
                         CACHE_FILE.unlink()
-                        logger.info(f" Deleted disk cache file: {CACHE_FILE}")
+                        # Validate deletion succeeded
+                        if not CACHE_FILE.exists():
+                            disk_cache_deleted = True
+                            logger.info(f" Deleted disk cache file: {CACHE_FILE}")
+                        else:
+                            logger.warning(f" Disk cache file still exists after deletion attempt")
+            except LockTimeoutError:
+                logger.warning(f" Timeout deleting disk cache (file may be locked by another process)")
             except Exception as e:
                 logger.warning(f" Could not delete disk cache: {e}")
 
-            # Delete S3 cache
-            try:
-                s3_client, s3_bucket = get_s3_client_and_bucket()
-                if s3_client and s3_bucket:
-                    try:
-                        s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                        logger.info(f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
-                    except ClientError as e:
-                        if e.response.get("Error", {}).get("Code") != "NoSuchKey":
-                            logger.warning(f" Could not delete S3 cache: {e}")
-                        else:
-                            logger.info(" S3 cache does not exist (already deleted)")
-            except Exception as e:
-                logger.warning(f" Could not delete S3 cache: {e}")
+            # Delete S3 cache with retry logic
+            s3_cache_deleted = False
+            max_s3_retries = 3
+            for retry in range(max_s3_retries):
+                try:
+                    s3_client, s3_bucket = get_s3_client_and_bucket()
+                    if s3_client and s3_bucket:
+                        try:
+                            s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                            s3_cache_deleted = True
+                            logger.info(f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
+                            break
+                        except ClientError as e:
+                            if e.response.get("Error", {}).get("Code") != "NoSuchKey":
+                                if retry < max_s3_retries - 1:
+                                    logger.warning(f" S3 cache deletion failed (attempt {retry + 1}/{max_s3_retries}), retrying...")
+                                    time.sleep(0.5)
+                                    continue
+                                else:
+                                    logger.warning(f" Could not delete S3 cache after {max_s3_retries} attempts: {e}")
+                            else:
+                                s3_cache_deleted = True
+                                logger.info(" S3 cache does not exist (already deleted)")
+                                break
+                except Exception as e:
+                    if retry < max_s3_retries - 1:
+                        logger.warning(f" S3 cache deletion error (attempt {retry + 1}/{max_s3_retries}), retrying...")
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        logger.warning(f" Could not delete S3 cache after {max_s3_retries} attempts: {e}")
 
             # Clear Streamlit cache
+            streamlit_cache_cleared = False
             try:
                 load_all_calls_cached.clear()
+                streamlit_cache_cleared = True
                 logger.info(" Cleared Streamlit cache")
             except Exception as e:
                 logger.warning(f" Could not clear Streamlit cache: {e}")
 
             # Clear session state cache FIRST to prevent stale data issues
-            try:
-                if "_s3_cache_result" in st.session_state:
-                    del st.session_state["_s3_cache_result"]
-                if "_s3_cache_timestamp" in st.session_state:
-                    del st.session_state["_s3_cache_timestamp"]
-                if "_merged_cache_data" in st.session_state:
-                    del st.session_state["_merged_cache_data"]
-                if "_merged_cache_errors" in st.session_state:
-                    del st.session_state["_merged_cache_errors"]
-                if "_merged_cache_data_timestamp" in st.session_state:
-                    del st.session_state["_merged_cache_data_timestamp"]
+            session_cache_cleared = True
+            session_keys_to_clear = [
+                "_s3_cache_result",
+                "_s3_cache_timestamp",
+                "_merged_cache_data",
+                "_merged_cache_errors",
+                "_merged_cache_data_timestamp",
+            ]
+            for key in session_keys_to_clear:
+                try:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                except Exception as clear_error:
+                    logger.warning(f" Error clearing session state key '{key}': {clear_error}")
+                    session_cache_cleared = False
+            
+            if session_cache_cleared:
                 logger.info(" Cleared session state cache")
-            except Exception as clear_error:
-                logger.warning(f" Error clearing session state cache: {clear_error}")
+            
+            # Log summary of cache clearing results
+            logger.info(
+                f" Cache clearing summary: disk={disk_cache_deleted}, s3={s3_cache_deleted}, "
+                f"streamlit={streamlit_cache_cleared}, session={session_cache_cleared}"
+            )
 
             # DON'T clear the flag here - keep it set so the load knows to load ALL files
             # The flag will be cleared after the load completes successfully
@@ -2783,9 +2907,14 @@ def load_all_calls_cached(cache_version=0):
                 st.session_state["reload_all_triggered"] = False
                 logger.error("Reload ALL Data failed - cleared flag to prevent retry loop")
             
-            # Clear load in progress flag
-            if load_in_progress_key in st.session_state:
-                del st.session_state[load_in_progress_key]
+            # Clear load in progress flag and timestamp
+            try:
+                if load_in_progress_key in st.session_state:
+                    del st.session_state[load_in_progress_key]
+                if load_start_time_key in st.session_state:
+                    del st.session_state[load_start_time_key]
+            except Exception as clear_error:
+                logger.warning(f"Failed to clear load progress flags: {clear_error}")
             
             # Try to return disk cache if available as fallback
             if disk_call_data and len(disk_call_data) > 0:
@@ -2793,8 +2922,13 @@ def load_all_calls_cached(cache_version=0):
                     f" Reload failed, falling back to disk cache: {len(disk_call_data)} calls"
                 )
                 # Normalize agent IDs in fallback cache
-                disk_call_data = migrate_old_cache_format(disk_call_data)
-                return disk_call_data, [f"Reload failed: {str(e)}. Using cached data."]
+                try:
+                    disk_call_data = migrate_old_cache_format(disk_call_data)
+                    return disk_call_data, [f"Reload failed: {str(e)}. Using cached data."]
+                except Exception as migrate_error:
+                    logger.error(f"Failed to migrate fallback cache: {migrate_error}")
+                    # Return unmigrated data rather than empty
+                    return disk_call_data, [f"Reload failed: {str(e)}. Using cached data (unmigrated)."]
             
             # Return empty data with error message only if no fallback available
             return [], [f"Failed to load data: {str(e)}"]
@@ -5213,6 +5347,7 @@ if is_super_admin():
             help=" Clears cache and reloads ALL CSV files from S3. This may take 10-20 minutes.",
             type="secondary",
         ):
+            reload_success = False
             try:
                 if is_super_admin():
                     log_audit_event(
@@ -5221,21 +5356,55 @@ if is_super_admin():
                         "Cleared cache and reloaded all data from S3",
                     )
                 
-                # Clear Streamlit cache
-                st.cache_data.clear()
+                # Clear Streamlit cache with error handling
+                try:
+                    st.cache_data.clear()
+                    logger.info(" Cleared Streamlit cache")
+                except Exception as e:
+                    logger.warning(f"Failed to clear Streamlit cache: {e}")
+                    # Continue anyway - other caches can still be cleared
                 
-                # Clear persistent disk cache
+                # Clear persistent disk cache with timeout handling
                 if CACHE_FILE.exists():
                     try:
                         with cache_file_lock(CACHE_FILE, timeout=5):
                             CACHE_FILE.unlink()
                             logger.info(f" Cleared persistent disk cache: {CACHE_FILE}")
+                    except LockTimeoutError:
+                        logger.warning(f"Timeout clearing disk cache (file may be locked)")
                     except Exception as e:
                         logger.warning(f"Failed to clear disk cache: {e}")
                 
-                # Clear session state
-                if "processed_s3_keys" in st.session_state:
-                    del st.session_state["processed_s3_keys"]
+                # Clear S3 cache with retry logic
+                try:
+                    s3_client, s3_bucket = get_s3_client_and_bucket()
+                    if s3_client and s3_bucket:
+                        try:
+                            s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                            logger.info(f" Cleared S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
+                        except ClientError as e:
+                            if e.response.get("Error", {}).get("Code") != "NoSuchKey":
+                                logger.warning(f" Could not delete S3 cache: {e}")
+                            else:
+                                logger.info(" S3 cache does not exist (already deleted)")
+                except Exception as e:
+                    logger.warning(f"Failed to clear S3 cache: {e}")
+                
+                # Clear session state cache keys safely
+                cache_keys_to_clear = [
+                    "processed_s3_keys",
+                    "_s3_cache_result",
+                    "_s3_cache_timestamp",
+                    "_merged_cache_data",
+                    "_merged_cache_errors",
+                    "_merged_cache_data_timestamp",
+                ]
+                for key in cache_keys_to_clear:
+                    try:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    except Exception as e:
+                        logger.warning(f"Failed to clear session state key '{key}': {e}")
                 
                 # Mark that full dataset should be cached after this reload
                 st.session_state["full_dataset_cached"] = (
@@ -5243,11 +5412,15 @@ if is_super_admin():
                 )
                 
                 # Clear load in progress flag to allow new load
-                if "_data_load_in_progress" in st.session_state:
-                    del st.session_state["_data_load_in_progress"]
+                try:
+                    if "_data_load_in_progress" in st.session_state:
+                        del st.session_state["_data_load_in_progress"]
+                except Exception as e:
+                    logger.warning(f"Failed to clear load in progress flag: {e}")
                 
                 # Set flag to trigger full load
                 st.session_state["reload_all_triggered"] = True
+                reload_success = True
                 
                 st.success(" Cache cleared! Reloading all data from S3...")
                 logger.info("Reload ALL Data button clicked - starting full reload")
@@ -5256,6 +5429,17 @@ if is_super_admin():
                 logger.exception(f"Error initiating reload: {e}")
                 st.error(f"❌ Failed to initiate reload: {str(e)}")
                 st.info("Please try again or contact support if the issue persists.")
+            finally:
+                # Clear all flags if there was an error to prevent retry loops
+                if not reload_success:
+                    try:
+                        if "reload_all_triggered" in st.session_state:
+                            st.session_state["reload_all_triggered"] = False
+                        if "_data_load_in_progress" in st.session_state:
+                            del st.session_state["_data_load_in_progress"]
+                        logger.info(" Cleared reload flags due to error")
+                    except Exception as clear_error:
+                        logger.warning(f"Failed to clear flags in finally block: {clear_error}")
                 # Clear all flags if there was an error
                 if "reload_all_triggered" in st.session_state:
                     st.session_state["reload_all_triggered"] = False
@@ -5629,6 +5813,29 @@ except Exception as e:
     with st.expander("Show full error"):
         st.code(traceback.format_exc())
     st.stop()
+
+# CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
+# This ensures cached data with old agent IDs gets normalized consistently
+# This fixes the issue where cached DataFrames have wrong agent IDs
+if call_data:
+    agent_normalized_count = 0
+    for call in call_data:
+        if isinstance(call, dict) and "agent" in call:
+            original_agent = call.get("agent")
+            normalized_agent = normalize_agent_id(original_agent)
+            if original_agent != normalized_agent:
+                call["agent"] = normalized_agent
+                agent_normalized_count += 1
+        # Also check for "Agent" key (capitalized)
+        if isinstance(call, dict) and "Agent" in call and "agent" not in call:
+            original_agent = call.get("Agent")
+            normalized_agent = normalize_agent_id(original_agent)
+            if original_agent != normalized_agent:
+                call["Agent"] = normalized_agent
+                agent_normalized_count += 1
+    
+    if agent_normalized_count > 0:
+        logger.info(f" Normalized {agent_normalized_count} agent IDs before DataFrame creation")
 
 meta_df = pd.DataFrame(call_data)
 
@@ -6076,6 +6283,7 @@ meta_df.dropna(subset=["Call Date"], inplace=True)
 
 # Normalize agent IDs AFTER column rename (works for both cached and new data)
 # This ensures normalization works regardless of whether data came from cache or fresh load
+# NOTE: This is a verification pass - normalization should have already happened before DataFrame creation
 agent_ids_updated = False
 if "Agent" in meta_df.columns:
     # Store original agent IDs to check if any changed
@@ -6088,6 +6296,24 @@ if "Agent" in meta_df.columns:
         original_agents.notna() | meta_df["Agent"].notna()
     )
     changed_count = changed_mask.sum()
+
+    # VERIFICATION: Check for any non-normalized agent IDs (should not happen after pre-DataFrame normalization)
+    non_normalized_mask = meta_df["Agent"].notna() & ~meta_df["Agent"].astype(str).str.match(r"^Agent \d+$", na=False)
+    non_normalized_count = non_normalized_mask.sum()
+    
+    if non_normalized_count > 0:
+        logger.warning(
+            f" Found {non_normalized_count} non-normalized agent IDs after DataFrame creation. "
+            "These should have been normalized earlier. Re-normalizing..."
+        )
+        # Re-normalize any that slipped through
+        for idx in meta_df[non_normalized_mask].index:
+            original = meta_df.loc[idx, "Agent"]
+            normalized = normalize_agent_id(original)
+            meta_df.loc[idx, "Agent"] = normalized
+            if original != normalized:
+                changed_count += 1
+                logger.debug(f" Re-normalized agent ID: {original} -> {normalized}")
 
     if changed_count > 0:
         agent_ids_updated = True
