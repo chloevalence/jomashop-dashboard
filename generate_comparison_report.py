@@ -361,29 +361,43 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             df.rename(columns=rename_dict, inplace=True)
 
         # Handle date_raw as fallback if Call Date doesn't exist yet
+        # Track which columns we've tried to use so we don't drop them prematurely
+        date_source_col = None
         if "Call Date" not in df.columns:
             if "date_raw" in df.columns:
                 df["Call Date"] = pd.to_datetime(df["date_raw"], errors="coerce")
-                df = df.drop(columns=["date_raw"])
+                date_source_col = "date_raw"
             elif "call_date" in df.columns:
                 df["Call Date"] = pd.to_datetime(df["call_date"], errors="coerce")
-                df = df.drop(columns=["call_date"])
+                date_source_col = "call_date"
 
         # Ensure Call Date is datetime
         if "Call Date" in df.columns:
             # Check if it's already datetime, if not convert it
             if not pd.api.types.is_datetime64_any_dtype(df["Call Date"]):
                 df["Call Date"] = pd.to_datetime(df["Call Date"], errors="coerce")
+            
+            # Only drop the source column if Call Date was successfully created (has valid dates)
+            if date_source_col and date_source_col in df.columns:
+                # Check if Call Date has any valid (non-NaT) values
+                if df["Call Date"].notna().any():
+                    df = df.drop(columns=[date_source_col])
+                    date_source_col = None  # Mark as dropped
         else:
             # Try to extract from other date fields (case-insensitive)
+            # Only look for columns that haven't been dropped yet
             date_col = None
             for col in df.columns:
-                if col.lower() in ["date_raw", "call_date"]:
+                col_lower = col.lower()
+                if col_lower in ["date_raw", "call_date"]:
                     date_col = col
                     break
 
             if date_col:
                 df["Call Date"] = pd.to_datetime(df[date_col], errors="coerce")
+                # Only drop if Call Date was successfully created
+                if "Call Date" in df.columns and df["Call Date"].notna().any():
+                    df = df.drop(columns=[date_col])
             else:
                 raise ValueError("No date column found in BPO Centers data")
 
@@ -1695,19 +1709,18 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
         return fig
 
     # Calculate agent metrics
+    # Build aggregation dictionary conditionally to avoid KeyError for missing columns
+    agg_dict = {
+        "QA Score": ["mean", "count"],
+    }
+    if "Rubric Pass Count" in bpo_df.columns:
+        agg_dict["Rubric Pass Count"] = "sum"
+    if "Rubric Fail Count" in bpo_df.columns:
+        agg_dict["Rubric Fail Count"] = "sum"
+    
     agent_metrics = (
         bpo_df.groupby("Agent")
-        .agg(
-            {
-                "QA Score": ["mean", "count"],
-                "Rubric Pass Count": "sum"
-                if "Rubric Pass Count" in bpo_df.columns
-                else lambda x: 0,
-                "Rubric Fail Count": "sum"
-                if "Rubric Fail Count" in bpo_df.columns
-                else lambda x: 0,
-            }
-        )
+        .agg(agg_dict)
         .reset_index()
     )
 
@@ -1802,19 +1815,18 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     bpo_df["Month"] = bpo_df["Call Date"].dt.to_period("M")
 
     # Calculate monthly metrics
+    # Build aggregation dictionary conditionally to avoid KeyError for missing columns
+    agg_dict = {
+        "QA Score": ["mean", "count"],
+    }
+    if "Rubric Pass Count" in bpo_df.columns:
+        agg_dict["Rubric Pass Count"] = "sum"
+    if "Rubric Fail Count" in bpo_df.columns:
+        agg_dict["Rubric Fail Count"] = "sum"
+    
     monthly_metrics = (
         bpo_df.groupby("Month")
-        .agg(
-            {
-                "QA Score": ["mean", "count"],
-                "Rubric Pass Count": "sum"
-                if "Rubric Pass Count" in bpo_df.columns
-                else lambda x: 0,
-                "Rubric Fail Count": "sum"
-                if "Rubric Fail Count" in bpo_df.columns
-                else lambda x: 0,
-            }
-        )
+        .agg(agg_dict)
         .reset_index()
     )
 
@@ -2251,19 +2263,18 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         return fig
 
     # Calculate agent performance
+    # Build aggregation dictionary conditionally to avoid KeyError for missing columns
+    agg_dict = {
+        "QA Score": ["mean", "count"],
+    }
+    if "Rubric Pass Count" in bpo_df.columns:
+        agg_dict["Rubric Pass Count"] = "sum"
+    if "Rubric Fail Count" in bpo_df.columns:
+        agg_dict["Rubric Fail Count"] = "sum"
+    
     agent_perf = (
         bpo_df.groupby("Agent")
-        .agg(
-            {
-                "QA Score": ["mean", "count"],
-                "Rubric Pass Count": "sum"
-                if "Rubric Pass Count" in bpo_df.columns
-                else lambda x: 0,
-                "Rubric Fail Count": "sum"
-                if "Rubric Fail Count" in bpo_df.columns
-                else lambda x: 0,
-            }
-        )
+        .agg(agg_dict)
         .reset_index()
     )
 
