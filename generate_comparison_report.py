@@ -1754,12 +1754,12 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
     if "Fail_Count" not in agent_metrics.columns:
         agent_metrics["Fail_Count"] = 0
 
-    # Calculate pass rate
+    # Calculate pass rate - only when there's actual rubric data
+    # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
+    total_rubric = agent_metrics["Pass_Count"] + agent_metrics["Fail_Count"]
     agent_metrics["Pass_Rate"] = (
-        agent_metrics["Pass_Count"]
-        / (agent_metrics["Pass_Count"] + agent_metrics["Fail_Count"])
-        * 100
-    ).fillna(0)
+        agent_metrics["Pass_Count"] / total_rubric * 100
+    ).where(total_rubric > 0, pd.NA)
 
     # Sort by average score
     agent_metrics = agent_metrics.sort_values("Avg_Score", ascending=False)
@@ -1873,11 +1873,13 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         monthly_metrics["Pass_Count"] = 0
     if "Fail_Count" not in monthly_metrics.columns:
         monthly_metrics["Fail_Count"] = 0
+    
+    # Calculate pass rate - only when there's actual rubric data
+    # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
+    total_rubric = monthly_metrics["Pass_Count"] + monthly_metrics["Fail_Count"]
     monthly_metrics["Pass_Rate"] = (
-        monthly_metrics["Pass_Count"]
-        / (monthly_metrics["Pass_Count"] + monthly_metrics["Fail_Count"])
-        * 100
-    ).fillna(0)
+        monthly_metrics["Pass_Count"] / total_rubric * 100
+    ).where(total_rubric > 0, pd.NA)
 
     # Convert Month to string for plotting
     monthly_metrics["Month_Str"] = monthly_metrics["Month"].astype(str)
@@ -2339,11 +2341,13 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         agent_perf["Pass_Count"] = 0
     if "Fail_Count" not in agent_perf.columns:
         agent_perf["Fail_Count"] = 0
+    
+    # Calculate pass rate - only when there's actual rubric data
+    # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
+    total_rubric = agent_perf["Pass_Count"] + agent_perf["Fail_Count"]
     agent_perf["Pass_Rate"] = (
-        agent_perf["Pass_Count"]
-        / (agent_perf["Pass_Count"] + agent_perf["Fail_Count"])
-        * 100
-    ).fillna(0)
+        agent_perf["Pass_Count"] / total_rubric * 100
+    ).where(total_rubric > 0, pd.NA)
 
     # Sort by average score
     agent_perf = agent_perf.sort_values("Avg_Score", ascending=False)
