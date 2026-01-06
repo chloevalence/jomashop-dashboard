@@ -1728,10 +1728,19 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
     agent_metrics = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
 
     # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
-    # When using ["mean", "count"], pandas creates MultiIndex like ('QA Score', 'mean'), ('QA Score', 'count')
+    # When using ["mean", "count"], pandas creates columns as tuples like ('QA Score', 'mean'), ('QA Score', 'count')
+    # After reset_index(), these are in a regular Index, not a MultiIndex, so check for tuple columns
     if isinstance(agent_metrics.columns, pd.MultiIndex):
         agent_metrics.columns = [
             "_".join(col).strip() if col[1] else col[0]
+            for col in agent_metrics.columns.values
+        ]
+    elif any(isinstance(col, tuple) for col in agent_metrics.columns):
+        # Handle case where columns are tuples in a regular Index (not MultiIndex)
+        agent_metrics.columns = [
+            "_".join(str(c) for c in col).strip()
+            if len(col) > 1 and col[1]
+            else str(col[0])
             for col in agent_metrics.columns.values
         ]
 
@@ -1759,7 +1768,9 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
     total_rubric = agent_metrics["Pass_Count"] + agent_metrics["Fail_Count"]
     agent_metrics["Pass_Rate"] = (
         agent_metrics["Pass_Count"] / total_rubric * 100
-    ).where(total_rubric > 0, pd.NA)
+    ).where(
+        total_rubric > 0, np.nan
+    )  # Use np.nan instead of pd.NA for matplotlib compatibility
 
     # Sort by average score
     agent_metrics = agent_metrics.sort_values("Avg_Score", ascending=False)
@@ -1862,7 +1873,7 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         agg_dict["Rubric Pass Count"] = "sum"
     if "Rubric Fail Count" in bpo_df.columns:
         agg_dict["Rubric Fail Count"] = "sum"
-    
+
     # If no aggregation columns available, return error
     if not agg_dict:
         fig, ax = plt.subplots(figsize=(14, 8))
@@ -1879,9 +1890,18 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     monthly_metrics = bpo_df.groupby("Month").agg(agg_dict).reset_index()
 
     # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
+    # After reset_index(), columns may be tuples in a regular Index, not a MultiIndex
     if isinstance(monthly_metrics.columns, pd.MultiIndex):
         monthly_metrics.columns = [
             "_".join(col).strip() if col[1] else col[0]
+            for col in monthly_metrics.columns.values
+        ]
+    elif any(isinstance(col, tuple) for col in monthly_metrics.columns):
+        # Handle case where columns are tuples in a regular Index (not MultiIndex)
+        monthly_metrics.columns = [
+            "_".join(str(c) for c in col).strip()
+            if len(col) > 1 and col[1]
+            else str(col[0])
             for col in monthly_metrics.columns.values
         ]
 
@@ -1909,7 +1929,9 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     total_rubric = monthly_metrics["Pass_Count"] + monthly_metrics["Fail_Count"]
     monthly_metrics["Pass_Rate"] = (
         monthly_metrics["Pass_Count"] / total_rubric * 100
-    ).where(total_rubric > 0, pd.NA)
+    ).where(
+        total_rubric > 0, np.nan
+    )  # Use np.nan instead of pd.NA for matplotlib compatibility
 
     # Ensure Avg_Score exists (should always exist if QA Score was validated, but check defensively)
     if "Avg_Score" not in monthly_metrics.columns:
@@ -2378,7 +2400,7 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         agg_dict["Rubric Pass Count"] = "sum"
     if "Rubric Fail Count" in bpo_df.columns:
         agg_dict["Rubric Fail Count"] = "sum"
-    
+
     # If no aggregation columns available, return error
     if not agg_dict:
         fig, ax = plt.subplots(figsize=(12, 8))
@@ -2395,9 +2417,18 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
     agent_perf = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
 
     # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
+    # After reset_index(), columns may be tuples in a regular Index, not a MultiIndex
     if isinstance(agent_perf.columns, pd.MultiIndex):
         agent_perf.columns = [
             "_".join(col).strip() if col[1] else col[0]
+            for col in agent_perf.columns.values
+        ]
+    elif any(isinstance(col, tuple) for col in agent_perf.columns):
+        # Handle case where columns are tuples in a regular Index (not MultiIndex)
+        agent_perf.columns = [
+            "_".join(str(c) for c in col).strip()
+            if len(col) > 1 and col[1]
+            else str(col[0])
             for col in agent_perf.columns.values
         ]
 
@@ -2424,7 +2455,8 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
     # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
     total_rubric = agent_perf["Pass_Count"] + agent_perf["Fail_Count"]
     agent_perf["Pass_Rate"] = (agent_perf["Pass_Count"] / total_rubric * 100).where(
-        total_rubric > 0, pd.NA
+        total_rubric > 0,
+        np.nan,  # Use np.nan instead of pd.NA for matplotlib compatibility
     )
 
     # Ensure Avg_Score exists (should always exist if QA Score was validated, but check defensively)
