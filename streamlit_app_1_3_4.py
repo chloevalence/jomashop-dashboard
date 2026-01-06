@@ -375,14 +375,26 @@ def st_pyplot_safe(fig, **kwargs):
     """
     try:
         st.pyplot(fig, **kwargs)
+    except Exception as e:
+        # Handle MediaFileStorageError when Streamlit tries to access a stale figure reference
+        # This can happen when the page reruns and old figure references are no longer valid
+        error_str = str(type(e).__name__) + ": " + str(e)
+        if (
+            "MediaFileStorageError" in error_str
+            or "media file" in error_str.lower()
+            or "No media file with id" in error_str
+        ):
+            # Silently ignore stale figure references - this is expected behavior
+            # when filters change and the page reruns
+            logger.debug(f"Ignoring stale matplotlib figure reference: {error_str}")
+        else:
+            # Re-raise other exceptions
+            logger.warning(f"Error displaying matplotlib figure: {e}")
+            raise
     finally:
         plt.close(fig)
         # Close all remaining open figures to prevent accumulation
         plt.close("all")
-        # Force garbage collection of figure to free memory immediately
-        import gc
-
-        gc.collect()
         # Force garbage collection of figure to free memory immediately
         import gc
 
@@ -9323,7 +9335,11 @@ with st.expander("Rubric Code Analysis", expanded=False):
                         st.write("**Fail Rate Distribution**")
                         fig_rubric, ax_rubric = plt.subplots(figsize=(8, 6))
                         top_failed.plot(
-                            x="Code", y="Fail_Rate", kind="bar", ax=ax_rubric, color="red"
+                            x="Code",
+                            y="Fail_Rate",
+                            kind="bar",
+                            ax=ax_rubric,
+                            color="red",
                         )
                         ax_rubric.set_ylabel("Fail Rate (%)")
                         ax_rubric.set_xlabel("Rubric Code")
