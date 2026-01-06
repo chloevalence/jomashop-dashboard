@@ -7143,7 +7143,7 @@ with st.expander(" Historical Baseline Comparisons", expanded=False):
             baseline_names.append("Current Period")
             baseline_scores.append(current_avg_score)
 
-            fig_bench, ax_bench = plt.subplots(figsize=(10, 6))
+            fig_bench, ax_bench = plt.subplots(figsize=(8, 5))
             colors = [
                 "steelblue" if i < len(baseline_names) - 1 else "orange"
                 for i in range(len(baseline_names))
@@ -8702,7 +8702,7 @@ with st.expander("Rubric Code Analysis", expanded=False):
                     category_df = category_df.sort_values("Avg_Fail_Rate", ascending=False)
 
                     st.write("**Fail Rate by Rubric Category**")
-                    fig_heat, ax_heat = plt.subplots(figsize=(6, 4))
+                    fig_heat, ax_heat = plt.subplots(figsize=(5, 3))
                     colors = [
                         "green" if x < 20 else "orange" if x < 40 else "red"
                         for x in category_df["Avg_Fail_Rate"]
