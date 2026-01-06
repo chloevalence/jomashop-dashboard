@@ -10032,58 +10032,58 @@ with analytics_tab1:
                 # Calculate week-over-week change
                 weekly_stats["WoW_Score_Change"] = weekly_stats["Avg_QA_Score"].diff()
                 weekly_stats["WoW_PassRate_Change"] = weekly_stats["Pass_Rate"].diff()
-            weekly_stats["WoW_CallCount_Change"] = weekly_stats["Call_Count"].diff()
-            
-            wow_col1, wow_col2 = st.columns(2)
-            
-            with wow_col1:
-                st.write("**QA Score Week-over-Week**")
-                fig_wow_score, ax_wow_score = plt.subplots(figsize=(12, 6))
-                ax_wow_score.plot(
-                    weekly_stats["Week"],
-                    weekly_stats["Avg_QA_Score"],
-                    marker="o",
-                    linewidth=2,
-                    label="Avg QA Score",
-                )
-                ax_wow_score.set_xlabel("Week")
-                ax_wow_score.set_ylabel("Average QA Score (%)")
-                ax_wow_score.set_title("Week-over-Week QA Score Trend")
-                ax_wow_score.grid(True, alpha=0.3)
-                ax_wow_score.legend()
-                plt.xticks(rotation=45, ha="right")
-                plt.tight_layout()
-                st_pyplot_safe(fig_wow_score)
+                weekly_stats["WoW_CallCount_Change"] = weekly_stats["Call_Count"].diff()
                 
-                # Show WoW changes
-                st.write("**Week-over-Week Changes**")
-                wow_display = weekly_stats[
-                    [
+                wow_col1, wow_col2 = st.columns(2)
+                
+                with wow_col1:
+                    st.write("**QA Score Week-over-Week**")
+                    fig_wow_score, ax_wow_score = plt.subplots(figsize=(12, 6))
+                    ax_wow_score.plot(
+                        weekly_stats["Week"],
+                        weekly_stats["Avg_QA_Score"],
+                        marker="o",
+                        linewidth=2,
+                        label="Avg QA Score",
+                    )
+                    ax_wow_score.set_xlabel("Week")
+                    ax_wow_score.set_ylabel("Average QA Score (%)")
+                    ax_wow_score.set_title("Week-over-Week QA Score Trend")
+                    ax_wow_score.grid(True, alpha=0.3)
+                    ax_wow_score.legend()
+                    plt.xticks(rotation=45, ha="right")
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_wow_score)
+                    
+                    # Show WoW changes
+                    st.write("**Week-over-Week Changes**")
+                    wow_display = weekly_stats[
+                        [
+                            "Week",
+                            "Avg_QA_Score",
+                            "WoW_Score_Change",
+                            "Call_Count",
+                            "WoW_CallCount_Change",
+                        ]
+                    ].copy()
+                    wow_display["WoW_Score_Change"] = wow_display[
+                        "WoW_Score_Change"
+                    ].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
+                    wow_display["WoW_CallCount_Change"] = wow_display[
+                        "WoW_CallCount_Change"
+                    ].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
+                    wow_display.columns = [
                         "Week",
-                        "Avg_QA_Score",
-                        "WoW_Score_Change",
-                        "Call_Count",
-                        "WoW_CallCount_Change",
-                    ]
-                ].copy()
-                wow_display["WoW_Score_Change"] = wow_display[
-                    "WoW_Score_Change"
-                ].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
-                wow_display["WoW_CallCount_Change"] = wow_display[
-                    "WoW_CallCount_Change"
-                ].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
-                wow_display.columns = [
-                    "Week",
-                    "Avg QA Score",
+                        "Avg QA Score",
                         "WoW Change",
                         "Call Count",
                         "WoW Count Change",
                     ]
-                st.dataframe(wow_display, hide_index=True)
-            
-            with wow_col2:
-                st.write("**Pass Rate Week-over-Week**")
-                fig_wow_pass, ax_wow_pass = plt.subplots(figsize=(12, 6))
+                    st.dataframe(wow_display, hide_index=True)
+                
+                with wow_col2:
+                    st.write("**Pass Rate Week-over-Week**")
+                    fig_wow_pass, ax_wow_pass = plt.subplots(figsize=(12, 6))
                     ax_wow_pass.plot(
                         weekly_stats["Week"],
                         weekly_stats["Pass_Rate"],
@@ -10092,15 +10092,15 @@ with analytics_tab1:
                         color="green",
                         label="Pass Rate",
                     )
-                ax_wow_pass.set_xlabel("Week")
-                ax_wow_pass.set_ylabel("Pass Rate (%)")
-                ax_wow_pass.set_title("Week-over-Week Pass Rate Trend")
-                ax_wow_pass.grid(True, alpha=0.3)
-                ax_wow_pass.legend()
+                    ax_wow_pass.set_xlabel("Week")
+                    ax_wow_pass.set_ylabel("Pass Rate (%)")
+                    ax_wow_pass.set_title("Week-over-Week Pass Rate Trend")
+                    ax_wow_pass.grid(True, alpha=0.3)
+                    ax_wow_pass.legend()
                     plt.xticks(rotation=45, ha="right")
-                plt.tight_layout()
+                    plt.tight_layout()
                     st_pyplot_safe(fig_wow_pass)
-        else:
+            else:
                 st.info(" Need at least 2 weeks of data for week-over-week comparison")
 
 with analytics_tab2:
