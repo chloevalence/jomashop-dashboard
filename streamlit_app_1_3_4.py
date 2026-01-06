@@ -9814,25 +9814,25 @@ with st.expander("Time of Day Analysis", expanded=False):
             filtered_df["Hour"] = pd.to_datetime(
                 filtered_df["Call Time"], format="%H:%M:%S", errors="coerce"
             ).dt.hour
-        time_scores = filtered_df.groupby("Hour")["QA Score"].mean().reset_index()
-        time_scores = time_scores.dropna()
-        
-        if len(time_scores) > 0:
-            fig_time, ax_time = plt.subplots(figsize=(10, 5))
-            ax_time.plot(
-                time_scores["Hour"],
-                time_scores["QA Score"],
-                marker="o",
-                linewidth=2,
-                color="teal",
-            )
-            ax_time.set_xlabel("Hour of Day")
-            ax_time.set_ylabel("Average QA Score (%)")
-            ax_time.set_title("QA Score by Time of Day")
-            ax_time.grid(True, alpha=0.3)
-            ax_time.set_xticks(range(0, 24, 2))
-            plt.tight_layout()
-            st_pyplot_safe(fig_time)
+            time_scores = filtered_df.groupby("Hour")["QA Score"].mean().reset_index()
+            time_scores = time_scores.dropna()
+            
+            if len(time_scores) > 0:
+                fig_time, ax_time = plt.subplots(figsize=(10, 5))
+                ax_time.plot(
+                    time_scores["Hour"],
+                    time_scores["QA Score"],
+                    marker="o",
+                    linewidth=2,
+                    color="teal",
+                )
+                ax_time.set_xlabel("Hour of Day")
+                ax_time.set_ylabel("Average QA Score (%)")
+                ax_time.set_title("QA Score by Time of Day")
+                ax_time.grid(True, alpha=0.3)
+                ax_time.set_xticks(range(0, 24, 2))
+                plt.tight_layout()
+                st_pyplot_safe(fig_time)
         
         with time_col2:
             st.write("**Call Volume by Time of Day**")
@@ -9848,112 +9848,12 @@ with st.expander("Time of Day Analysis", expanded=False):
                     color="orange",
                     alpha=0.7,
                 )
-            ax_time_vol.set_xlabel("Hour of Day")
-            ax_time_vol.set_ylabel("Number of Calls")
-            ax_time_vol.set_title("Call Volume by Time of Day")
-            ax_time_vol.set_xticks(range(0, 24, 2))
-            plt.tight_layout()
-            st_pyplot_safe(fig_time_vol)
-
-# --- Anomaly Detection ---
-with st.expander("Anomaly Detection", expanded=False):
-    st.subheader("Anomaly Detection")
-    if (
-        "QA Score" in filtered_df.columns
-        and "Call Date" in filtered_df.columns
-        and len(filtered_df) > 1
-    ):
-        # Detect anomalies: sudden score drops/spikes
-        filtered_df_sorted = filtered_df.sort_values("Call Date")
-        
-        # Calculate rolling average (last 5 calls)
-        filtered_df_sorted["Rolling_Avg"] = (
-            filtered_df_sorted["QA Score"].rolling(window=5, min_periods=1).mean()
-        )
-        filtered_df_sorted["Score_Change"] = (
-            filtered_df_sorted["QA Score"] - filtered_df_sorted["Rolling_Avg"]
-        )
-        
-        # Define anomaly thresholds
-        anomaly_threshold = 20  # 20 point deviation from rolling average
-        anomalies = filtered_df_sorted[
-            (filtered_df_sorted["Score_Change"].abs() > anomaly_threshold)
-        ].copy()
-        
-        if len(anomalies) > 0:
-            st.warning(f" **{len(anomalies)} anomaly/anomalies detected:**")
-            
-            anomaly_col1, anomaly_col2 = st.columns(2)
-            
-            with anomaly_col1:
-                st.write("**Score Drops (Sudden Decreases)**")
-                drops = anomalies[
-                    anomalies["Score_Change"] < -anomaly_threshold
-                ].sort_values("Score_Change")
-            if len(drops) > 0:
-                drop_display = drops[
-                    ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
-                ].head(10)
-                drop_display["Score_Change"] = drop_display["Score_Change"].apply(
-                    lambda x: f"{x:.1f}%"
-                )
-                st.dataframe(drop_display, hide_index=True)
-            else:
-                st.info("No significant score drops detected")
-            
-            with anomaly_col2:
-                st.write("**Score Spikes (Sudden Increases)**")
-                spikes = anomalies[
-                    anomalies["Score_Change"] > anomaly_threshold
-                ].sort_values("Score_Change", ascending=False)
-                if len(spikes) > 0:
-                    spike_display = spikes[
-                        ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
-                    ].head(10)
-                    spike_display["Score_Change"] = spike_display["Score_Change"].apply(
-                        lambda x: f"+{x:.1f}%"
-                    )
-                    st.dataframe(spike_display, hide_index=True)
-                else:
-                    st.info("No significant score spikes detected")
-            
-            # Anomaly trend chart
-            st.write("**Anomaly Timeline**")
-            fig_anomaly, ax_anomaly = plt.subplots(figsize=(14, 6))
-            ax_anomaly.plot(
-                filtered_df_sorted["Call Date"],
-                filtered_df_sorted["QA Score"],
-                alpha=0.3,
-                label="QA Score",
-                color="gray",
-            )
-            ax_anomaly.plot(
-                filtered_df_sorted["Call Date"],
-                filtered_df_sorted["Rolling_Avg"],
-                label="Rolling Average",
-                color="blue",
-                linewidth=2,
-            )
-            ax_anomaly.scatter(
-                anomalies["Call Date"],
-                anomalies["QA Score"],
-                color="red",
-                s=100,
-                label="Anomalies",
-                zorder=5,
-            )
-            ax_anomaly.set_xlabel("Call Date")
-            ax_anomaly.set_ylabel("QA Score (%)")
-            ax_anomaly.set_title("QA Score with Anomaly Detection")
-            ax_anomaly.legend()
-            ax_anomaly.grid(True, alpha=0.3)
-            plt.xticks(rotation=45, ha="right")
-            plt.tight_layout()
-            st_pyplot_safe(fig_anomaly)
-        else:
-            st.success(" No anomalies detected in the filtered data")
-    else:
-        st.info(" Need at least 2 calls with QA scores to detect anomalies")
+                ax_time_vol.set_xlabel("Hour of Day")
+                ax_time_vol.set_ylabel("Number of Calls")
+                ax_time_vol.set_title("Call Volume by Time of Day")
+                ax_time_vol.set_xticks(range(0, 24, 2))
+                plt.tight_layout()
+                st_pyplot_safe(fig_time_vol)
 
 # --- Advanced Analytics ---
 with st.expander("Advanced Analytics", expanded=False):
