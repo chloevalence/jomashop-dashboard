@@ -1179,7 +1179,7 @@ def extract_cache_key(call):
 
 def migrate_old_cache_format(call_data):
     """
-    Migrate old cache format calls to new format.
+    Migrate old cache format calls to new format and normalize agent IDs.
 
     Old format: _id = filename (causes all rows from same CSV to be treated as duplicates)
     New format: _id = "filename:call_id" (each row is unique)
@@ -1188,12 +1188,13 @@ def migrate_old_cache_format(call_data):
         call_data: List of call dictionaries
 
     Returns:
-        List of migrated call dictionaries
+        List of migrated call dictionaries with normalized agent IDs
     """
     if not call_data:
         return call_data
 
     migrated_count = 0
+    agent_normalized_count = 0
     migrated_calls = []
 
     for call in call_data:
@@ -1230,11 +1231,24 @@ def migrate_old_cache_format(call_data):
                 call["_s3_key"] = filename
             migrated_count += 1
 
+        # CRITICAL: Normalize agent ID in cached data to ensure consistency
+        # This fixes the issue where cached data has old agent IDs like "bpagent030844482"
+        if "agent" in call:
+            original_agent = call.get("agent")
+            normalized_agent = normalize_agent_id(original_agent)
+            if original_agent != normalized_agent:
+                call["agent"] = normalized_agent
+                agent_normalized_count += 1
+
         migrated_calls.append(call)
 
     if migrated_count > 0:
         logger.info(
             f" Migrated {migrated_count} calls from old cache format to new format"
+        )
+    if agent_normalized_count > 0:
+        logger.info(
+            f" Normalized {agent_normalized_count} agent IDs in cached data"
         )
 
     return migrated_calls
@@ -1962,9 +1976,21 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
         elif not isinstance(errors, list):
             raise TypeError(f"errors must be a list, got {type(errors).__name__}")
         
-        # Deduplicate before saving to prevent cache bloat
+        # Deduplicate and normalize agent IDs before saving to prevent cache bloat and ensure consistency
         if call_data:
             original_count = len(call_data)
+            # Normalize agent IDs in all calls before saving
+            agent_normalized_count = 0
+            for call in call_data:
+                if isinstance(call, dict) and "agent" in call:
+                    original_agent = call.get("agent")
+                    normalized_agent = normalize_agent_id(original_agent)
+                    if original_agent != normalized_agent:
+                        call["agent"] = normalized_agent
+                        agent_normalized_count += 1
+            if agent_normalized_count > 0:
+                logger.info(f" Normalized {agent_normalized_count} agent IDs before saving to cache")
+            
             call_data = deduplicate_calls(call_data)
             if len(call_data) < original_count:
                 logger.info(
@@ -2146,8 +2172,17 @@ def load_all_calls_cached(cache_version=0):
     load_in_progress_key = "_data_load_in_progress"
     if st.session_state.get(load_in_progress_key, False):
         logger.warning("Data load already in progress, skipping duplicate load")
+        # Try to return cached data if available instead of empty DataFrame
+        try:
+            disk_result = load_cached_data_from_disk()
+            if disk_result and disk_result[0] and len(disk_result[0]) > 0:
+                migrated = migrate_old_cache_format(disk_result[0])
+                logger.info(f"Returning disk cache during concurrent load: {len(migrated)} calls")
+                return migrated, disk_result[1] if disk_result[1] else []
+        except Exception as e:
+            logger.warning(f"Could not load disk cache during concurrent load: {e}")
         # Return empty data to prevent crash, will retry on next run
-        return pd.DataFrame(), []
+        return [], []
     
     # Mark load as in progress
     st.session_state[load_in_progress_key] = True
@@ -2190,18 +2225,21 @@ def load_all_calls_cached(cache_version=0):
             except Exception as e:
                 logger.warning(f" Could not clear Streamlit cache: {e}")
 
-            # Clear session state cache
-            if "_s3_cache_result" in st.session_state:
-                del st.session_state["_s3_cache_result"]
-            if "_s3_cache_timestamp" in st.session_state:
-                del st.session_state["_s3_cache_timestamp"]
-            if "_merged_cache_data" in st.session_state:
-                del st.session_state["_merged_cache_data"]
-            if "_merged_cache_errors" in st.session_state:
-                del st.session_state["_merged_cache_errors"]
-            if "_merged_cache_data_timestamp" in st.session_state:
-                del st.session_state["_merged_cache_data_timestamp"]
-            logger.info(" Cleared session state cache")
+            # Clear session state cache FIRST to prevent stale data issues
+            try:
+                if "_s3_cache_result" in st.session_state:
+                    del st.session_state["_s3_cache_result"]
+                if "_s3_cache_timestamp" in st.session_state:
+                    del st.session_state["_s3_cache_timestamp"]
+                if "_merged_cache_data" in st.session_state:
+                    del st.session_state["_merged_cache_data"]
+                if "_merged_cache_errors" in st.session_state:
+                    del st.session_state["_merged_cache_errors"]
+                if "_merged_cache_data_timestamp" in st.session_state:
+                    del st.session_state["_merged_cache_data_timestamp"]
+                logger.info(" Cleared session state cache")
+            except Exception as clear_error:
+                logger.warning(f" Error clearing session state cache: {clear_error}")
 
             # DON'T clear the flag here - keep it set so the load knows to load ALL files
             # The flag will be cleared after the load completes successfully
@@ -2723,6 +2761,7 @@ def load_all_calls_cached(cache_version=0):
                 )
 
             # Migrate old cache format to new format before returning
+            # This also normalizes agent IDs in cached data
             if final_call_data:
                 final_call_data = migrate_old_cache_format(final_call_data)
 
@@ -2753,6 +2792,8 @@ def load_all_calls_cached(cache_version=0):
                 logger.warning(
                     f" Reload failed, falling back to disk cache: {len(disk_call_data)} calls"
                 )
+                # Normalize agent IDs in fallback cache
+                disk_call_data = migrate_old_cache_format(disk_call_data)
                 return disk_call_data, [f"Reload failed: {str(e)}. Using cached data."]
             
             # Return empty data with error message only if no fallback available
@@ -5201,6 +5242,10 @@ if is_super_admin():
                     False  # Will be set to True after load completes
                 )
                 
+                # Clear load in progress flag to allow new load
+                if "_data_load_in_progress" in st.session_state:
+                    del st.session_state["_data_load_in_progress"]
+                
                 # Set flag to trigger full load
                 st.session_state["reload_all_triggered"] = True
                 
@@ -5211,9 +5256,11 @@ if is_super_admin():
                 logger.exception(f"Error initiating reload: {e}")
                 st.error(f"❌ Failed to initiate reload: {str(e)}")
                 st.info("Please try again or contact support if the issue persists.")
-                # Clear the flag if there was an error
+                # Clear all flags if there was an error
                 if "reload_all_triggered" in st.session_state:
                     st.session_state["reload_all_triggered"] = False
+                if "_data_load_in_progress" in st.session_state:
+                    del st.session_state["_data_load_in_progress"]
 
 
 # --- Load Rubric Reference ---
