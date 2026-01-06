@@ -9039,10 +9039,10 @@ else:
     # Admin view - agent selection and comparison
     with st.expander("Agent-Specific Performance Trends", expanded=False):
         st.subheader("Agent-Specific Performance Trends")
-    if len(filtered_df) > 0 and len(selected_agents) > 0:
-        agent_trends_col1, agent_trends_col2 = st.columns(2)
-        
-        with agent_trends_col1:
+        if len(filtered_df) > 0 and len(selected_agents) > 0:
+            agent_trends_col1, agent_trends_col2 = st.columns(2)
+            
+            with agent_trends_col1:
                 selected_agent_for_trend = st.selectbox(
                     "Select Agent for Trend Analysis", selected_agents
                 )
@@ -9053,153 +9053,153 @@ else:
                         agent_data.groupby(agent_data["Call Date"].dt.date)
                         .agg(
                             Avg_QA_Score=("QA Score", "mean"),
-                        Call_Count=("Call ID", "count"),
-                        Avg_AHT=("Call Duration (min)", "mean"),
-                    )
-                    .reset_index()
-                )
-                agent_daily.columns = ["Date", "Avg_QA_Score", "Call_Count", "Avg_AHT"]
-                
-                fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
-                ax_agent.plot(
-                    agent_daily["Date"],
-                    agent_daily["Avg_QA_Score"],
-                    marker="o",
-                    linewidth=2,
-                    label="QA Score",
-                )
-                ax_agent.set_xlabel("Date")
-                ax_agent.set_ylabel("Average QA Score (%)")
-                ax_agent.set_title(f"Performance Trend: {selected_agent_for_trend}")
-                ax_agent.grid(True, alpha=0.3)
-                ax_agent.axhline(
-                    y=alert_threshold,
-                    color="r",
-                    linestyle="--",
-                    alpha=0.5,
-                    label="Threshold",
-                )
-                ax_agent.legend()
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                st_pyplot_safe(fig_agent)
-
-                # AHT Trend for selected agent
-                if (
-                    "Call Duration (min)" in agent_data.columns
-                    and agent_daily["Avg_AHT"].notna().any()
-                ):
-                    st.write("**AHT Trend**")
-                    fig_aht_agent, ax_aht_agent = plt.subplots(figsize=(10, 5))
-                    ax_aht_agent.plot(
-                        agent_daily["Date"],
-                        agent_daily["Avg_AHT"],
-                        marker="o",
-                        linewidth=2,
-                        label="AHT",
-                        color="purple",
-                    )
-                    ax_aht_agent.set_xlabel("Date")
-                    ax_aht_agent.set_ylabel("Average Handle Time (min)")
-                    ax_aht_agent.set_title(f"AHT Trend: {selected_agent_for_trend}")
-                    ax_aht_agent.grid(True, alpha=0.3)
-                    ax_aht_agent.legend()
-                    plt.xticks(rotation=45)
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_aht_agent)
-        
-        with agent_trends_col2:
-            # Agent Comparison
-            st.write("**Agent Comparison**")
-            compare_agents = st.multiselect(
-                "Select agents to compare",
-                selected_agents,
-                default=selected_agents[: min(3, len(selected_agents))],
-            )
-            
-            if len(compare_agents) > 0:
-                compare_data = filtered_df[filtered_df["Agent"].isin(compare_agents)]
-                agent_comparison = (
-                    compare_data.groupby("Agent")
-                    .agg(
-                    Avg_QA_Score=("QA Score", "mean"),
-                    Total_Calls=("Call ID", "count"),
-                        Pass_Rate=(
-                            "Rubric Pass Count",
-                            lambda x: (
-                                x.sum()
-                                / (
-                                    x.sum()
-                                    + compare_data.loc[
-                                        x.index, "Rubric Fail Count"
-                                    ].sum()
-                                )
-                                * 100
-                            )
-                            if (
-                                x.sum()
-                                + compare_data.loc[x.index, "Rubric Fail Count"].sum()
-                            )
-                            > 0
-                            else 0,
-                        ),
-                    )
-                    .reset_index()
-                )
-                
-                fig_compare, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-                
-                # QA Score comparison
-                agent_comparison.plot(
-                    x="Agent", y="Avg_QA_Score", kind="bar", ax=ax1, color="steelblue"
-                )
-                ax1.set_ylabel("Avg QA Score (%)")
-                ax1.set_title("Average QA Score Comparison")
-                ax1.axhline(y=alert_threshold, color="r", linestyle="--", alpha=0.5)
-                plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha="right")
-                
-                # Pass Rate comparison
-                agent_comparison.plot(
-                    x="Agent", y="Pass_Rate", kind="bar", ax=ax2, color="green"
-                )
-                ax2.set_ylabel("Pass Rate (%)")
-                ax2.set_title("Pass Rate Comparison")
-                plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha="right")
-                
-                plt.tight_layout()
-                st_pyplot_safe(fig_compare)
-
-                # AHT Comparison
-                if "Call Duration (min)" in compare_data.columns:
-                    agent_aht_comparison = (
-                        compare_data.groupby("Agent")
-                        .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                            Call_Count=("Call ID", "count"),
+                            Avg_AHT=("Call Duration (min)", "mean"),
+                        )
                         .reset_index()
                     )
+                    agent_daily.columns = ["Date", "Avg_QA_Score", "Call_Count", "Avg_AHT"]
+                    
+                    fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
+                    ax_agent.plot(
+                        agent_daily["Date"],
+                        agent_daily["Avg_QA_Score"],
+                        marker="o",
+                        linewidth=2,
+                        label="QA Score",
+                    )
+                    ax_agent.set_xlabel("Date")
+                    ax_agent.set_ylabel("Average QA Score (%)")
+                    ax_agent.set_title(f"Performance Trend: {selected_agent_for_trend}")
+                    ax_agent.grid(True, alpha=0.3)
+                    ax_agent.axhline(
+                        y=alert_threshold,
+                        color="r",
+                        linestyle="--",
+                        alpha=0.5,
+                        label="Threshold",
+                    )
+                    ax_agent.legend()
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_agent)
+
+                    # AHT Trend for selected agent
                     if (
-                        len(agent_aht_comparison) > 0
-                        and agent_aht_comparison["Avg_AHT"].notna().any()
+                        "Call Duration (min)" in agent_data.columns
+                        and agent_daily["Avg_AHT"].notna().any()
                     ):
-                        st.write("**AHT Comparison**")
-                        fig_aht_compare, ax_aht_compare = plt.subplots(figsize=(10, 5))
-                        agent_aht_comparison.plot(
-                            x="Agent",
-                            y="Avg_AHT",
-                            kind="bar",
-                            ax=ax_aht_compare,
+                        st.write("**AHT Trend**")
+                        fig_aht_agent, ax_aht_agent = plt.subplots(figsize=(10, 5))
+                        ax_aht_agent.plot(
+                            agent_daily["Date"],
+                            agent_daily["Avg_AHT"],
+                            marker="o",
+                            linewidth=2,
+                            label="AHT",
                             color="purple",
                         )
-                        ax_aht_compare.set_ylabel("Average Handle Time (min)")
-                        ax_aht_compare.set_title("Average Handle Time Comparison")
-                        plt.setp(
-                            ax_aht_compare.xaxis.get_majorticklabels(),
-                            rotation=45,
-                            ha="right",
-                        )
+                        ax_aht_agent.set_xlabel("Date")
+                        ax_aht_agent.set_ylabel("Average Handle Time (min)")
+                        ax_aht_agent.set_title(f"AHT Trend: {selected_agent_for_trend}")
+                        ax_aht_agent.grid(True, alpha=0.3)
+                        ax_aht_agent.legend()
+                        plt.xticks(rotation=45)
                         plt.tight_layout()
-                        st_pyplot_safe(fig_aht_compare)
-                    else:
-                        st.info("No agent data available for trend analysis")
+                        st_pyplot_safe(fig_aht_agent)
+            
+            with agent_trends_col2:
+                # Agent Comparison
+                st.write("**Agent Comparison**")
+                compare_agents = st.multiselect(
+                    "Select agents to compare",
+                    selected_agents,
+                    default=selected_agents[: min(3, len(selected_agents))],
+                )
+                
+                if len(compare_agents) > 0:
+                    compare_data = filtered_df[filtered_df["Agent"].isin(compare_agents)]
+                    agent_comparison = (
+                        compare_data.groupby("Agent")
+                        .agg(
+                            Avg_QA_Score=("QA Score", "mean"),
+                            Total_Calls=("Call ID", "count"),
+                            Pass_Rate=(
+                                "Rubric Pass Count",
+                                lambda x: (
+                                    x.sum()
+                                    / (
+                                        x.sum()
+                                        + compare_data.loc[
+                                            x.index, "Rubric Fail Count"
+                                        ].sum()
+                                    )
+                                    * 100
+                                )
+                                if (
+                                    x.sum()
+                                    + compare_data.loc[x.index, "Rubric Fail Count"].sum()
+                                )
+                                > 0
+                                else 0,
+                            ),
+                        )
+                        .reset_index()
+                    )
+                    
+                    fig_compare, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                    
+                    # QA Score comparison
+                    agent_comparison.plot(
+                        x="Agent", y="Avg_QA_Score", kind="bar", ax=ax1, color="steelblue"
+                    )
+                    ax1.set_ylabel("Avg QA Score (%)")
+                    ax1.set_title("Average QA Score Comparison")
+                    ax1.axhline(y=alert_threshold, color="r", linestyle="--", alpha=0.5)
+                    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha="right")
+                    
+                    # Pass Rate comparison
+                    agent_comparison.plot(
+                        x="Agent", y="Pass_Rate", kind="bar", ax=ax2, color="green"
+                    )
+                    ax2.set_ylabel("Pass Rate (%)")
+                    ax2.set_title("Pass Rate Comparison")
+                    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha="right")
+                    
+                    plt.tight_layout()
+                    st_pyplot_safe(fig_compare)
+
+                    # AHT Comparison
+                    if "Call Duration (min)" in compare_data.columns:
+                        agent_aht_comparison = (
+                            compare_data.groupby("Agent")
+                            .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                            .reset_index()
+                        )
+                        if (
+                            len(agent_aht_comparison) > 0
+                            and agent_aht_comparison["Avg_AHT"].notna().any()
+                        ):
+                            st.write("**AHT Comparison**")
+                            fig_aht_compare, ax_aht_compare = plt.subplots(figsize=(10, 5))
+                            agent_aht_comparison.plot(
+                                x="Agent",
+                                y="Avg_AHT",
+                                kind="bar",
+                                ax=ax_aht_compare,
+                                color="purple",
+                            )
+                            ax_aht_compare.set_ylabel("Average Handle Time (min)")
+                            ax_aht_compare.set_title("Average Handle Time Comparison")
+                            plt.setp(
+                                ax_aht_compare.xaxis.get_majorticklabels(),
+                                rotation=45,
+                                ha="right",
+                            )
+                            plt.tight_layout()
+                            st_pyplot_safe(fig_aht_compare)
+                else:
+                    st.info("No agent data available for trend analysis")
 
 # --- QA Score Distribution and Label Distribution ---
 with st.expander("Score & Label Distribution Analysis", expanded=False):
@@ -9416,57 +9416,57 @@ with st.expander("Coaching Insights", expanded=False):
 # --- Full Rubric Reference ---
 with st.expander("QA Rubric Reference", expanded=False):
     st.subheader("QA Rubric Reference")
-if rubric_data:
-    col_rubric_header1, col_rubric_header2 = st.columns([3, 1])
-    with col_rubric_header1:
+    if rubric_data:
+        col_rubric_header1, col_rubric_header2 = st.columns([3, 1])
+        with col_rubric_header1:
             st.info(
                 f" Complete rubric with {len(rubric_data)} items. Use the tabs below to browse by section or search all items."
             )
-    with col_rubric_header2:
-        # Load and serve the pre-formatted Excel rubric file
-        try:
-            import os
+        with col_rubric_header2:
+            # Load and serve the pre-formatted Excel rubric file
+            try:
+                import os
 
-            rubric_excel_path = os.path.join(
-                os.path.dirname(__file__), "Separatetab-rubric33.xlsx"
-            )
-            if os.path.exists(rubric_excel_path):
-                with open(rubric_excel_path, "rb") as f:
-                    rubric_excel_bytes = f.read()
-                
-                st.download_button(
-                    label=" Download Rubric (Excel)",
-                    data=rubric_excel_bytes,
-                    file_name="QA_Rubric_v33.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                rubric_excel_path = os.path.join(
+                    os.path.dirname(__file__), "Separatetab-rubric33.xlsx"
                 )
-            else:
-                st.warning(" Rubric Excel file not found")
-                st.info(
-                    "Place 'Separatetab-rubric33.xlsx' in the dashboard directory"
-                )
-        except Exception as e:
-            st.error(f"Error loading rubric Excel: {e}")
-    
+                if os.path.exists(rubric_excel_path):
+                    with open(rubric_excel_path, "rb") as f:
+                        rubric_excel_bytes = f.read()
+                    
+                    st.download_button(
+                        label=" Download Rubric (Excel)",
+                        data=rubric_excel_bytes,
+                        file_name="QA_Rubric_v33.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                else:
+                    st.warning(" Rubric Excel file not found")
+                    st.info(
+                        "Place 'Separatetab-rubric33.xlsx' in the dashboard directory"
+                    )
+            except Exception as e:
+                st.error(f"Error loading rubric Excel: {e}")
+        
         rubric_tab1, rubric_tab2 = st.tabs([" Search All Items", " Browse by Section"])
-    
-    with rubric_tab1:
-        # Search interface
-        col_search1, col_search2 = st.columns([3, 1])
-        with col_search1:
+        
+        with rubric_tab1:
+            # Search interface
+            col_search1, col_search2 = st.columns([3, 1])
+            with col_search1:
                 rubric_search = st.text_input(
                     " Search rubric",
                     placeholder="Enter code (e.g., 1.1.0), section, item, or criterion...",
                     key="full_rubric_search",
                 )
-        with col_search2:
+            with col_search2:
                 show_all = st.checkbox(
                     "Show all", value=not bool(rubric_search), key="show_all_rubric"
                 )
         
-        if rubric_search and not show_all:
-            search_lower = rubric_search.lower()
-            filtered_items = [
+            if rubric_search and not show_all:
+                search_lower = rubric_search.lower()
+                filtered_items = [
                     item
                     for item in rubric_data
                     if (
@@ -9475,99 +9475,36 @@ if rubric_data:
                         or search_lower in item.get("item", "").lower()
                         or search_lower in item.get("criterion", "").lower()
                     )
-            ]
-            st.write(f"**Found {len(filtered_items)} matching items**")
-        else:
-            filtered_items = rubric_data
-            st.write(f"**All {len(rubric_data)} rubric items**")
-        
-        # Display filtered items with pagination
-        items_per_page = 20
-        if len(filtered_items) > items_per_page:
-            total_pages = (len(filtered_items) - 1) // items_per_page + 1
-            page_num = st.number_input(
-                f"Page (1-{total_pages})",
-                min_value=1,
-                max_value=total_pages,
-                value=1,
-                key="rubric_page",
-            )
-            start_idx = (page_num - 1) * items_per_page
-            end_idx = start_idx + items_per_page
-            display_items = filtered_items[start_idx:end_idx]
-            st.caption(
+                ]
+                st.write(f"**Found {len(filtered_items)} matching items**")
+            else:
+                filtered_items = rubric_data
+                st.write(f"**All {len(rubric_data)} rubric items**")
+            
+            # Display filtered items with pagination
+            items_per_page = 20
+            if len(filtered_items) > items_per_page:
+                total_pages = (len(filtered_items) - 1) // items_per_page + 1
+                page_num = st.number_input(
+                    f"Page (1-{total_pages})",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=1,
+                    key="rubric_page",
+                )
+                start_idx = (page_num - 1) * items_per_page
+                end_idx = start_idx + items_per_page
+                display_items = filtered_items[start_idx:end_idx]
+                st.caption(
                     f"Showing items {start_idx + 1}-{min(end_idx, len(filtered_items))} of {len(filtered_items)}"
                 )
-        else:
-            display_items = filtered_items
-        
-        # Display items
-        for item in display_items:
-            with st.expander(
-                f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | {item.get('section', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
-                expanded=False,
-            ):
-                st.write(f"**Section:** {item.get('section', 'N/A')}")
-                st.write(f"**Item:** {item.get('item', 'N/A')}")
-                st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
-                st.write(f"**Weight:** {item.get('weight', 'N/A')}")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.markdown("** Pass Criteria:**")
-                    st.info(item.get("pass", "N/A"))
-                with col2:
-                    st.markdown("** Fail Criteria:**")
-                    st.error(item.get("fail", "N/A"))
-                with col3:
-                    st.markdown("**N/A Criteria:**")
-                    st.warning(item.get("na", "N/A"))
-
-                if item.get("agent_script_example"):
-                    st.markdown("**Agent Script Example:**")
-                    st.code(item.get("agent_script_example"), language=None)
-    
-    with rubric_tab2:
-        # Group by section
-        sections = {}
-        for item in rubric_data:
-            section = item.get("section", "Other")
-            if section not in sections:
-                sections[section] = []
-            sections[section].append(item)
-        
-        selected_section = st.selectbox(
-            "Select Section", sorted(sections.keys()), key="rubric_section"
-        )
-        
-        if selected_section:
-            section_items = sections[selected_section]
-            st.write(f"**{len(section_items)} items in {selected_section}**")
-            
-            # Pagination for section items too
-            if len(section_items) > items_per_page:
-                section_total_pages = (len(section_items) - 1) // items_per_page + 1
-                section_page_num = st.number_input(
-                    f"Page (1-{section_total_pages})",
-                    min_value=1,
-                    max_value=section_total_pages,
-                    value=1,
-                    key="section_page",
-                )
-                section_start_idx = (section_page_num - 1) * items_per_page
-                section_end_idx = section_start_idx + items_per_page
-                display_section_items = section_items[
-                    section_start_idx:section_end_idx
-                ]
-                st.caption(
-                    f"Showing items {section_start_idx + 1}-{min(section_end_idx, len(section_items))} of {len(section_items)}"
-                )
             else:
-                display_section_items = section_items
+                display_items = filtered_items
             
-            for item in display_section_items:
+            # Display items
+            for item in display_items:
                 with st.expander(
-                    f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
+                    f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | {item.get('section', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
                     expanded=False,
                 ):
                     st.write(f"**Section:** {item.get('section', 'N/A')}")
@@ -9575,21 +9512,78 @@ if rubric_data:
                     st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
                     st.write(f"**Weight:** {item.get('weight', 'N/A')}")
                     
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.markdown("** Pass Criteria:**")
-                        st.info(item.get("pass", "N/A"))
-                    with col2:
-                        st.markdown("** Fail Criteria:**")
-                        st.error(item.get("fail", "N/A"))
-                    with col3:
-                        st.markdown("**N/A Criteria:**")
-                        st.warning(item.get("na", "N/A"))
+                    # Full width display for criteria
+                    st.markdown("** Pass Criteria:**")
+                    st.info(item.get("pass", "N/A"))
+                    st.markdown("** Fail Criteria:**")
+                    st.error(item.get("fail", "N/A"))
+                    st.markdown("**N/A Criteria:**")
+                    st.warning(item.get("na", "N/A"))
 
                     if item.get("agent_script_example"):
                         st.markdown("**Agent Script Example:**")
                         st.code(item.get("agent_script_example"), language=None)
-else:
+        
+        with rubric_tab2:
+            # Group by section
+            sections = {}
+            for item in rubric_data:
+                section = item.get("section", "Other")
+                if section not in sections:
+                    sections[section] = []
+                sections[section].append(item)
+            
+            selected_section = st.selectbox(
+                "Select Section", sorted(sections.keys()), key="rubric_section"
+            )
+            
+            if selected_section:
+                section_items = sections[selected_section]
+                st.write(f"**{len(section_items)} items in {selected_section}**")
+                
+                # Pagination for section items too
+                if len(section_items) > items_per_page:
+                    section_total_pages = (len(section_items) - 1) // items_per_page + 1
+                    section_page_num = st.number_input(
+                        f"Page (1-{section_total_pages})",
+                        min_value=1,
+                        max_value=section_total_pages,
+                        value=1,
+                        key="section_page",
+                    )
+                    section_start_idx = (section_page_num - 1) * items_per_page
+                    section_end_idx = section_start_idx + items_per_page
+                    display_section_items = section_items[
+                        section_start_idx:section_end_idx
+                    ]
+                    st.caption(
+                        f"Showing items {section_start_idx + 1}-{min(section_end_idx, len(section_items))} of {len(section_items)}"
+                    )
+                else:
+                    display_section_items = section_items
+                
+                for item in display_section_items:
+                    with st.expander(
+                        f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
+                        expanded=False,
+                    ):
+                        st.write(f"**Section:** {item.get('section', 'N/A')}")
+                        st.write(f"**Item:** {item.get('item', 'N/A')}")
+                        st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
+                        st.write(f"**Weight:** {item.get('weight', 'N/A')}")
+                        
+                        # Full width display for criteria
+                        st.markdown("** Pass Criteria:**")
+                        st.info(item.get("pass", "N/A"))
+                        st.markdown("** Fail Criteria:**")
+                        st.error(item.get("fail", "N/A"))
+                        st.markdown("**N/A Criteria:**")
+                        st.warning(item.get("na", "N/A"))
+                        
+                        if item.get("agent_script_example"):
+                            st.markdown("**Agent Script Example:**")
+                            st.code(item.get("agent_script_example"), language=None)
+    else:
         st.warning(
             " Rubric file not found. Please ensure 'Rubric_v33.json' is in the dashboard directory."
         )
