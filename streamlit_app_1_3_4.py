@@ -6147,21 +6147,23 @@ try:
                     st.error(f"**Error:** {str(e)}")
                     st.error("The app may be trying to load too many files at once.")
                     st.info(" **Try this:**")
-            st.info("1. **Refresh the page** - if cache exists, it will load instantly")
-            st.info(
-                "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
-            )
-            st.info("3. Wait a few minutes and refresh the page")
-            st.info("4. Check the terminal/logs for detailed errors")
-            with st.expander("Show full error details"):
-                import traceback
+                    st.info(
+                        "1. **Refresh the page** - if cache exists, it will load instantly"
+                    )
+                    st.info(
+                        "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
+                    )
+                    st.info("3. Wait a few minutes and refresh the page")
+                    st.info("4. Check the terminal/logs for detailed errors")
+                    with st.expander("Show full error details"):
+                        import traceback
 
-                st.code(traceback.format_exc())
-            st.stop()
+                        st.code(traceback.format_exc())
+                    st.stop()
 
-        # Clear progress after loading
+        # Clear progress after loading (only if progress_placeholder was created)
         was_processing = st.session_state.csv_processing_progress.get("total", 0) > 0
-        if was_processing:
+        if was_processing and "progress_placeholder" in locals():
             progress_placeholder.empty()
             st.session_state.csv_processing_progress = {
                 "processed": 0,
