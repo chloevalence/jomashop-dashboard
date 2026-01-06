@@ -4306,14 +4306,14 @@ if auth_status is None:
             st.markdown("---")
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("**🔄 Retry Now**", type="primary", use_container_width=True):
+                if st.button("**🔄 Retry Now**", type="primary", width='stretch'):
                     # Clear session state to force re-initialization
                     if "authenticator_retry_count" not in st.session_state:
                         st.session_state.authenticator_retry_count = 0
                     st.session_state.authenticator_retry_count += 1
                     st.rerun()
             with col2:
-                if st.button("**🔄 Hard Refresh**", use_container_width=True):
+                if st.button("**🔄 Hard Refresh**", width='stretch'):
                     # Clear more aggressively
                     st.session_state.clear()
                 st.rerun()
@@ -9421,7 +9421,7 @@ with st.expander("Coaching Insights", expanded=False):
                     columns=["Coaching Suggestion", "Frequency"],
                 )
                 st.write("**Most Common Coaching Suggestions**")
-                st.dataframe(top_coaching, use_container_width=True)
+                st.dataframe(top_coaching, width='stretch')
                 
             elif selected_insight == "Coaching by Category":
                 # Categorize all coaching suggestions
@@ -9437,7 +9437,7 @@ with st.expander("Coaching Insights", expanded=False):
                 col_cat1, col_cat2 = st.columns(2)
                 with col_cat1:
                     st.write("**Coaching Suggestions by Category**")
-                    st.dataframe(category_df, use_container_width=True)
+                    st.dataframe(category_df, width='stretch')
                 
                 with col_cat2:
                     fig_cat, ax_cat = plt.subplots(figsize=(8, 6))
@@ -9478,7 +9478,7 @@ with st.expander("Coaching Insights", expanded=False):
                 )
                 all_coaching_df["Percentage"] = (all_coaching_df["Frequency"] / len(all_coaching) * 100).round(1)
                 st.write(f"**All Coaching Suggestions ({len(all_coaching_df)} unique suggestions)**")
-                st.dataframe(all_coaching_df, use_container_width=True)
+                st.dataframe(all_coaching_df, width='stretch')
         else:
             st.info("No coaching suggestions found in the filtered data.")
     else:
