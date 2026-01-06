@@ -9226,37 +9226,37 @@ with st.expander("Score & Label Distribution Analysis", expanded=False):
             )
         ax_dist.legend()
         plt.tight_layout()
-            st_pyplot_safe(fig_dist)
+        st_pyplot_safe(fig_dist)
 
 with col_right:
         st.subheader("Label Distribution")
-    if "Label" in filtered_df.columns:
-        label_counts = filtered_df["Label"].value_counts()
-        fig_label, ax_label = plt.subplots(figsize=(8, 5))
-        label_counts.plot(kind="bar", ax=ax_label, color="steelblue")
-        ax_label.set_xlabel("Label")
-        ax_label.set_ylabel("Number of Calls")
-        ax_label.set_title("Call Labels Distribution")
-        plt.xticks(rotation=45)
-        plt.tight_layout()
+        if "Label" in filtered_df.columns:
+            label_counts = filtered_df["Label"].value_counts()
+            fig_label, ax_label = plt.subplots(figsize=(8, 5))
+            label_counts.plot(kind="bar", ax=ax_label, color="steelblue")
+            ax_label.set_xlabel("Label")
+            ax_label.set_ylabel("Number of Calls")
+            ax_label.set_title("Call Labels Distribution")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
             st_pyplot_safe(fig_label)
 
 # --- Coaching Insights Aggregation ---
 with st.expander("Coaching Insights", expanded=False):
     st.subheader("Coaching Insights")
     
-if "Coaching Suggestions" in filtered_df.columns:
+    if "Coaching Suggestions" in filtered_df.columns:
         # Collect all coaching suggestions
-    all_coaching = []
-    for idx, row in filtered_df.iterrows():
-        coaching = row.get("Coaching Suggestions", [])
-        if isinstance(coaching, list):
+        all_coaching = []
+        for idx, row in filtered_df.iterrows():
+            coaching = row.get("Coaching Suggestions", [])
+            if isinstance(coaching, list):
                 all_coaching.extend([c for c in coaching if c and str(c).strip()])
-        elif isinstance(coaching, str) and coaching:
-            all_coaching.append(coaching)
-    
-    if all_coaching:
-        from collections import Counter
+            elif isinstance(coaching, str) and coaching:
+                all_coaching.append(coaching)
+        
+        if all_coaching:
+            from collections import Counter
 
             # Function to categorize coaching suggestions (matches the logic from AHT analysis)
             def categorize_coaching(text, text_type="coaching"):
@@ -9344,14 +9344,14 @@ if "Coaching Suggestions" in filtered_df.columns:
                 key="coaching_insights_select"
             )
 
-        coaching_counts = Counter(all_coaching)
+            coaching_counts = Counter(all_coaching)
             
             if selected_insight == "Most Common Coaching Suggestions":
-        top_coaching = pd.DataFrame(
-            coaching_counts.most_common(10),
+                top_coaching = pd.DataFrame(
+                    coaching_counts.most_common(10),
                     columns=["Coaching Suggestion", "Frequency"],
-        )
-            st.write("**Most Common Coaching Suggestions**")
+                )
+                st.write("**Most Common Coaching Suggestions**")
                 st.dataframe(top_coaching, use_container_width=True)
                 
             elif selected_insight == "Coaching by Category":
@@ -9397,9 +9397,9 @@ if "Coaching Suggestions" in filtered_df.columns:
                     ax=ax_coach,
                     color="orange",
                 )
-            ax_coach.set_xlabel("Frequency")
-            ax_coach.set_title("Top 10 Coaching Suggestions")
-            plt.tight_layout()
+                ax_coach.set_xlabel("Frequency")
+                ax_coach.set_title("Top 10 Coaching Suggestions")
+                plt.tight_layout()
                 st_pyplot_safe(fig_coach)
                 
             elif selected_insight == "All Coaching Suggestions":
@@ -9410,8 +9410,8 @@ if "Coaching Suggestions" in filtered_df.columns:
                 all_coaching_df["Percentage"] = (all_coaching_df["Frequency"] / len(all_coaching) * 100).round(1)
                 st.write(f"**All Coaching Suggestions ({len(all_coaching_df)} unique suggestions)**")
                 st.dataframe(all_coaching_df, use_container_width=True)
-    else:
-        st.info("No coaching suggestions found in the filtered data.")
+        else:
+            st.info("No coaching suggestions found in the filtered data.")
     else:
         st.info("Coaching Suggestions column not found in the data.")
 
@@ -9429,24 +9429,24 @@ if rubric_data:
         try:
             import os
 
-                rubric_excel_path = os.path.join(
-                    os.path.dirname(__file__), "Separatetab-rubric33.xlsx"
-                )
+            rubric_excel_path = os.path.join(
+                os.path.dirname(__file__), "Separatetab-rubric33.xlsx"
+            )
             if os.path.exists(rubric_excel_path):
-                    with open(rubric_excel_path, "rb") as f:
+                with open(rubric_excel_path, "rb") as f:
                     rubric_excel_bytes = f.read()
                 
                 st.download_button(
-                        label=" Download Rubric (Excel)",
+                    label=" Download Rubric (Excel)",
                     data=rubric_excel_bytes,
                     file_name="QA_Rubric_v33.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             else:
-                    st.warning(" Rubric Excel file not found")
-                    st.info(
-                        "Place 'Separatetab-rubric33.xlsx' in the dashboard directory"
-                    )
+                st.warning(" Rubric Excel file not found")
+                st.info(
+                    "Place 'Separatetab-rubric33.xlsx' in the dashboard directory"
+                )
         except Exception as e:
             st.error(f"Error loading rubric Excel: {e}")
     
@@ -9487,17 +9487,17 @@ if rubric_data:
         items_per_page = 20
         if len(filtered_items) > items_per_page:
             total_pages = (len(filtered_items) - 1) // items_per_page + 1
-                page_num = st.number_input(
-                    f"Page (1-{total_pages})",
-                    min_value=1,
-                    max_value=total_pages,
-                    value=1,
-                    key="rubric_page",
-                )
+            page_num = st.number_input(
+                f"Page (1-{total_pages})",
+                min_value=1,
+                max_value=total_pages,
+                value=1,
+                key="rubric_page",
+            )
             start_idx = (page_num - 1) * items_per_page
             end_idx = start_idx + items_per_page
             display_items = filtered_items[start_idx:end_idx]
-                st.caption(
+            st.caption(
                     f"Showing items {start_idx + 1}-{min(end_idx, len(filtered_items))} of {len(filtered_items)}"
                 )
         else:
@@ -9505,10 +9505,10 @@ if rubric_data:
         
         # Display items
         for item in display_items:
-                with st.expander(
-                    f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | {item.get('section', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
-                    expanded=False,
-                ):
+            with st.expander(
+                f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | {item.get('section', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
+                expanded=False,
+            ):
                 st.write(f"**Section:** {item.get('section', 'N/A')}")
                 st.write(f"**Item:** {item.get('item', 'N/A')}")
                 st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
@@ -9516,31 +9516,31 @@ if rubric_data:
                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                        st.markdown("** Pass Criteria:**")
-                        st.info(item.get("pass", "N/A"))
+                    st.markdown("** Pass Criteria:**")
+                    st.info(item.get("pass", "N/A"))
                 with col2:
-                        st.markdown("** Fail Criteria:**")
-                        st.error(item.get("fail", "N/A"))
+                    st.markdown("** Fail Criteria:**")
+                    st.error(item.get("fail", "N/A"))
                 with col3:
-                        st.markdown("**N/A Criteria:**")
-                        st.warning(item.get("na", "N/A"))
+                    st.markdown("**N/A Criteria:**")
+                    st.warning(item.get("na", "N/A"))
 
-                    if item.get("agent_script_example"):
-                        st.markdown("**Agent Script Example:**")
-                        st.code(item.get("agent_script_example"), language=None)
+                if item.get("agent_script_example"):
+                    st.markdown("**Agent Script Example:**")
+                    st.code(item.get("agent_script_example"), language=None)
     
     with rubric_tab2:
         # Group by section
         sections = {}
         for item in rubric_data:
-                section = item.get("section", "Other")
+            section = item.get("section", "Other")
             if section not in sections:
                 sections[section] = []
             sections[section].append(item)
         
-            selected_section = st.selectbox(
-                "Select Section", sorted(sections.keys()), key="rubric_section"
-            )
+        selected_section = st.selectbox(
+            "Select Section", sorted(sections.keys()), key="rubric_section"
+        )
         
         if selected_section:
             section_items = sections[selected_section]
@@ -9549,29 +9549,29 @@ if rubric_data:
             # Pagination for section items too
             if len(section_items) > items_per_page:
                 section_total_pages = (len(section_items) - 1) // items_per_page + 1
-                    section_page_num = st.number_input(
-                        f"Page (1-{section_total_pages})",
-                        min_value=1,
-                        max_value=section_total_pages,
-                        value=1,
-                        key="section_page",
-                    )
+                section_page_num = st.number_input(
+                    f"Page (1-{section_total_pages})",
+                    min_value=1,
+                    max_value=section_total_pages,
+                    value=1,
+                    key="section_page",
+                )
                 section_start_idx = (section_page_num - 1) * items_per_page
                 section_end_idx = section_start_idx + items_per_page
-                    display_section_items = section_items[
-                        section_start_idx:section_end_idx
-                    ]
-                    st.caption(
-                        f"Showing items {section_start_idx + 1}-{min(section_end_idx, len(section_items))} of {len(section_items)}"
-                    )
+                display_section_items = section_items[
+                    section_start_idx:section_end_idx
+                ]
+                st.caption(
+                    f"Showing items {section_start_idx + 1}-{min(section_end_idx, len(section_items))} of {len(section_items)}"
+                )
             else:
                 display_section_items = section_items
             
             for item in display_section_items:
-                    with st.expander(
-                        f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
-                        expanded=False,
-                    ):
+                with st.expander(
+                    f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
+                    expanded=False,
+                ):
                     st.write(f"**Section:** {item.get('section', 'N/A')}")
                     st.write(f"**Item:** {item.get('item', 'N/A')}")
                     st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
@@ -9579,18 +9579,18 @@ if rubric_data:
                     
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                            st.markdown("** Pass Criteria:**")
-                            st.info(item.get("pass", "N/A"))
+                        st.markdown("** Pass Criteria:**")
+                        st.info(item.get("pass", "N/A"))
                     with col2:
-                            st.markdown("** Fail Criteria:**")
-                            st.error(item.get("fail", "N/A"))
+                        st.markdown("** Fail Criteria:**")
+                        st.error(item.get("fail", "N/A"))
                     with col3:
-                            st.markdown("**N/A Criteria:**")
-                            st.warning(item.get("na", "N/A"))
+                        st.markdown("**N/A Criteria:**")
+                        st.warning(item.get("na", "N/A"))
 
-                        if item.get("agent_script_example"):
-                            st.markdown("**Agent Script Example:**")
-                            st.code(item.get("agent_script_example"), language=None)
+                    if item.get("agent_script_example"):
+                        st.markdown("**Agent Script Example:**")
+                        st.code(item.get("agent_script_example"), language=None)
 else:
         st.warning(
             " Rubric file not found. Please ensure 'Rubric_v33.json' is in the dashboard directory."
@@ -9785,60 +9785,60 @@ if len(filtered_df) > 0:
     
     with vol_col1:
         st.write("**Call Volume by Agent**")
-            agent_volume = (
-                filtered_df.groupby("Agent")
-                .agg(
-                    Total_Calls=("Call ID", "count"), Avg_QA_Score=("QA Score", "mean")
-                )
-                .reset_index()
-                .sort_values("Total_Calls", ascending=False)
+        agent_volume = (
+            filtered_df.groupby("Agent")
+            .agg(
+                Total_Calls=("Call ID", "count"), Avg_QA_Score=("QA Score", "mean")
+            )
+            .reset_index()
+            .sort_values("Total_Calls", ascending=False)
             )
         
         fig_vol, ax_vol = plt.subplots(figsize=(10, 6))
-            agent_volume.plot(
-                x="Agent", y="Total_Calls", kind="bar", ax=ax_vol, color="steelblue"
-            )
+        agent_volume.plot(
+            x="Agent", y="Total_Calls", kind="bar", ax=ax_vol, color="steelblue"
+        )
         ax_vol.set_ylabel("Number of Calls")
         ax_vol.set_xlabel("Agent")
         ax_vol.set_title("Call Volume by Agent")
-            plt.xticks(rotation=45, ha="right")
+        plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
-            st_pyplot_safe(fig_vol)
+        st_pyplot_safe(fig_vol)
     
     with vol_col2:
         st.write("**Call Volume Over Time**")
-            daily_volume = (
-                filtered_df.groupby(filtered_df["Call Date"].dt.date)
-                .size()
-                .reset_index()
-            )
+        daily_volume = (
+            filtered_df.groupby(filtered_df["Call Date"].dt.date)
+            .size()
+            .reset_index()
+        )
         daily_volume.columns = ["Date", "Call Count"]
         
         fig_vol_time, ax_vol_time = plt.subplots(figsize=(10, 5))
-            ax_vol_time.plot(
-                daily_volume["Date"],
-                daily_volume["Call Count"],
-                marker="o",
-                linewidth=2,
-                color="purple",
-            )
+        ax_vol_time.plot(
+            daily_volume["Date"],
+            daily_volume["Call Count"],
+            marker="o",
+            linewidth=2,
+            color="purple",
+        )
         ax_vol_time.set_xlabel("Date")
         ax_vol_time.set_ylabel("Number of Calls")
         ax_vol_time.set_title("Call Volume Trend Over Time")
         ax_vol_time.grid(True, alpha=0.3)
         plt.xticks(rotation=45)
         plt.tight_layout()
-            st_pyplot_safe(fig_vol_time)
+        st_pyplot_safe(fig_vol_time)
 
 # --- Time of Day Analysis ---
 with st.expander("Time of Day Analysis", expanded=False):
     st.subheader("Time of Day Analysis")
-if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
-    time_col1, time_col2 = st.columns(2)
-    
-    with time_col1:
-        st.write("**QA Score by Time of Day**")
-        # Extract hour from time
+    if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
+        time_col1, time_col2 = st.columns(2)
+        
+        with time_col1:
+            st.write("**QA Score by Time of Day**")
+            # Extract hour from time
             filtered_df["Hour"] = pd.to_datetime(
                 filtered_df["Call Time"], format="%H:%M:%S", errors="coerce"
             ).dt.hour
@@ -9847,29 +9847,29 @@ if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
         
         if len(time_scores) > 0:
             fig_time, ax_time = plt.subplots(figsize=(10, 5))
-                ax_time.plot(
-                    time_scores["Hour"],
-                    time_scores["QA Score"],
-                    marker="o",
-                    linewidth=2,
-                    color="teal",
-                )
+            ax_time.plot(
+                time_scores["Hour"],
+                time_scores["QA Score"],
+                marker="o",
+                linewidth=2,
+                color="teal",
+            )
             ax_time.set_xlabel("Hour of Day")
             ax_time.set_ylabel("Average QA Score (%)")
             ax_time.set_title("QA Score by Time of Day")
             ax_time.grid(True, alpha=0.3)
             ax_time.set_xticks(range(0, 24, 2))
             plt.tight_layout()
-                st_pyplot_safe(fig_time)
-    
-    with time_col2:
-        st.write("**Call Volume by Time of Day**")
-        time_volume = filtered_df.groupby("Hour").size().reset_index()
-        time_volume.columns = ["Hour", "Call Count"]
-        time_volume = time_volume.dropna()
+            st_pyplot_safe(fig_time)
         
-        if len(time_volume) > 0:
-            fig_time_vol, ax_time_vol = plt.subplots(figsize=(10, 5))
+        with time_col2:
+            st.write("**Call Volume by Time of Day**")
+            time_volume = filtered_df.groupby("Hour").size().reset_index()
+            time_volume.columns = ["Hour", "Call Count"]
+            time_volume = time_volume.dropna()
+            
+            if len(time_volume) > 0:
+                fig_time_vol, ax_time_vol = plt.subplots(figsize=(10, 5))
                 ax_time_vol.bar(
                     time_volume["Hour"],
                     time_volume["Call Count"],
@@ -9881,7 +9881,7 @@ if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
             ax_time_vol.set_title("Call Volume by Time of Day")
             ax_time_vol.set_xticks(range(0, 24, 2))
             plt.tight_layout()
-                st_pyplot_safe(fig_time_vol)
+            st_pyplot_safe(fig_time_vol)
 
 # --- Anomaly Detection ---
 with st.expander("Anomaly Detection", expanded=False):
@@ -9891,56 +9891,56 @@ with st.expander("Anomaly Detection", expanded=False):
         and "Call Date" in filtered_df.columns
         and len(filtered_df) > 1
     ):
-    # Detect anomalies: sudden score drops/spikes
-    filtered_df_sorted = filtered_df.sort_values("Call Date")
-    
-    # Calculate rolling average (last 5 calls)
+        # Detect anomalies: sudden score drops/spikes
+        filtered_df_sorted = filtered_df.sort_values("Call Date")
+        
+        # Calculate rolling average (last 5 calls)
         filtered_df_sorted["Rolling_Avg"] = (
             filtered_df_sorted["QA Score"].rolling(window=5, min_periods=1).mean()
         )
         filtered_df_sorted["Score_Change"] = (
             filtered_df_sorted["QA Score"] - filtered_df_sorted["Rolling_Avg"]
         )
-    
-    # Define anomaly thresholds
-    anomaly_threshold = 20  # 20 point deviation from rolling average
-    anomalies = filtered_df_sorted[
-        (filtered_df_sorted["Score_Change"].abs() > anomaly_threshold)
-    ].copy()
-    
-    if len(anomalies) > 0:
+        
+        # Define anomaly thresholds
+        anomaly_threshold = 20  # 20 point deviation from rolling average
+        anomalies = filtered_df_sorted[
+            (filtered_df_sorted["Score_Change"].abs() > anomaly_threshold)
+        ].copy()
+        
+        if len(anomalies) > 0:
             st.warning(f" **{len(anomalies)} anomaly/anomalies detected:**")
-        
-        anomaly_col1, anomaly_col2 = st.columns(2)
-        
-        with anomaly_col1:
-            st.write("**Score Drops (Sudden Decreases)**")
+            
+            anomaly_col1, anomaly_col2 = st.columns(2)
+            
+            with anomaly_col1:
+                st.write("**Score Drops (Sudden Decreases)**")
                 drops = anomalies[
                     anomalies["Score_Change"] < -anomaly_threshold
                 ].sort_values("Score_Change")
             if len(drops) > 0:
-                    drop_display = drops[
-                        ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
-                    ].head(10)
-                    drop_display["Score_Change"] = drop_display["Score_Change"].apply(
-                        lambda x: f"{x:.1f}%"
-                    )
+                drop_display = drops[
+                    ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
+                ].head(10)
+                drop_display["Score_Change"] = drop_display["Score_Change"].apply(
+                    lambda x: f"{x:.1f}%"
+                )
                 st.dataframe(drop_display, hide_index=True)
             else:
                 st.info("No significant score drops detected")
         
         with anomaly_col2:
             st.write("**Score Spikes (Sudden Increases)**")
-                spikes = anomalies[
-                    anomalies["Score_Change"] > anomaly_threshold
-                ].sort_values("Score_Change", ascending=False)
+            spikes = anomalies[
+                anomalies["Score_Change"] > anomaly_threshold
+            ].sort_values("Score_Change", ascending=False)
             if len(spikes) > 0:
-                    spike_display = spikes[
-                        ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
-                    ].head(10)
-                    spike_display["Score_Change"] = spike_display["Score_Change"].apply(
-                        lambda x: f"+{x:.1f}%"
-                    )
+                spike_display = spikes[
+                    ["Call ID", "Agent", "Call Date", "QA Score", "Score_Change"]
+                ].head(10)
+                spike_display["Score_Change"] = spike_display["Score_Change"].apply(
+                    lambda x: f"+{x:.1f}%"
+                )
                 st.dataframe(spike_display, hide_index=True)
             else:
                 st.info("No significant score spikes detected")
@@ -9948,39 +9948,39 @@ with st.expander("Anomaly Detection", expanded=False):
         # Anomaly trend chart
         st.write("**Anomaly Timeline**")
         fig_anomaly, ax_anomaly = plt.subplots(figsize=(14, 6))
-            ax_anomaly.plot(
-                filtered_df_sorted["Call Date"],
-                filtered_df_sorted["QA Score"],
-                alpha=0.3,
-                label="QA Score",
-                color="gray",
-            )
-            ax_anomaly.plot(
-                filtered_df_sorted["Call Date"],
-                filtered_df_sorted["Rolling_Avg"],
-                label="Rolling Average",
-                color="blue",
-                linewidth=2,
-            )
-            ax_anomaly.scatter(
-                anomalies["Call Date"],
-                anomalies["QA Score"],
-                color="red",
-                s=100,
-                label="Anomalies",
-                zorder=5,
-            )
+        ax_anomaly.plot(
+            filtered_df_sorted["Call Date"],
+            filtered_df_sorted["QA Score"],
+            alpha=0.3,
+            label="QA Score",
+            color="gray",
+        )
+        ax_anomaly.plot(
+            filtered_df_sorted["Call Date"],
+            filtered_df_sorted["Rolling_Avg"],
+            label="Rolling Average",
+            color="blue",
+            linewidth=2,
+        )
+        ax_anomaly.scatter(
+            anomalies["Call Date"],
+            anomalies["QA Score"],
+            color="red",
+            s=100,
+            label="Anomalies",
+            zorder=5,
+        )
         ax_anomaly.set_xlabel("Call Date")
         ax_anomaly.set_ylabel("QA Score (%)")
         ax_anomaly.set_title("QA Score with Anomaly Detection")
         ax_anomaly.legend()
         ax_anomaly.grid(True, alpha=0.3)
-            plt.xticks(rotation=45, ha="right")
+        plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
-            st_pyplot_safe(fig_anomaly)
-    else:
+        st_pyplot_safe(fig_anomaly)
+        else:
             st.success(" No anomalies detected in the filtered data")
-else:
+    else:
         st.info(" Need at least 2 calls with QA scores to detect anomalies")
 
 # --- Advanced Analytics ---
