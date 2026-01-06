@@ -629,6 +629,49 @@ def normalize_agent_id(agent_str):
     return get_or_create_agent_mapping(agent_str_lower)
 
 
+def normalize_category(value):
+    """
+    Normalize call reason/outcome categories to merge duplicates and handle case sensitivity.
+
+    Rules:
+    1. Case-insensitive: "order status inquiry" and "Order status inquiry" → "Order status inquiry"
+    2. Merge shipping-related: "customer informed about shipping delay", "shipping status",
+       "shipping timeline" → "shipping status"
+    3. Rename: "refund and return process initiated" → "return process initiated"
+
+    Args:
+        value: Category string to normalize
+
+    Returns:
+        Normalized category string
+    """
+    if pd.isna(value) or not value or not str(value).strip():
+        return value
+
+    value_str = str(value).strip()
+
+    # Normalize to lowercase for comparison
+    value_lower = value_str.lower()
+
+    # Merge shipping-related categories
+    shipping_variants = [
+        "customer informed about shipping delay",
+        "shipping status",
+        "shipping timeline",
+    ]
+    if value_lower in shipping_variants:
+        return "shipping status"
+
+    # Rename "refund and return process initiated" to "return process initiated"
+    if value_lower == "refund and return process initiated":
+        return "return process initiated"
+
+    # For case-insensitive duplicates, use the first occurrence's capitalization
+    # We'll handle this by creating a mapping of lowercase -> preferred capitalization
+    # For now, just return the value as-is (we'll handle case normalization separately)
+    return value_str
+
+
 def parse_csv_row(row, filename):
     """
     Parse a CSV row and convert it to the existing call data structure.
@@ -6159,49 +6202,6 @@ meta_df.rename(
     },
     inplace=True,
 )
-
-
-def normalize_category(value):
-    """
-    Normalize call reason/outcome categories to merge duplicates and handle case sensitivity.
-
-    Rules:
-    1. Case-insensitive: "order status inquiry" and "Order status inquiry" → "Order status inquiry"
-    2. Merge shipping-related: "customer informed about shipping delay", "shipping status",
-       "shipping timeline" → "shipping status"
-    3. Rename: "refund and return process initiated" → "return process initiated"
-
-    Args:
-        value: Category string to normalize
-
-    Returns:
-        Normalized category string
-    """
-    if pd.isna(value) or not value or not str(value).strip():
-        return value
-
-    value_str = str(value).strip()
-
-    # Normalize to lowercase for comparison
-    value_lower = value_str.lower()
-
-    # Merge shipping-related categories
-    shipping_variants = [
-        "customer informed about shipping delay",
-        "shipping status",
-        "shipping timeline",
-    ]
-    if value_lower in shipping_variants:
-        return "shipping status"
-
-    # Rename "refund and return process initiated" to "return process initiated"
-    if value_lower == "refund and return process initiated":
-        return "return process initiated"
-
-    # For case-insensitive duplicates, use the first occurrence's capitalization
-    # We'll handle this by creating a mapping of lowercase -> preferred capitalization
-    # For now, just return the value as-is (we'll handle case normalization separately)
-    return value_str
 
 
 def normalize_categories_in_dataframe(df, column_name):
