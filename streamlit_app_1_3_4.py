@@ -100,31 +100,31 @@ class LockTimeoutError(Exception):
 @contextmanager
 def cache_file_lock(filepath, timeout=30):
     """Acquire file lock for cache operations. Prevents concurrent reads/writes.
-    
+
     Args:
         filepath: Path to the file to lock
         timeout: Maximum time to wait for lock (seconds). None = wait indefinitely (with max iteration limit).
-    
+
     Yields:
         Locked file handle (or None if locking unavailable)
-    
+
     Raises:
         LockTimeoutError: If lock cannot be acquired within timeout period (only if timeout is not None)
     """
     lock_path = filepath.with_suffix(filepath.suffix + ".lock")
     lock_file = None
     lock_acquired = False
-    
+
     if not HAS_FILE_LOCKING:
         # Fallback: no locking available, just yield
         yield None
         return
-    
+
     try:
         # Create lock file
         lock_file = open(lock_path, "w")
         start_time = time.time()
-        
+
         # BUG FIX: Handle timeout=None with maximum iteration limit to prevent infinite hang
         # Maximum iterations = 5 minutes worth of retries (3000 iterations at 0.1s each)
         MAX_ITERATIONS = 3000 if timeout is None else None
@@ -151,7 +151,7 @@ def cache_file_lock(filepath, timeout=30):
             except (IOError, OSError):
                 # Lock is held by another process, wait and retry
                 time.sleep(0.1)
-        
+
         if not lock_acquired:
             # Close the file before raising exception
             # This can only happen if timeout is not None and timeout expired
@@ -168,9 +168,9 @@ def cache_file_lock(filepath, timeout=30):
                 raise LockTimeoutError(
                     f"Could not acquire lock for {filepath} within {timeout}s. Another process may be accessing the cache file."
                 )
-        
+
         yield lock_file
-        
+
     except LockTimeoutError:
         # Re-raise LockTimeoutError - don't catch it, let it propagate to callers
         raise
@@ -195,7 +195,7 @@ def cache_file_lock(filepath, timeout=30):
                 lock_file.close()
             except Exception:
                 pass
-        
+
         # Remove lock file
         try:
             if lock_path.exists():
@@ -206,15 +206,15 @@ def cache_file_lock(filepath, timeout=30):
 
 def atomic_write_json(filepath, data, max_retries=3, retry_delay=0.1):
     """Write JSON atomically using temp file + rename pattern.
-    
+
     This prevents partial writes from corrupting the cache file.
-    
+
     Args:
         filepath: Path to the JSON file to write
         data: Data to serialize to JSON
         max_retries: Maximum number of retry attempts
         retry_delay: Delay between retries (seconds)
-    
+
     Raises:
         Exception: If all retry attempts fail
     """
@@ -222,14 +222,14 @@ def atomic_write_json(filepath, data, max_retries=3, retry_delay=0.1):
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
-    
+
     # Clean up any existing temp file from previous failed attempts
     if temp_path.exists():
         try:
             temp_path.unlink()
         except Exception:
             pass  # Ignore cleanup errors
-    
+
     for attempt in range(max_retries):
         try:
             # Write to temporary file first
@@ -237,11 +237,11 @@ def atomic_write_json(filepath, data, max_retries=3, retry_delay=0.1):
                 json.dump(data, f, default=str, indent=2, ensure_ascii=False)
                 f.flush()
                 os.fsync(f.fileno())  # Force write to disk
-            
+
             # Atomic rename (replaces existing file atomically on most systems)
             os.replace(temp_path, filepath)
             return
-            
+
         except (IOError, OSError, PermissionError) as e:
             if attempt < max_retries - 1:
                 logger.warning(
@@ -331,7 +331,7 @@ def track_error(error_type, error_message):
     metrics = load_metrics()
     if "errors" not in metrics:
         metrics["errors"] = {}
-    
+
     error_key = f"{error_type}:{error_message[:50]}"
     if error_key not in metrics["errors"]:
         metrics["errors"][error_key] = {
@@ -339,14 +339,14 @@ def track_error(error_type, error_message):
             "first_seen": datetime.now().isoformat(),
             "last_seen": None,
         }
-    
+
     metrics["errors"][error_key]["count"] += 1
     metrics["errors"][error_key]["last_seen"] = datetime.now().isoformat()
     save_metrics(metrics)
-    
+
     # Log error
     logger.error(f"{error_type}: {error_message}")
-    
+
     # Alert on repeated failures (5+ occurrences)
     if metrics["errors"][error_key]["count"] >= 5:
         logger.warning(
@@ -399,7 +399,7 @@ try:
     # Check if secrets are available
     if "s3" not in st.secrets:
         raise KeyError("s3 section not found in secrets")
-    
+
     s3_client = boto3.client(
         "s3",
         aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
@@ -487,11 +487,13 @@ def load_agent_mapping():
             with open(AGENT_MAPPING_FILE, "r", encoding="utf-8") as f:
                 file_content = f.read()
                 if not file_content.strip():
-                    logger.warning("Agent mapping file is empty, using known mappings only")
+                    logger.warning(
+                        "Agent mapping file is empty, using known mappings only"
+                    )
                     return KNOWN_AGENT_MAPPINGS.copy()
-                
+
                 mapping = json.loads(file_content)
-                
+
                 # Validate that mapping is a dictionary
                 if not isinstance(mapping, dict):
                     logger.warning(
@@ -502,11 +504,15 @@ def load_agent_mapping():
                     try:
                         backup_path = AGENT_MAPPING_FILE.with_suffix(".json.backup")
                         AGENT_MAPPING_FILE.rename(backup_path)
-                        logger.info(f"Backed up corrupted mapping file to {backup_path}")
+                        logger.info(
+                            f"Backed up corrupted mapping file to {backup_path}"
+                        )
                     except Exception as backup_error:
-                        logger.warning(f"Could not backup corrupted mapping file: {backup_error}")
+                        logger.warning(
+                            f"Could not backup corrupted mapping file: {backup_error}"
+                        )
                     return KNOWN_AGENT_MAPPINGS.copy()
-                
+
                 # Validate mapping values are strings in "Agent X" format
                 valid_mapping = {}
                 for key, value in mapping.items():
@@ -516,7 +522,7 @@ def load_agent_mapping():
                         logger.warning(
                             f"Invalid mapping value for '{key}': {value} (expected 'Agent X' format)"
                         )
-                
+
                 # Merge with known mappings (known mappings take precedence)
                 # This ensures KNOWN_AGENT_MAPPINGS always override file mappings
                 # Also, remove any incorrect mappings for known agents from the file
@@ -527,8 +533,13 @@ def load_agent_mapping():
                     # Check if this key matches a known agent ID
                     is_known_agent = False
                     for known_id in KNOWN_AGENT_MAPPINGS.keys():
-                        known_id_normalized = known_id.replace(" ", "").replace("_", "").lower()
-                        if key_normalized == known_id_normalized or key.lower() == known_id.lower():
+                        known_id_normalized = (
+                            known_id.replace(" ", "").replace("_", "").lower()
+                        )
+                        if (
+                            key_normalized == known_id_normalized
+                            or key.lower() == known_id.lower()
+                        ):
                             is_known_agent = True
                             break
                     # Only add if it's not a known agent (known mappings will override)
@@ -547,10 +558,14 @@ def load_agent_mapping():
                 AGENT_MAPPING_FILE.rename(backup_path)
                 logger.info(f"Backed up corrupted mapping file to {backup_path}")
             except Exception as backup_error:
-                logger.warning(f"Could not backup corrupted mapping file: {backup_error}")
+                logger.warning(
+                    f"Could not backup corrupted mapping file: {backup_error}"
+                )
             return KNOWN_AGENT_MAPPINGS.copy()
         except Exception as e:
-            logger.warning(f"Failed to load agent mapping file: {e}, using known mappings only")
+            logger.warning(
+                f"Failed to load agent mapping file: {e}, using known mappings only"
+            )
             return KNOWN_AGENT_MAPPINGS.copy()
     return KNOWN_AGENT_MAPPINGS.copy()
 
@@ -566,17 +581,22 @@ def save_agent_mapping(mapping):
             is_known_agent = False
             for known_id in KNOWN_AGENT_MAPPINGS.keys():
                 known_id_normalized = known_id.replace(" ", "").replace("_", "").lower()
-                if key_normalized == known_id_normalized or key.lower() == known_id.lower():
+                if (
+                    key_normalized == known_id_normalized
+                    or key.lower() == known_id.lower()
+                ):
                     is_known_agent = True
                     break
             # Only save if it's not a known agent
             if not is_known_agent:
                 cleaned_mapping[key] = value
-        
+
         AGENT_MAPPING_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(AGENT_MAPPING_FILE, "w", encoding="utf-8") as f:
             json.dump(cleaned_mapping, f, indent=2, ensure_ascii=False)
-        logger.info(f"Saved agent mapping to {AGENT_MAPPING_FILE} (removed {len(mapping) - len(cleaned_mapping)} incorrect known agent mappings)")
+        logger.info(
+            f"Saved agent mapping to {AGENT_MAPPING_FILE} (removed {len(mapping) - len(cleaned_mapping)} incorrect known agent mappings)"
+        )
     except Exception as e:
         logger.warning(f"Failed to save agent mapping file: {e}")
 
@@ -584,10 +604,10 @@ def save_agent_mapping(mapping):
 def get_or_create_agent_mapping(agent_id_lower):
     """Get agent number for an agent ID, or create a new mapping deterministically."""
     mapping = load_agent_mapping()
-    
+
     # Normalize by removing spaces to handle "bp agent 102256681" vs "bpagent102256681"
     agent_id_normalized = agent_id_lower.replace(" ", "").replace("_", "")
-    
+
     # Check if already in normalized format (e.g., "agent 1", "agent 2")
     # This handles cases where cache already has normalized values
     if agent_id_lower.startswith("agent "):
@@ -598,24 +618,32 @@ def get_or_create_agent_mapping(agent_id_lower):
             return f"Agent {agent_num}"
         except ValueError:
             pass  # Not a valid number, continue with mapping logic
-    
+
     # CRITICAL: Check KNOWN_AGENT_MAPPINGS FIRST (before checking file mappings)
     # This ensures known agents always get correct numbers, even if file has incorrect entries
     # Normalize known mapping keys for comparison
     for known_id, known_name in KNOWN_AGENT_MAPPINGS.items():
         known_id_normalized = known_id.replace(" ", "").replace("_", "")
-        if agent_id_normalized == known_id_normalized or agent_id_lower == known_id.lower():
-            logger.debug(f"Matched known agent mapping: {agent_id_lower} -> {known_name}")
+        if (
+            agent_id_normalized == known_id_normalized
+            or agent_id_lower == known_id.lower()
+        ):
+            logger.debug(
+                f"Matched known agent mapping: {agent_id_lower} -> {known_name}"
+            )
             return known_name
-    
+
     # Check special cases (normalize these too)
     if agent_id_normalized == "unknown" or agent_id_lower == "unknown":
         return "Agent 1"
-    if agent_id_normalized in ["bp016803073", "bp016803074"] or agent_id_lower in ["bp016803073", "bp016803074"]:
+    if agent_id_normalized in ["bp016803073", "bp016803074"] or agent_id_lower in [
+        "bp016803073",
+        "bp016803074",
+    ]:
         return "Agent 1"
     if agent_id_normalized.startswith("bp01") or agent_id_lower.startswith("bp01"):
         return "Agent 1"
-    
+
     # NOW check file mappings (only for unknown agents)
     # Double-check: if this is a known agent ID that got incorrectly mapped, use known mapping
     if agent_id_lower in mapping:
@@ -623,8 +651,13 @@ def get_or_create_agent_mapping(agent_id_lower):
         # Verify this isn't a known agent that was incorrectly mapped
         for known_id, known_name in KNOWN_AGENT_MAPPINGS.items():
             known_id_normalized = known_id.replace(" ", "").replace("_", "")
-            if agent_id_normalized == known_id_normalized or agent_id_lower == known_id.lower():
-                logger.warning(f"Found incorrect mapping in file for known agent {agent_id_lower} -> {mapped_value}, using correct mapping {known_name}")
+            if (
+                agent_id_normalized == known_id_normalized
+                or agent_id_lower == known_id.lower()
+            ):
+                logger.warning(
+                    f"Found incorrect mapping in file for known agent {agent_id_lower} -> {mapped_value}, using correct mapping {known_name}"
+                )
                 return known_name
         return mapped_value
     if agent_id_normalized in mapping:
@@ -632,15 +665,21 @@ def get_or_create_agent_mapping(agent_id_lower):
         # Verify this isn't a known agent that was incorrectly mapped
         for known_id, known_name in KNOWN_AGENT_MAPPINGS.items():
             known_id_normalized = known_id.replace(" ", "").replace("_", "")
-            if agent_id_normalized == known_id_normalized or agent_id_lower == known_id.lower():
-                logger.warning(f"Found incorrect mapping in file for known agent {agent_id_normalized} -> {mapped_value}, using correct mapping {known_name}")
+            if (
+                agent_id_normalized == known_id_normalized
+                or agent_id_lower == known_id.lower()
+            ):
+                logger.warning(
+                    f"Found incorrect mapping in file for known agent {agent_id_normalized} -> {mapped_value}, using correct mapping {known_name}"
+                )
                 return known_name
         return mapped_value
-    
+
     # For new agent IDs, assign deterministically based on hash
     # This ensures the same agent ID always gets the same number
     # Use normalized version for hash to ensure consistency
     import hashlib
+
     hash_value = int(hashlib.md5(agent_id_normalized.encode()).hexdigest(), 16)
     # Use modulo to get a number between 1 and 99
     # Note: Agent 5 and Agent 11 are now reserved for known mappings, skip them in hash assignment
@@ -650,14 +689,14 @@ def get_or_create_agent_mapping(agent_id_lower):
         agent_number = 12  # Skip 5, use 12 instead
     if agent_number == 11:
         agent_number = 12  # Skip 11, use 12 instead (if it was already 12, it stays 12)
-    
+
     agent_name = f"Agent {agent_number}"
-    
+
     # Save the new mapping (save both versions to prevent future lookups)
     mapping[agent_id_lower] = agent_name
     mapping[agent_id_normalized] = agent_name
     save_agent_mapping(mapping)
-    
+
     logger.info(f"Created new agent mapping: {agent_id_lower} -> {agent_name}")
     return agent_name
 
@@ -668,7 +707,7 @@ def normalize_agent_id(agent_str):
         return agent_str
 
     agent_str_lower = str(agent_str).lower().strip()
-    
+
     # CRITICAL: Skip normalization if already in "Agent X" format to prevent double normalization
     # This prevents "Agent 1" → hash → "Agent 52" issues
     if agent_str_lower.startswith("agent "):
@@ -680,7 +719,7 @@ def normalize_agent_id(agent_str):
         except ValueError:
             # Not a valid number, continue with mapping logic
             pass
-    
+
     # Use mapping system
     return get_or_create_agent_mapping(agent_str_lower)
 
@@ -731,7 +770,7 @@ def normalize_category(value):
 def parse_csv_row(row, filename):
     """
     Parse a CSV row and convert it to the existing call data structure.
-    
+
     Args:
         row: pandas Series representing a CSV row
         filename: CSV filename (for metadata)
@@ -1038,7 +1077,7 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                 errors.append(error_msg)
                 logger.error(error_msg)
                 continue
-                    
+
         logger.info(
             f"Successfully loaded {len(all_calls)} calls from {len(csv_keys)} CSV file(s)"
         )
@@ -1105,7 +1144,7 @@ def load_all_calls_internal(max_files=None):
         except Exception:
             # If sorting fails, keep original order
             pass
-        
+
         # Track processed S3 keys in session state (for smart refresh)
         if "processed_s3_keys" not in st.session_state:
             st.session_state["processed_s3_keys"] = set()
@@ -1137,7 +1176,7 @@ def load_all_calls_internal(max_files=None):
         # Return with error message if any
         error_message = None if not csv_errors else "; ".join(csv_errors[:5])
         return all_calls, error_message
-        
+
     except NoCredentialsError as e:
         error_msg = (
             "AWS credentials not found. Please configure S3 credentials in secrets."
@@ -1195,12 +1234,12 @@ def get_s3_client_and_bucket():
 
 def recover_partial_json(filepath):
     """Attempt to recover partial data from corrupted JSON file.
-    
+
     Tries to extract valid call_data entries even if metadata is corrupted.
-    
+
     Args:
         filepath: Path to the corrupted JSON file
-    
+
     Returns:
         tuple: (recovered_call_data, recovered_errors) or (None, None) if recovery fails
     """
@@ -1211,13 +1250,13 @@ def recover_partial_json(filepath):
             logger.warning(
                 f" Corrupted cache file is very large ({file_size / 1024 / 1024:.1f}MB), recovery may be slow"
             )
-        
+
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
-        
+
         # Try to find call_data array in the content
         # Look for patterns like "call_data": [ ... ]
-        
+
         # Try to extract call_data array
         call_data_match = re.search(r'"call_data"\s*:\s*\[(.*?)\]', content, re.DOTALL)
         if call_data_match:
@@ -1239,7 +1278,7 @@ def recover_partial_json(filepath):
                     return recovered_calls, []
             except json.JSONDecodeError:
                 pass
-        
+
         # Fallback: try to extract individual call objects with balanced braces
         # Look for patterns like {"_s3_key": "...", ...} and handle nested structures
         recovered_calls = []
@@ -1252,22 +1291,22 @@ def recover_partial_json(filepath):
             in_string = False
             escape_next = False
             end_pos = start_pos
-            
+
             for i in range(start_pos, len(content)):
                 char = content[i]
-                
+
                 if escape_next:
                     escape_next = False
                     continue
-                
+
                 if char == "\\":
                     escape_next = True
                     continue
-                
+
                 if char == '"' and not escape_next:
                     in_string = not in_string
                     continue
-                
+
                 if not in_string:
                     if char == "{":
                         brace_depth += 1
@@ -1276,7 +1315,7 @@ def recover_partial_json(filepath):
                         if brace_depth == 0:
                             end_pos = i + 1
                             break
-            
+
             if brace_depth == 0 and end_pos > start_pos:
                 # Extract the complete object
                 try:
@@ -1286,15 +1325,15 @@ def recover_partial_json(filepath):
                         recovered_calls.append(call_obj)
                 except json.JSONDecodeError:
                     continue
-        
+
         if recovered_calls:
             logger.info(
                 f" Recovered {len(recovered_calls)} calls from corrupted cache (partial recovery complete)"
             )
             return recovered_calls, []
-        
+
         return None, None
-        
+
     except Exception as e:
         logger.warning(f" Failed to recover partial data: {e}")
         return None, None
@@ -1411,9 +1450,7 @@ def migrate_old_cache_format(call_data):
             f" Migrated {migrated_count} calls from old cache format to new format"
         )
     if agent_normalized_count > 0:
-        logger.info(
-            f" Normalized {agent_normalized_count} agent IDs in cached data"
-        )
+        logger.info(f" Normalized {agent_normalized_count} agent IDs in cached data")
 
     return migrated_calls
 
@@ -1426,11 +1463,11 @@ def deduplicate_calls(call_data):
     """
     if not call_data:
         return []
-    
+
     seen_keys = set()
     deduplicated = []
     duplicates_count = 0
-    
+
     for call in call_data:
         # Skip non-dict items (defensive programming)
         if not isinstance(call, dict):
@@ -1438,7 +1475,7 @@ def deduplicate_calls(call_data):
                 f" Skipping non-dict item in call_data: {type(call).__name__}"
             )
             continue
-        
+
         # Use consistent key extraction
         key = extract_cache_key(call)
         if key and key not in seen_keys:
@@ -1446,7 +1483,7 @@ def deduplicate_calls(call_data):
             deduplicated.append(call)
         elif key:
             duplicates_count += 1
-    
+
     if duplicates_count > 0:
         logger.warning(
             f" Removed {duplicates_count} duplicate calls (kept {len(deduplicated)} unique calls)"
@@ -1455,7 +1492,7 @@ def deduplicate_calls(call_data):
         logger.debug(
             f" Deduplication check: No duplicates found, all {len(deduplicated)} calls are unique"
         )
-    
+
     return deduplicated
 
 
@@ -1702,7 +1739,7 @@ def cleanup_pdf_sourced_calls():
 
 def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     """Load cached data from S3 first, then fall back to local disk if S3 unavailable.
-    
+
     Features:
     - Tries S3 first (survives deployments)
     - Falls back to local disk if S3 unavailable
@@ -1711,11 +1748,11 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     - Corruption recovery to extract partial data
     - Graceful degradation if locking unavailable
     - Session state memoization during refresh (5 second cache)
-    
+
     Args:
         max_retries: Maximum number of retry attempts
         retry_delay: Delay between retries (seconds)
-    
+
     Returns:
         tuple: (call_data, errors) or (None, None) if load fails
     """
@@ -1946,7 +1983,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
     # Fall back to local disk if S3 unavailable or not found
     if not CACHE_FILE.exists():
         return None, None
-    
+
     # Retry logic for transient errors
     for attempt in range(max_retries):
         try:
@@ -1969,11 +2006,11 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                         errors = cached_data.get("errors", [])
                         cache_timestamp = cached_data.get("timestamp", None)
                         cache_count = len(call_data)
-                        
+
                         # OPTIMIZATION: Cache should already be deduplicated (done in save_cached_data_to_disk)
                         # No need to deduplicate here - reduces redundant processing
                         is_partial = cached_data.get("partial", False)
-                        
+
                         if is_partial:
                             processed = cached_data.get("processed", 0)
                             total = cached_data.get("total", 0)
@@ -2010,12 +2047,12 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                         f" Failed to acquire lock for cache read after {max_retries} attempts: {e}"
                     )
                     return None, None
-                    
+
         except json.JSONDecodeError as e:
             logger.warning(
                 f" Failed to load persistent cache: Corrupted JSON file - {e}"
             )
-            
+
             # Try to recover partial data before deleting
             # Note: Recovery operations need lock protection to prevent concurrent access
             # Read corrupted file with lock protection
@@ -2031,7 +2068,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                 logger.warning(
                     f" Failed to read corrupted cache for recovery: {recovery_read_error}"
                 )
-            
+
             if recovered_calls:
                 # Save recovered data to a new cache file (with lock protection)
                 try:
@@ -2045,7 +2082,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                             )
                             shutil.copy2(CACHE_FILE, backup_path)
                             logger.info(f" Backed up corrupted cache to {backup_path}")
-                            
+
                             # Save recovered data
                             recovered_data = {
                                 "call_data": recovered_calls,
@@ -2064,10 +2101,10 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                     except LockTimeoutError as e:
                         logger.error(f" Lock timeout while saving recovered data: {e}")
                         raise  # Re-raise to trigger outer exception handler
-                    
+
                 except Exception as recovery_error:
                     logger.error(f" Failed to save recovered data: {recovery_error}")
-            
+
             # If recovery failed, backup and delete corrupted cache (with lock protection)
             try:
                 try:
@@ -2086,10 +2123,10 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                     logger.error(f" Lock timeout while backing up corrupted cache: {e}")
             except Exception as backup_error:
                 logger.error(f" Failed to backup corrupted cache: {backup_error}")
-            
+
             # Don't retry on JSON decode errors - file is corrupted
             return None, None
-            
+
         except (IOError, OSError, PermissionError) as e:
             # Transient errors - retry
             if attempt < max_retries - 1:
@@ -2102,7 +2139,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                     f" Failed to load persistent cache after {max_retries} attempts: {e}"
                 )
                 return None, None
-                
+
         except Exception as e:
             # Other errors - log and return None
             logger.warning(f" Failed to load persistent cache: {e}")
@@ -2118,9 +2155,9 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
 
 def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, total=0):
     """Save cached data to disk for persistence across app restarts. Automatically deduplicates before saving.
-    
+
     Uses atomic writes and file locking to prevent corruption.
-    
+
     Args:
         call_data: List of call data to save
         errors: List of errors encountered
@@ -2134,12 +2171,12 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
             call_data = []
         elif not isinstance(call_data, list):
             raise TypeError(f"call_data must be a list, got {type(call_data).__name__}")
-        
+
         if errors is None:
             errors = []
         elif not isinstance(errors, list):
             raise TypeError(f"errors must be a list, got {type(errors).__name__}")
-        
+
         # Deduplicate and normalize agent IDs before saving to prevent cache bloat and ensure consistency
         if call_data:
             original_count = len(call_data)
@@ -2153,14 +2190,16 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                         call["agent"] = normalized_agent
                         agent_normalized_count += 1
             if agent_normalized_count > 0:
-                logger.info(f" Normalized {agent_normalized_count} agent IDs before saving to cache")
-            
+                logger.info(
+                    f" Normalized {agent_normalized_count} agent IDs before saving to cache"
+                )
+
             call_data = deduplicate_calls(call_data)
             if len(call_data) < original_count:
                 logger.info(
                     f" Deduplicated before save: {original_count} → {len(call_data)} unique calls"
                 )
-        
+
         cache_data = {
             "call_data": call_data,
             "errors": errors,
@@ -2169,12 +2208,12 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
             "count": len(call_data),
             "partial": partial,  # Mark as partial or complete
         }
-        
+
         # Add progress info for partial saves
         if partial:
             cache_data["processed"] = processed
             cache_data["total"] = total
-        
+
         # Use file locking and atomic writes
         # Retry on lock timeout with exponential backoff
         max_lock_retries = 3
@@ -2195,7 +2234,7 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                         f" Failed to acquire lock for cache save after {max_lock_retries} attempts: {e}"
                     )
                     raise  # Re-raise on final failure
-        
+
         status = "PARTIAL" if partial else "COMPLETE"
         logger.info(
             f" Successfully saved {len(call_data)} calls to persistent cache ({status}): {CACHE_FILE}"
@@ -2323,7 +2362,7 @@ def load_all_calls_cached(cache_version=0):
         2. Invalidate Streamlit cache if S3 cache is newer
         3. Use Streamlit cache only if it matches S3 cache timestamp
         4. Fall back to disk cache only if S3 unavailable (backup only)
-    
+
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
     # Perform one-time cache cleanup to remove PDF-sourced calls
@@ -2331,21 +2370,21 @@ def load_all_calls_cached(cache_version=0):
     import time
 
     start_time = time.time()
-    
+
     # Prevent concurrent loads - check if a load is already in progress
     load_in_progress_key = "_data_load_in_progress"
     load_start_time_key = "_data_load_start_time"
-    
+
     if st.session_state.get(load_in_progress_key, False):
         # Check if load has been in progress for too long (timeout after 30 minutes)
         load_start_time = st.session_state.get(load_start_time_key, time.time())
         load_duration = time.time() - load_start_time
         timeout_seconds = 30 * 60  # 30 minutes
-        
+
         if load_duration > timeout_seconds:
             logger.warning(
-                f"Data load has been in progress for {load_duration/60:.1f} minutes "
-                f"(exceeded {timeout_seconds/60:.0f} minute timeout), clearing flag and retrying"
+                f"Data load has been in progress for {load_duration / 60:.1f} minutes "
+                f"(exceeded {timeout_seconds / 60:.0f} minute timeout), clearing flag and retrying"
             )
             # Clear the flag and start a new load
             if load_in_progress_key in st.session_state:
@@ -2371,54 +2410,76 @@ def load_all_calls_cached(cache_version=0):
                 # Check if we should give up and use cache
                 if waited >= max_wait:
                     break
-            
+
             # Try multiple sources for data
             # 1. Try Streamlit cache (if load completed)
             try:
                 # Force cache refresh by using a dummy cache key
                 # The actual cache will be used if available
                 from streamlit.runtime.caching import cache_data_api
+
                 # Try to get from cache using the function's cache key
                 cache_key = f"load_all_calls_cached_{cache_version}"
-                if hasattr(st.session_state, '_cached_call_data'):
-                    cached_data = st.session_state.get('_cached_call_data')
+                if hasattr(st.session_state, "_cached_call_data"):
+                    cached_data = st.session_state.get("_cached_call_data")
                     if cached_data and len(cached_data) > 0:
-                        logger.info(f"Returning cached data from session state: {len(cached_data)} calls")
+                        logger.info(
+                            f"Returning cached data from session state: {len(cached_data)} calls"
+                        )
                         return cached_data, []
             except Exception as e:
                 logger.debug(f"Could not get from Streamlit cache: {e}")
-            
+
             # 2. Try disk cache
             try:
                 disk_result = load_cached_data_from_disk()
                 if disk_result and disk_result[0] and len(disk_result[0]) > 0:
                     migrated = migrate_old_cache_format(disk_result[0])
-                    logger.info(f"Returning disk cache during concurrent load: {len(migrated)} calls")
+                    logger.info(
+                        f"Returning disk cache during concurrent load: {len(migrated)} calls"
+                    )
                     return migrated, disk_result[1] if disk_result[1] else []
             except Exception as e:
                 logger.warning(f"Could not load disk cache during concurrent load: {e}")
-            
+
             # 3. Try S3 cache from session state (most up-to-date, shared across users)
             try:
                 s3_cache_key = "_s3_cache_result"
                 s3_timestamp_key = "_s3_cache_timestamp"
-                if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
+                if (
+                    s3_cache_key in st.session_state
+                    and s3_timestamp_key in st.session_state
+                ):
                     s3_cached_data = st.session_state[s3_cache_key]
-                    if s3_cached_data and isinstance(s3_cached_data, tuple) and len(s3_cached_data) >= 1:
+                    if (
+                        s3_cached_data
+                        and isinstance(s3_cached_data, tuple)
+                        and len(s3_cached_data) >= 1
+                    ):
                         if s3_cached_data[0] and len(s3_cached_data[0]) > 0:
                             migrated = migrate_old_cache_format(s3_cached_data[0])
-                            logger.info(f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls")
-                            return migrated, s3_cached_data[1] if len(s3_cached_data) > 1 and s3_cached_data[1] else []
+                            logger.info(
+                                f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
+                            )
+                            return migrated, s3_cached_data[1] if len(
+                                s3_cached_data
+                            ) > 1 and s3_cached_data[1] else []
             except Exception as e:
-                logger.debug(f"Could not get S3 cache from session state during concurrent load: {e}")
-            
+                logger.debug(
+                    f"Could not get S3 cache from session state during concurrent load: {e}"
+                )
+
             # If all else fails, return empty (will retry on next run)
             if st.session_state.get(load_in_progress_key, False):
-                logger.warning("Load still in progress and no cache available, returning empty (will retry)")
+                logger.warning(
+                    "Load still in progress and no cache available, returning empty (will retry)"
+                )
             else:
-                logger.warning("Load completed but no cached data found, returning empty")
+                logger.warning(
+                    "Load completed but no cached data found, returning empty"
+                )
             return [], []
-    
+
     # Mark load as in progress with timestamp
     st.session_state[load_in_progress_key] = True
     st.session_state[load_start_time_key] = time.time()
@@ -2428,7 +2489,9 @@ def load_all_calls_cached(cache_version=0):
 
         # CRITICAL: If reload_all_triggered, delete ALL caches BEFORE trying to load
         if reload_all_triggered:
-            logger.info("Reload ALL Data triggered - clearing all caches before loading")
+            logger.info(
+                "Reload ALL Data triggered - clearing all caches before loading"
+            )
 
             # Delete disk cache file with retry and validation
             disk_cache_deleted = False
@@ -2441,9 +2504,13 @@ def load_all_calls_cached(cache_version=0):
                             disk_cache_deleted = True
                             logger.info(f" Deleted disk cache file: {CACHE_FILE}")
                         else:
-                            logger.warning(f" Disk cache file still exists after deletion attempt")
+                            logger.warning(
+                                f" Disk cache file still exists after deletion attempt"
+                            )
             except LockTimeoutError:
-                logger.warning(f" Timeout deleting disk cache (file may be locked by another process)")
+                logger.warning(
+                    f" Timeout deleting disk cache (file may be locked by another process)"
+                )
             except Exception as e:
                 logger.warning(f" Could not delete disk cache: {e}")
 
@@ -2457,27 +2524,39 @@ def load_all_calls_cached(cache_version=0):
                         try:
                             s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
                             s3_cache_deleted = True
-                            logger.info(f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
+                            logger.info(
+                                f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}"
+                            )
                             break
                         except ClientError as e:
                             if e.response.get("Error", {}).get("Code") != "NoSuchKey":
                                 if retry < max_s3_retries - 1:
-                                    logger.warning(f" S3 cache deletion failed (attempt {retry + 1}/{max_s3_retries}), retrying...")
+                                    logger.warning(
+                                        f" S3 cache deletion failed (attempt {retry + 1}/{max_s3_retries}), retrying..."
+                                    )
                                     time.sleep(0.5)
                                     continue
                                 else:
-                                    logger.warning(f" Could not delete S3 cache after {max_s3_retries} attempts: {e}")
+                                    logger.warning(
+                                        f" Could not delete S3 cache after {max_s3_retries} attempts: {e}"
+                                    )
                             else:
                                 s3_cache_deleted = True
-                                logger.info(" S3 cache does not exist (already deleted)")
+                                logger.info(
+                                    " S3 cache does not exist (already deleted)"
+                                )
                                 break
                 except Exception as e:
                     if retry < max_s3_retries - 1:
-                        logger.warning(f" S3 cache deletion error (attempt {retry + 1}/{max_s3_retries}), retrying...")
+                        logger.warning(
+                            f" S3 cache deletion error (attempt {retry + 1}/{max_s3_retries}), retrying..."
+                        )
                         time.sleep(0.5)
                         continue
                     else:
-                        logger.warning(f" Could not delete S3 cache after {max_s3_retries} attempts: {e}")
+                        logger.warning(
+                            f" Could not delete S3 cache after {max_s3_retries} attempts: {e}"
+                        )
 
             # Clear Streamlit cache
             streamlit_cache_cleared = False
@@ -2502,12 +2581,14 @@ def load_all_calls_cached(cache_version=0):
                     if key in st.session_state:
                         del st.session_state[key]
                 except Exception as clear_error:
-                    logger.warning(f" Error clearing session state key '{key}': {clear_error}")
+                    logger.warning(
+                        f" Error clearing session state key '{key}': {clear_error}"
+                    )
                     session_cache_cleared = False
-            
+
             if session_cache_cleared:
                 logger.info(" Cleared session state cache")
-            
+
             # Log summary of cache clearing results
             logger.info(
                 f" Cache clearing summary: disk={disk_cache_deleted}, s3={s3_cache_deleted}, "
@@ -2532,7 +2613,10 @@ def load_all_calls_cached(cache_version=0):
             # Check session state first to avoid duplicate S3 loads
             s3_cache_key = "_s3_cache_result"
             s3_timestamp_key = "_s3_cache_timestamp"
-            if s3_cache_key in st.session_state and s3_timestamp_key in st.session_state:
+            if (
+                s3_cache_key in st.session_state
+                and s3_timestamp_key in st.session_state
+            ):
                 cached_timestamp = st.session_state[s3_timestamp_key]
                 # Use cached result if timestamp matches (cache is still valid)
                 # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
@@ -2564,8 +2648,12 @@ def load_all_calls_cached(cache_version=0):
                 s3_client, s3_bucket = get_s3_client_and_bucket()
                 if s3_client and s3_bucket:
                     try:
-                        response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                        s3_cached_data = json.loads(response["Body"].read().decode("utf-8"))
+                        response = s3_client.get_object(
+                            Bucket=s3_bucket, Key=S3_CACHE_KEY
+                        )
+                        s3_cached_data = json.loads(
+                            response["Body"].read().decode("utf-8")
+                        )
                         if isinstance(s3_cached_data, dict):
                             s3_cache_result = (
                                 s3_cached_data.get("call_data", []),
@@ -2591,7 +2679,9 @@ def load_all_calls_cached(cache_version=0):
         # (Skip this check if we just deleted caches due to reload_all_triggered)
         # Invalidate Streamlit cache if S3 cache is newer
         if s3_cache_timestamp:
-            streamlit_cache_timestamp = st.session_state.get("_s3_cache_timestamp", None)
+            streamlit_cache_timestamp = st.session_state.get(
+                "_s3_cache_timestamp", None
+            )
         if (
             streamlit_cache_timestamp
             and streamlit_cache_timestamp != s3_cache_timestamp
@@ -2652,7 +2742,10 @@ def load_all_calls_cached(cache_version=0):
         # If S3 cache is newer, clear stale _merged_cache_data and reload from S3
         if "_merged_cache_data" in st.session_state:
             # Check if S3 cache is newer than when _merged_cache_data was set
-            if s3_cache_timestamp and "_merged_cache_data_timestamp" in st.session_state:
+            if (
+                s3_cache_timestamp
+                and "_merged_cache_data_timestamp" in st.session_state
+            ):
                 merged_data_timestamp = st.session_state["_merged_cache_data_timestamp"]
                 if s3_cache_timestamp > merged_data_timestamp:
                     # S3 cache is newer - clear stale merged data and reload from S3
@@ -2684,11 +2777,16 @@ def load_all_calls_cached(cache_version=0):
         if s3_cache_result and s3_cache_result[0]:
             # Migrate old cache format to new format
             migrated_calls = migrate_old_cache_format(s3_cache_result[0])
-            logger.info(f" Using S3 cache (source of truth): {len(migrated_calls)} calls")
+            logger.info(
+                f" Using S3 cache (source of truth): {len(migrated_calls)} calls"
+            )
             # Store timestamp for future comparison
             if s3_cache_timestamp:
                 st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
-            return (migrated_calls, s3_cache_result[1] if len(s3_cache_result) > 1 else [])
+            return (
+                migrated_calls,
+                s3_cache_result[1] if len(s3_cache_result) > 1 else [],
+            )
 
         # Fall back to disk cache only if S3 unavailable (backup only)
         # NOTE: We don't call load_cached_data_from_disk() here because it also loads from S3
@@ -2708,7 +2806,7 @@ def load_all_calls_cached(cache_version=0):
         is_partial = False
         partial_processed = 0
         partial_total = 0
-    
+
         # NOTE: Removed duplicate check for _merged_cache_data - it's already checked earlier at line 1271
         # and returns immediately, making this check unreachable dead code
 
@@ -2720,7 +2818,7 @@ def load_all_calls_cached(cache_version=0):
             # Migrate old cache format to new format
             disk_call_data = migrate_old_cache_format(disk_call_data)
             cache_count = len(disk_call_data)
-        
+
             # Get cache metadata
             if CACHE_FILE.exists():
                 try:
@@ -2771,7 +2869,7 @@ def load_all_calls_cached(cache_version=0):
                                 del st.session_state["_merged_cache_data"]
                                 if "_merged_cache_errors" in st.session_state:
                                     del st.session_state["_merged_cache_errors"]
-                        
+
                         # Return disk cache (will update Streamlit cache with this value)
                         logger.info(
                             f" USING COMPLETE DISK CACHE: {cache_count} calls - prevents restart loss"
@@ -2803,7 +2901,12 @@ def load_all_calls_cached(cache_version=0):
             max_files = None  # Load all files
             # Clear flag after use (but keep it until load completes to prevent re-triggering)
             # We'll clear it at the end of the try block
-        elif disk_call_data and is_partial and partial_total > 0 and partial_processed < partial_total:
+        elif (
+            disk_call_data
+            and is_partial
+            and partial_total > 0
+            and partial_processed < partial_total
+        ):
             # Partial cache exists - but limit auto-continuation to prevent crashes
             remaining_files = partial_total - partial_processed
 
@@ -2884,7 +2987,9 @@ def load_all_calls_cached(cache_version=0):
                 streamlit_call_data = migrate_old_cache_format(streamlit_call_data)
 
             # Log cache counts for debugging (this happens after S3 load, so Streamlit cache may have data now)
-            streamlit_cache_count = len(streamlit_call_data) if streamlit_call_data else 0
+            streamlit_cache_count = (
+                len(streamlit_call_data) if streamlit_call_data else 0
+            )
             disk_cache_count = len(disk_call_data) if disk_call_data else 0
             logger.info(
                 f" Cache Comparison (after load): Streamlit cache = {streamlit_cache_count} files, Disk cache = {disk_cache_count} files"
@@ -2901,7 +3006,7 @@ def load_all_calls_cached(cache_version=0):
                     logger.info(
                         f"⚡ Detected Streamlit in-memory cache ({len(streamlit_call_data)} calls loaded in {load_duration:.2f}s)"
                     )
-                
+
                 if disk_call_data and len(disk_call_data) > 0:
                     # CRITICAL: Always prefer disk cache if it has more data, regardless of load speed
                     # This ensures we never show stale Streamlit cache when disk cache is more complete
@@ -3020,7 +3125,9 @@ def load_all_calls_cached(cache_version=0):
                         )
                         # Continue anyway - return the successfully loaded data
 
-            logger.info(f" Total time: {elapsed:.1f} seconds ({elapsed / 60:.1f} minutes)")
+            logger.info(
+                f" Total time: {elapsed:.1f} seconds ({elapsed / 60:.1f} minutes)"
+            )
 
             # Clear reload_all_triggered flag after successful load
             if reload_all_triggered:
@@ -3050,12 +3157,14 @@ def load_all_calls_cached(cache_version=0):
             logger.exception(
                 f" Error in load_all_calls_cached after {elapsed:.1f} seconds: {e}"
             )
-            
+
             # CRITICAL: Clear reload_all_triggered flag even on error to prevent infinite retry loop
             if reload_all_triggered:
                 st.session_state["reload_all_triggered"] = False
-                logger.error("Reload ALL Data failed - cleared flag to prevent retry loop")
-            
+                logger.error(
+                    "Reload ALL Data failed - cleared flag to prevent retry loop"
+                )
+
             # Clear load in progress flag and timestamp
             try:
                 if load_in_progress_key in st.session_state:
@@ -3064,7 +3173,7 @@ def load_all_calls_cached(cache_version=0):
                     del st.session_state[load_start_time_key]
             except Exception as clear_error:
                 logger.warning(f"Failed to clear load progress flags: {clear_error}")
-            
+
             # Try to return disk cache if available as fallback
             if disk_call_data and len(disk_call_data) > 0:
                 logger.warning(
@@ -3073,12 +3182,16 @@ def load_all_calls_cached(cache_version=0):
                 # Normalize agent IDs in fallback cache
                 try:
                     disk_call_data = migrate_old_cache_format(disk_call_data)
-                    return disk_call_data, [f"Reload failed: {str(e)}. Using cached data."]
+                    return disk_call_data, [
+                        f"Reload failed: {str(e)}. Using cached data."
+                    ]
                 except Exception as migrate_error:
                     logger.error(f"Failed to migrate fallback cache: {migrate_error}")
                     # Return unmigrated data rather than empty
-                    return disk_call_data, [f"Reload failed: {str(e)}. Using cached data (unmigrated)."]
-            
+                    return disk_call_data, [
+                        f"Reload failed: {str(e)}. Using cached data (unmigrated)."
+                    ]
+
             # Return empty data with error message only if no fallback available
             return [], [f"Failed to load data: {str(e)}"]
     except Exception as e:
@@ -3087,13 +3200,13 @@ def load_all_calls_cached(cache_version=0):
         logger.exception(
             f" Critical error in load_all_calls_cached after {elapsed:.1f} seconds: {e}"
         )
-        
+
         # Clear all flags
         if "reload_all_triggered" in st.session_state:
             st.session_state["reload_all_triggered"] = False
         if load_in_progress_key in st.session_state:
             del st.session_state[load_in_progress_key]
-        
+
         # Return empty data
         return [], [f"Critical error: {str(e)}"]
 
@@ -3102,13 +3215,13 @@ def load_all_calls_cached(cache_version=0):
 @st.cache_data(ttl=3600, show_spinner=False)  # Cache charts for 1 hour
 def get_cached_chart_figure(chart_id: str, data_hash: str, chart_func, *args, **kwargs):
     """Cache matplotlib chart figures to avoid regeneration.
-    
+
     Args:
         chart_id: Unique identifier for the chart type
         data_hash: Hash of the data to ensure cache invalidation on data change
         chart_func: Function that generates the chart
         *args, **kwargs: Arguments to pass to chart_func
-        
+
     Returns:
         matplotlib figure object
     """
@@ -3117,11 +3230,11 @@ def get_cached_chart_figure(chart_id: str, data_hash: str, chart_func, *args, **
 
 def create_data_hash(df: pd.DataFrame, additional_params: dict = None) -> str:
     """Create a hash of the dataframe and parameters for cache key.
-    
+
     Args:
         df: DataFrame to hash
         additional_params: Additional parameters to include in hash
-        
+
     Returns:
         Hash string
     """
@@ -3697,7 +3810,7 @@ def load_new_calls_only():
         existing_calls = (
             disk_result[0] if (disk_result and disk_result[0] is not None) else []
         )
-        
+
         # Extract existing_cache_keys once for duplicate checking
         # Use consistent key extraction logic that matches cache check logic
         existing_cache_keys = set()
@@ -3710,31 +3823,31 @@ def load_new_calls_only():
             logger.debug(
                 f" Built existing_cache_keys: {len(existing_cache_keys)} keys from {len(existing_calls)} calls"
             )
-        
+
         # Get last_save_time from cache metadata (if available)
         last_save_time = 0
         if existing_calls and CACHE_FILE.exists():
             try:
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                        cached_data = json.load(f)
+                    cached_data = json.load(f)
                 last_save_time = cached_data.get("last_save_time", 0)
             except Exception:
                 pass
-        
+
         # Also check session state as fallback for last_save_time
         if not last_save_time:
             last_save_time = getattr(st.session_state, "_last_incremental_save_time", 0)
-        
+
         # Get already processed keys from disk cache (survives restarts)
         # Also check session state as a fallback
         processed_keys = set()
-        
+
         if existing_calls:
             cached_calls = existing_calls
             logger.debug(
                 f" Loaded {len(cached_calls)} calls from disk cache - extracting S3 keys..."
             )
-            
+
             # Extract processed file keys from cached calls
             # NOTE: processed_keys is used for FILE-level checking (which CSV files have been processed)
             # For call-level duplicate checking, we use existing_cache_keys (which uses extract_cache_key)
@@ -3774,7 +3887,7 @@ def load_new_calls_only():
                         sample_keys.append(file_key)
                 else:
                     keys_missing += 1
-            
+
             logger.debug(
                 f" File Key Extraction: {keys_found} file keys found ({csv_files} CSV files, {pdf_files} PDF files), {keys_missing} missing"
             )
@@ -3788,17 +3901,17 @@ def load_new_calls_only():
                 logger.info(
                     " No disk cache found in count_new_csvs - all files will be treated as new"
                 )
-        
+
         # Also check session state (for files processed in current session)
         session_keys = st.session_state.get("processed_s3_keys", set())
         if session_keys:
             processed_keys.update(session_keys)
             logger.info(f" Found {len(session_keys)} additional files in session state")
-        
+
         logger.info(
             f" Total {len(processed_keys)} files already processed - will skip these"
         )
-        
+
         # Configure S3 client
         import botocore.config
 
@@ -3812,7 +3925,7 @@ def load_new_calls_only():
             region_name=st.secrets["s3"].get("region_name", "us-east-1"),
             config=config,
         )
-        
+
         # List all CSV files in S3 (PDFs are ignored)
         paginator = s3_client_with_timeout.get_paginator("list_objects_v2")
         pages = paginator.paginate(
@@ -3825,16 +3938,16 @@ def load_new_calls_only():
         total_s3_files = 0
         sample_s3_keys = []
         all_s3_keys = []  # Store all S3 keys for comparison
-        
+
         # Track pagination progress
         page_count = 0
         files_per_page = []
         is_truncated = False
-        
+
         for page in pages:
             page_count += 1
             page_file_count = 0
-            
+
             if isinstance(page, dict) and "Contents" in page:
                 for obj in page["Contents"]:
                     key_raw = obj.get("Key")
@@ -3860,7 +3973,7 @@ def load_new_calls_only():
                                     "last_modified": last_modified,
                                 }
                             )
-        
+
             files_per_page.append(page_file_count)
             # Check if pagination is truncated (though paginator should handle this automatically)
             if "IsTruncated" in page:
@@ -3870,13 +3983,13 @@ def load_new_calls_only():
                     logger.info(
                         f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
                     )
-            
+
             # Log pagination progress every 10 pages
             if page_count % 10 == 0:
                 logger.info(
                     f" Processing page {page_count}, found {total_s3_files} CSV files so far..."
                 )
-        
+
         # Log pagination completion with final IsTruncated status (combined)
         logger.info(
             f" Pagination complete: {page_count} pages, {total_s3_files} files, IsTruncated={is_truncated} (False=complete, True=may be incomplete)"
@@ -3885,7 +3998,7 @@ def load_new_calls_only():
             logger.debug(
                 f" Files per page: min={min(files_per_page)}, max={max(files_per_page)}, last_page={files_per_page[-1]}"
             )
-        
+
         # Verify pagination completed (warn if suspicious)
         if total_s3_files > 0 and total_s3_files % 1000 == 0:
             logger.warning(
@@ -3895,7 +4008,7 @@ def load_new_calls_only():
             logger.error(
                 "CRITICAL: Last page had IsTruncated=True! Pagination may be incomplete - expected more pages!"
             )
-        
+
         # Additional check: If cache has files and S3 listing found same count, but user expects more files,
         # this might indicate files are in a different location or being filtered
         # Check if last page was full (1000 files) - if so, there might be more pages even if IsTruncated=False
@@ -3911,16 +4024,16 @@ def load_new_calls_only():
                 logger.warning(
                     "If you know there are more files in S3, they may be in a different prefix/folder."
                 )
-        
+
         # Exhaustive key comparison - compare ALL cache keys against ALL S3 keys
         # Count actual matches (exhaustive comparison)
         actual_matches = len([k for k in all_s3_keys if k in processed_keys_normalized])
-        
+
         # Count S3 keys NOT in cache (should equal new files)
         s3_keys_not_in_cache = len(
             [k for k in all_s3_keys if k not in processed_keys_normalized]
         )
-        
+
         # Count cache keys NOT in S3 (orphaned cache entries)
         cache_keys_not_in_s3 = len(
             [k for k in processed_keys_normalized if k not in all_s3_keys]
@@ -3934,22 +4047,22 @@ def load_new_calls_only():
             if len(processed_keys_normalized) > 0
             else 0
         )
-        
+
         # Condensed key comparison results
         logger.info(
             f" Key Comparison: S3={total_s3_files}, Cache={len(processed_keys_normalized)}, Matches={actual_matches}, New={s3_keys_not_in_cache}, Orphaned={cache_keys_not_in_s3}, MatchRate={match_rate:.1f}%, HitRate={cache_hit_rate:.1f}%"
         )
         logger.info(f"   - New files to process: {len(new_csv_keys)}")
-        
+
         # Validate that new file count matches expected
         if s3_keys_not_in_cache != len(new_csv_keys):
             logger.warning(
                 f" WARNING: Mismatch! S3 keys not in cache ({s3_keys_not_in_cache}) != new_csv_keys count ({len(new_csv_keys)})"
             )
-        
+
         if sample_s3_keys:
             logger.info(f" Sample S3 keys (first 10): {sample_s3_keys[:10]}")
-        
+
         # Diagnostic warnings for key matching issues
         if len(processed_keys_normalized) > 0 and cache_hit_rate < 90:
             logger.warning(
@@ -3962,7 +4075,7 @@ def load_new_calls_only():
                 logger.warning(
                     f" Found {cache_keys_not_in_s3} orphaned cache keys (not in S3)"
                 )
-        
+
         # Warn if all files are being treated as new when cache exists
         if (
             len(new_csv_keys) == total_s3_files
@@ -3977,7 +4090,7 @@ def load_new_calls_only():
             )
             logger.error(f" Sample cached keys: {list(processed_keys_normalized)[:5]}")
             logger.error(f" Sample S3 keys: {all_s3_keys[:5]}")
-        
+
         # Validate S3 listing completeness before early exit
         # IMPORTANT: If cache count matches S3 count exactly, but user knows there are more files in S3,
         # this indicates S3 listing is incomplete (files might be in different prefix/folder or filtered out)
@@ -4028,7 +4141,7 @@ def load_new_calls_only():
                 f" WARNING: S3 has {total_s3_files} files, cache has {len(processed_keys_normalized)}, but no new files found!"
             )
             logger.warning("This suggests a comparison issue - proceeding anyway")
-        
+
         # Final early exit check (only if validation passed above)
         if (
             not new_csv_keys
@@ -4039,7 +4152,7 @@ def load_new_calls_only():
                 " No new files found - all files are already processed and verified"
             )
             return [], None, 0  # No new files
-        
+
         # Additional check: if processed count matches total, all should be cached
         if len(processed_keys_normalized) >= total_s3_files and total_s3_files > 0:
             logger.warning(
@@ -4051,17 +4164,17 @@ def load_new_calls_only():
             logger.warning(
                 f" Match rate: {match_rate:.1f}% - Keys are not matching correctly."
             )
-        
+
         # Sort by modification date (most recent first)
         new_csv_keys.sort(key=lambda x: x["last_modified"], reverse=True)
-        
+
         # Process new CSV files
         new_calls = []
         errors = []
-        
+
         def process_csv(key_item):
             """Process a single CSV file: download, parse rows, and return results.
-            
+
             Args:
                 key_item: Either a string (normalized key) or dict with 'key' and 'last_modified'
             """
@@ -4071,7 +4184,7 @@ def load_new_calls_only():
                     normalized_key = key_item["key"]
                 else:
                     normalized_key = key_item
-                
+
                 # Use normalized key for S3
                 s3_key_to_use = normalized_key
                 if s3_prefix and not normalized_key.startswith(s3_prefix):
@@ -4115,20 +4228,20 @@ def load_new_calls_only():
             except Exception as e:
                 logger.warning(f" Failed to process CSV '{normalized_key}': {e}")
                 return [], f"{normalized_key}: {str(e)}"
-        
+
         # Process in smaller batches to reduce lock contention with large cache files
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import time
-        
+
         BATCH_SIZE = 25  # Reduced from 50 to lower memory per batch
         DASHBOARD_UPDATE_INTERVAL = 500
         MAX_FILES_PER_REFRESH = 500  # Reduced from 1000 to process in smaller chunks and reduce memory pressure
-        
+
         # Limit the number of files processed per refresh
         total_new_unlimited = len(new_csv_keys)
         new_csv_keys = new_csv_keys[:MAX_FILES_PER_REFRESH]
         total_new = len(new_csv_keys)
-        
+
         if total_new_unlimited > MAX_FILES_PER_REFRESH:
             remaining = total_new_unlimited - MAX_FILES_PER_REFRESH
             logger.info(
@@ -4163,7 +4276,7 @@ def load_new_calls_only():
             logger.debug("psutil not available for memory monitoring (optional)")
         except Exception as e:
             logger.debug(f"Memory check failed: {e}")
-        
+
         processing_start_time = time.time()
         processed_count = 0
         last_dashboard_update = 0
@@ -4173,27 +4286,27 @@ def load_new_calls_only():
             2  # Save every 2 batches (more frequent to reduce memory accumulation)
         )
         SAVE_INTERVAL_SECONDS = 90  # Or every 90 seconds, whichever comes first
-        
+
         # Note: last_save_time already loaded at start of function (reused here)
-        
+
         # Process in batches
         for batch_start in range(0, total_new, BATCH_SIZE):
             batch_end = min(batch_start + BATCH_SIZE, total_new)
             batch_keys = new_csv_keys[batch_start:batch_end]
             batch_num = batch_start // BATCH_SIZE + 1
             total_batches = (total_new + BATCH_SIZE - 1) // BATCH_SIZE
-            
+
             if batch_num % 5 == 0 or batch_num == 1 or batch_num == total_batches:
                 logger.info(
                     f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
                 )
-            
+
             # Track calls from this batch only (for incremental save)
             batch_calls = []
-            
+
             # OPTIMIZATION: Reuse existing_cache_keys loaded at start (no need to reload from disk)
             # existing_cache_keys already loaded at function start
-            
+
             with ThreadPoolExecutor(
                 max_workers=5
             ) as executor:  # Reduced from 10 to lower memory pressure
@@ -4201,7 +4314,7 @@ def load_new_calls_only():
                     executor.submit(process_csv, item): item["key"]
                     for item in batch_keys
                 }
-                
+
                 for future in as_completed(future_to_key):
                     try:
                         csv_calls_list, error = future.result(
@@ -4225,9 +4338,9 @@ def load_new_calls_only():
                             errors.append(f"Unknown: {str(e)}")
                             processed_count += 1
                             continue
-                    
+
                     processed_count += 1
-                    
+
                     if csv_calls_list:
                         # Extend with list of calls from CSV
                         duplicate_count = 0
@@ -4244,14 +4357,14 @@ def load_new_calls_only():
                             # Not in cache - add to new calls
                         new_calls.append(parsed_data)
                         batch_calls.append(parsed_data)  # Track for this batch
-                        
+
                         if duplicate_count > 0:
                             logger.debug(
                                 f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
                             )
                     elif error:
                         errors.append(error)
-                    
+
                     # Log progress every 100 files (unconditionally for each processed file)
                     if processed_count % 100 == 0:
                         elapsed = time.time() - processing_start_time
@@ -4277,7 +4390,7 @@ def load_new_calls_only():
                                 )
                         except Exception:
                             pass  # Ignore memory check errors
-            
+
             # Update existing_calls with batch data (for next batch)
             # OPTIMIZATION: Use extend() instead of concatenation for better performance
             # This modifies the list in-place (O(k)) instead of creating a new list (O(n))
@@ -4290,7 +4403,7 @@ def load_new_calls_only():
                 if (key := extract_cache_key(call)) is not None
             }
             existing_cache_keys.update(batch_keys_set)
-            
+
             # Periodic memory cleanup every 5 batches
             if batch_num % 5 == 0:
                 import gc
@@ -4304,20 +4417,20 @@ def load_new_calls_only():
                 or (time_since_save >= SAVE_INTERVAL_SECONDS)
                 or (batch_num == total_batches)
             )
-            
+
             # OPTIMIZATION: Save incrementally every 3 batches or 2 minutes (instead of every batch)
             if should_save:
                 try:
                     # existing_calls already contains all calls including current batch (updated above)
                     # Deduplication will happen in save_cached_data_to_disk() - no need to do it here
                     calls_to_save = existing_calls
-                    
+
                     # CRITICAL FIX: Add retry logic for save failures to prevent silent data loss
                     # Retry up to 3 times with exponential backoff
                     max_save_retries = 3
                     save_success = False
                     save_error = None
-                    
+
                     for save_attempt in range(max_save_retries):
                         try:
                             # Use atomic write with locking via save_cached_data_to_disk
@@ -4347,7 +4460,7 @@ def load_new_calls_only():
                                 logger.error(
                                     f" Data loss risk: {len(calls_to_save)} calls not saved to disk"
                                 )
-                    
+
                     if save_success:
                         last_incremental_save_time = time.time()
                         st.session_state._last_incremental_save_time = (
@@ -4409,14 +4522,14 @@ def load_new_calls_only():
                     import traceback
 
                     logger.error(traceback.format_exc())
-            
+
             # Update dashboard every 500 calls
             if processed_count >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
                 logger.info(
                     f" Dashboard update: {processed_count} calls processed, updating progress..."
                 )
                 last_dashboard_update = processed_count
-                
+
                 # Update session state with progress (no rerun to prevent cache corruption)
                 # Progress will be visible on next natural rerun (user interaction or completion)
                 st.session_state["last_refresh_progress_update"] = {
@@ -4424,17 +4537,17 @@ def load_new_calls_only():
                     "total": total_new,
                     "timestamp": time.time(),
                 }
-                
+
                 # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
                 # Progress updates will be visible when refresh completes or user interacts
-        
+
         elapsed_total = time.time() - processing_start_time
         logger.info(
             f" Refresh completed: Processed {total_new} new files in {elapsed_total / 60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}. Cache updated with {len(new_calls)} new calls."
         )
-        
+
         return new_calls, errors if errors else None, len(new_calls)
-        
+
     except Exception as e:
         return [], f"Error loading new calls: {e}", 0
 
@@ -4451,7 +4564,9 @@ skip_auth_after_failures = st.session_state.get("skip_auth_after_failures", Fals
 
 # Check if user has chosen to skip auth after persistent failures
 if skip_auth_after_failures:
-    logger.warning("Skipping authentication due to persistent CookieManager failures (user choice)")
+    logger.warning(
+        "Skipping authentication due to persistent CookieManager failures (user choice)"
+    )
     authenticator = None
 else:
     for attempt in range(max_retries):
@@ -4459,9 +4574,11 @@ else:
             # Add progressive delay before each attempt (except first)
             if attempt > 0:
                 wait_before = retry_delay * (1.5 ** (attempt - 1))
-                logger.info(f"Waiting {wait_before:.1f}s before authentication attempt {attempt + 1}/{max_retries}")
+                logger.info(
+                    f"Waiting {wait_before:.1f}s before authentication attempt {attempt + 1}/{max_retries}"
+                )
                 time.sleep(min(wait_before, 10))  # Cap at 10 seconds
-            
+
             authenticator = stauth.Authenticate(
                 credentials,
                 cookie["name"],
@@ -4476,7 +4593,9 @@ else:
                 time.sleep(1.0)
             except Exception:
                 pass
-            logger.info(f"Authentication component initialized successfully on attempt {attempt + 1}")
+            logger.info(
+                f"Authentication component initialized successfully on attempt {attempt + 1}"
+            )
             break  # Success, exit retry loop
         except Exception as e:
             error_msg = str(e).lower()
@@ -4493,10 +4612,10 @@ else:
                 or "network latency" in error_msg
                 or "proxy settings" in error_msg
             )
-            
+
             if is_component_error and attempt < max_retries - 1:
                 # Retry with exponential backoff (longer delays)
-                wait_time = retry_delay * (2 ** attempt)
+                wait_time = retry_delay * (2**attempt)
                 wait_time = min(wait_time, 15)  # Cap at 15 seconds
                 logger.warning(
                     f"CookieManager initialization failed (attempt {attempt + 1}/{max_retries}). "
@@ -4504,14 +4623,18 @@ else:
                 )
                 # Show a loading message to user
                 if attempt == 0:
-                    with st.spinner(f"Loading authentication component... (attempt {attempt + 1}/{max_retries})"):
+                    with st.spinner(
+                        f"Loading authentication component... (attempt {attempt + 1}/{max_retries})"
+                    ):
                         time.sleep(wait_time)
                 else:
                     time.sleep(wait_time)
                 continue
             else:
                 # Final attempt failed or non-component error
-                logger.error(f"Failed to initialize authenticator after {attempt + 1} attempts: {e}")
+                logger.error(
+                    f"Failed to initialize authenticator after {attempt + 1} attempts: {e}"
+                )
                 if is_component_error:
                     # Will be handled in login section below
                     authenticator = None
@@ -4552,7 +4675,9 @@ if auth_status is None:
         st.markdown("---")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("**🔄 Retry Authentication**", type="primary", width='stretch'):
+            if st.button(
+                "**🔄 Retry Authentication**", type="primary", width="stretch"
+            ):
                 # Clear any cached state and retry
                 if "authenticator_retry_count" not in st.session_state:
                     st.session_state.authenticator_retry_count = 0
@@ -4562,13 +4687,18 @@ if auth_status is None:
                     del st.session_state["skip_auth_after_failures"]
                 st.rerun()
         with col2:
-            if st.button("**⚠️ Continue Without Auth**", type="secondary", width='stretch', help="Skip authentication for this session (not recommended for production)"):
+            if st.button(
+                "**⚠️ Continue Without Auth**",
+                type="secondary",
+                width="stretch",
+                help="Skip authentication for this session (not recommended for production)",
+            ):
                 st.session_state["skip_auth_after_failures"] = True
                 st.session_state["authentication_status"] = True  # Allow access
                 st.session_state["username"] = "guest"
                 st.rerun()
         st.stop()
-    
+
     try:
         # Add a small delay before calling login to give component time to load
         time.sleep(0.5)
@@ -4586,7 +4716,7 @@ if auth_status is None:
             or "cannot assemble" in error_msg
             or "cookie manager" in error_msg
         )
-        
+
         if is_component_error:
             st.error(" **Authentication Component Loading Issue**")
             st.warning(
@@ -4605,8 +4735,13 @@ if auth_status is None:
             st.markdown(
                 "6. **Verify installation** - ensure `extra-streamlit-components` is installed:"
             )
-            st.code("pip install --upgrade extra-streamlit-components streamlit-authenticator", language="bash")
-            st.markdown("7. **Check firewall/proxy settings** - ensure CDN access is not blocked")
+            st.code(
+                "pip install --upgrade extra-streamlit-components streamlit-authenticator",
+                language="bash",
+            )
+            st.markdown(
+                "7. **Check firewall/proxy settings** - ensure CDN access is not blocked"
+            )
             st.markdown("---")
             st.info(
                 " **If the issue persists:** This may be a network/proxy/CDN issue. "
@@ -4618,7 +4753,7 @@ if auth_status is None:
             st.markdown("---")
             col1, col2, col3 = st.columns(3)
             with col1:
-                if st.button("**🔄 Retry Now**", type="primary", width='stretch'):
+                if st.button("**🔄 Retry Now**", type="primary", width="stretch"):
                     # Clear session state to force re-initialization
                     if "skip_auth_after_failures" in st.session_state:
                         del st.session_state["skip_auth_after_failures"]
@@ -4627,12 +4762,17 @@ if auth_status is None:
                     st.session_state.authenticator_retry_count += 1
                     st.rerun()
             with col2:
-                if st.button("**🔄 Hard Refresh**", width='stretch'):
+                if st.button("**🔄 Hard Refresh**", width="stretch"):
                     # Clear more aggressively
                     st.session_state.clear()
                     st.rerun()
             with col3:
-                if st.button("**⚠️ Skip Auth**", type="secondary", width='stretch', help="Skip authentication for this session (not recommended for production)"):
+                if st.button(
+                    "**⚠️ Skip Auth**",
+                    type="secondary",
+                    width="stretch",
+                    help="Skip authentication for this session (not recommended for production)",
+                ):
                     st.session_state["skip_auth_after_failures"] = True
                     st.session_state["authentication_status"] = True  # Allow access
                     st.session_state["username"] = "guest"
@@ -4721,11 +4861,11 @@ def is_regular_admin():
             # Super admins are also regular admins
             return True
         else:
-        # No mapping found - default to admin view for now
-        # You can add mappings in secrets.toml to restrict access
+            # No mapping found - default to admin view for now
+            # You can add mappings in secrets.toml to restrict access
             return True
     except Exception:
-    # If mapping doesn't exist, default to admin view
+        # If mapping doesn't exist, default to admin view
         return True
 
 
@@ -4780,7 +4920,7 @@ if st.sidebar.button("Logout", help="Log out of your account", type="secondary")
         st.session_state.username = None
         st.session_state.name = None
         st.session_state.user_agent_id = None
-        
+
         # Clear data-related session state to prevent issues
         if "reload_all_triggered" in st.session_state:
             del st.session_state["reload_all_triggered"]
@@ -4788,13 +4928,15 @@ if st.sidebar.button("Logout", help="Log out of your account", type="secondary")
             del st.session_state["_s3_cache_result"]
         if "_s3_cache_timestamp" in st.session_state:
             del st.session_state["_s3_cache_timestamp"]
-        
+
         # Call authenticator logout (may fail if CookieManager has issues, but that's OK)
         try:
             authenticator.logout("Logout", "sidebar")
         except Exception as logout_error:
-            logger.warning(f"Authenticator logout had an issue (non-critical): {logout_error}")
-        
+            logger.warning(
+                f"Authenticator logout had an issue (non-critical): {logout_error}"
+            )
+
         # Use rerun to refresh the page
         st.rerun()
     except Exception as e:
@@ -4816,7 +4958,7 @@ def check_for_new_csvs_lightweight():
         # Get already processed keys from disk cache (survives restarts)
         # Also check session state as a fallback
         processed_keys = set()
-        
+
         # First, try to load from disk cache to get already processed keys
         disk_result = load_cached_data_from_disk()
         # CRITICAL FIX: Check if disk_result is None before accessing its elements
@@ -4825,14 +4967,14 @@ def check_for_new_csvs_lightweight():
             logger.info(
                 f" Checking disk cache for processed keys: {len(cached_calls)} calls"
             )
-            
+
             # Extract all S3 keys from cached calls
             keys_found = 0
             keys_missing = 0
             for call in cached_calls:
                 # Try multiple ways to get the S3 key
                 s3_key = call.get("_s3_key") or call.get("_id")
-                
+
                 # If still no key, try to get from filename
                 if not s3_key:
                     filename = call.get("Filename") or call.get("Call ID")
@@ -4849,7 +4991,7 @@ def check_for_new_csvs_lightweight():
                         # Ensure it ends with .csv (legacy format handling)
                         if not s3_key.lower().endswith(".csv"):
                             s3_key = f"{s3_key}.csv"
-                
+
                 # Normalize the key (remove leading/trailing slashes for comparison)
                 if s3_key:
                     s3_key = s3_key.strip("/")
@@ -4857,7 +4999,7 @@ def check_for_new_csvs_lightweight():
                     keys_found += 1
                 else:
                     keys_missing += 1
-            
+
             logger.info(
                 f" Found {keys_found} processed S3 keys in disk cache ({keys_missing} calls missing keys)"
             )
@@ -4865,15 +5007,15 @@ def check_for_new_csvs_lightweight():
             logger.info(
                 " No disk cache found in count_new_csvs - all files will be treated as new"
             )
-        
+
         # Also check session state (for files processed in current session)
         session_keys = st.session_state.get("processed_s3_keys", set())
         if session_keys:
             processed_keys.update(session_keys)
             logger.info(f" Found {len(session_keys)} additional files in session state")
-        
+
         logger.info(f" Total {len(processed_keys)} files already processed")
-        
+
         # Configure S3 client with short timeout for quick checks
         import botocore.config
 
@@ -4887,27 +5029,27 @@ def check_for_new_csvs_lightweight():
             region_name=st.secrets["s3"].get("region_name", "us-east-1"),
             config=config,
         )
-        
+
         # List all CSV files in S3 (quick check - just count, PDFs are ignored)
         paginator = s3_client_quick.get_paginator("list_objects_v2")
         pages = paginator.paginate(
             Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=1000
         )
-        
+
         # Count new CSV files (not in processed_keys)
         new_count = 0
         total_csvs = 0
         processed_keys_normalized = {
             key.strip("/") for key in processed_keys
         }  # Consistent normalization
-        
+
         # Track pagination progress
         page_count = 0
         is_truncated = False
-        
+
         for page in pages:
             page_count += 1
-            
+
             if isinstance(page, dict) and "Contents" in page:
                 for obj in page["Contents"]:
                     key_raw = obj.get("Key")
@@ -4926,12 +5068,12 @@ def check_for_new_csvs_lightweight():
                 # Log IsTruncated status every 10 pages or if truncated
                 if page_count % 10 == 0 or is_truncated:
                     logger.info(f" Page {page_count}: IsTruncated={is_truncated}")
-        
+
         # Log pagination completion with final IsTruncated status (combined)
         logger.info(
             f" Lightweight check: {page_count} pages, {total_csvs} CSV files, IsTruncated={is_truncated} (False=complete, True=may be incomplete)"
         )
-        
+
         # Verify pagination completed (warn if suspicious)
         if total_csvs > 0 and total_csvs % 1000 == 0:
             logger.warning(
@@ -4941,7 +5083,7 @@ def check_for_new_csvs_lightweight():
             logger.error(
                 "CRITICAL: Last page had IsTruncated=True! Pagination may be incomplete - expected more pages!"
             )
-        
+
         # Validate S3 listing completeness
         if len(processed_keys_normalized) > total_csvs:
             logger.error(
@@ -4954,12 +5096,12 @@ def check_for_new_csvs_lightweight():
         logger.info(
             f" CSV Count: {total_csvs} total in S3, {len(processed_keys_normalized)} processed, {new_count} new"
         )
-        
+
         # Note: For lightweight check, we don't do full exhaustive comparison to save time
         # The full exhaustive comparison happens in load_new_calls_only()
-        
+
         return new_count, None
-        
+
     except Exception as e:
         return 0, f"Error checking for new CSV files: {e}"
 
@@ -4983,10 +5125,10 @@ if is_super_admin():
         type="primary",
     ):
         log_audit_event(current_username, "refresh_data", "Refreshed new data from S3")
-        
+
         # Set flag to prevent main data loading during refresh (prevents conflicts and crashes)
         st.session_state["refresh_in_progress"] = True
-        
+
         # IMPORTANT: Preserve Streamlit cache BEFORE refresh to avoid calling load_all_calls_cached() during refresh
         # This prevents crashes from triggering a full S3 reload during the refresh operation
         previous_streamlit_cache = None
@@ -5009,7 +5151,7 @@ if is_super_admin():
             logger.warning(
                 f" Could not preserve Streamlit cache: {e} - will use disk cache only"
             )
-        
+
         # CRITICAL FIX: Wrap load_new_calls_only() in try/except to ensure refresh_in_progress flag is always cleared
         refresh_failed = False
         try:
@@ -5026,7 +5168,7 @@ if is_super_admin():
             )
             # Return early to prevent further processing
             new_calls, new_errors, new_count = [], f"Unexpected error: {e}", 0
-        
+
         # Check if there was an overall error (returns string instead of list)
         if isinstance(new_errors, str):
             # Overall error occurred (e.g., network timeout, S3 access issue)
@@ -5040,7 +5182,7 @@ if is_super_admin():
             # Successfully found and processed new files
             # CRITICAL FIX: load_new_calls_only() already merged new calls with existing_calls incrementally
             # and saved to disk during processing. Don't merge again - just load from disk and verify.
-            
+
             # Load disk cache once (should already contain merged data from incremental saves)
             disk_result = load_cached_data_from_disk()
             # CRITICAL FIX: Check if disk_result is None before accessing its elements
@@ -5050,7 +5192,7 @@ if is_super_admin():
             disk_cached_errors = (
                 disk_result[1] if (disk_result and disk_result[1] is not None) else []
             )
-            
+
             # The disk cache should already contain all merged data from incremental saves
             # Verify that incremental saves worked correctly by checking if new_calls keys are in disk cache
             disk_cache_keys = {
@@ -5063,7 +5205,7 @@ if is_super_admin():
                 for call in new_calls
                 if call.get("_s3_key") or call.get("_id")
             }
-            
+
             # Check if incremental saves worked: all new_calls keys should be in disk cache
             missing_keys = new_calls_keys - disk_cache_keys
             if missing_keys:
@@ -5100,7 +5242,7 @@ if is_super_admin():
                     logger.info(
                         f" Using disk cache directly: {len(all_calls_merged)} calls (already merged from incremental saves)"
                     )
-            
+
             # Mark cache as complete (non-partial) now that refresh is done
             try:
                 save_cached_data_to_disk(
@@ -5117,7 +5259,7 @@ if is_super_admin():
                     "Cache may still be marked as partial - this could cause issues on next refresh"
                 )
                 # Continue anyway - verification will catch this
-            
+
             # Verify disk cache was saved correctly (use single load for verification)
             # CRITICAL FIX: Add error handling for verification load to prevent crashes
             disk_result_verify = None
@@ -5159,7 +5301,7 @@ if is_super_admin():
                     )
                     disk_result_verify = ([], [])
                     disk_cache_count = 0
-            
+
             if disk_cache_count >= len(all_calls_merged):
                 # Disk cache was saved successfully
                 # CRITICAL FIX: Check if disk_result_verify and its elements are valid before using
@@ -5244,17 +5386,17 @@ if is_super_admin():
                                 f" Merging preserved Streamlit cache ({len(previous_streamlit_cache)} calls) with disk cache ({disk_cache_count} calls)"
                             )
 
-                        # Merge preserved Streamlit cache with disk cache
+                            # Merge preserved Streamlit cache with disk cache
                             merged_data = (
                                 previous_streamlit_cache + disk_result_verify[0]
                             )
                         merged_data = deduplicate_calls(merged_data)
                         merged_count = len(merged_data)
-                        
+
                         logger.info(
                             f"Merged result: {merged_count} unique calls (removed {len(previous_streamlit_cache) + len(disk_result_verify[0]) - merged_count} duplicates)"
                         )
-                        
+
                         # Save merged result to disk
                         merge_save_succeeded = False
                         try:
@@ -5285,7 +5427,7 @@ if is_super_admin():
                             logger.error(
                                 "Using disk cache without Streamlit cache merge - some data may be lost"
                             )
-                        
+
                         # CRITICAL FIX: Only store merged_data in session state if save succeeded
                         # If save failed, use disk cache (fallback) to prevent data loss
                         if merge_save_succeeded:
@@ -5406,7 +5548,7 @@ if is_super_admin():
                         st.session_state["_merged_cache_data_timestamp"] = (
                             datetime.now().isoformat()
                         )
-                
+
                 # CRITICAL FIX: Don't clear Streamlit cache - let it update naturally
                 # The merged data is stored in session state (_merged_cache_data)
                 # When load_all_calls_cached() is called next, it will return that data
@@ -5454,7 +5596,7 @@ if is_super_admin():
                     logger.warning(
                         "Using unverified all_calls_merged as fallback - data may be lost on restart"
                     )
-            
+
             # We need to manually update the cache - store in session state temporarily
             st.session_state["merged_calls"] = all_calls_merged
             st.session_state["merged_errors"] = new_errors if new_errors else []
@@ -5520,13 +5662,15 @@ if is_super_admin():
 if is_super_admin():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Admin: Full Reload")
-    
+
     # Check if reload is already in progress
     reload_in_progress = st.session_state.get("reload_all_triggered", False)
-    
+
     if reload_in_progress:
         st.sidebar.warning("⏳ Reload in progress... Please wait.")
-        st.sidebar.info("This may take 10-20 minutes. The page will refresh automatically when complete.")
+        st.sidebar.info(
+            "This may take 10-20 minutes. The page will refresh automatically when complete."
+        )
     else:
         if st.sidebar.button(
             " Reload ALL Data (Admin Only)",
@@ -5541,7 +5685,7 @@ if is_super_admin():
                         "reload_all_data",
                         "Cleared cache and reloaded all data from S3",
                     )
-                
+
                 # Clear Streamlit cache with error handling
                 try:
                     st.cache_data.clear()
@@ -5549,7 +5693,7 @@ if is_super_admin():
                 except Exception as e:
                     logger.warning(f"Failed to clear Streamlit cache: {e}")
                     # Continue anyway - other caches can still be cleared
-                
+
                 # Clear persistent disk cache with timeout handling
                 if CACHE_FILE.exists():
                     try:
@@ -5557,25 +5701,31 @@ if is_super_admin():
                             CACHE_FILE.unlink()
                             logger.info(f" Cleared persistent disk cache: {CACHE_FILE}")
                     except LockTimeoutError:
-                        logger.warning(f"Timeout clearing disk cache (file may be locked)")
+                        logger.warning(
+                            f"Timeout clearing disk cache (file may be locked)"
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to clear disk cache: {e}")
-                
+
                 # Clear S3 cache with retry logic
                 try:
                     s3_client, s3_bucket = get_s3_client_and_bucket()
                     if s3_client and s3_bucket:
                         try:
                             s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                            logger.info(f" Cleared S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}")
+                            logger.info(
+                                f" Cleared S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}"
+                            )
                         except ClientError as e:
                             if e.response.get("Error", {}).get("Code") != "NoSuchKey":
                                 logger.warning(f" Could not delete S3 cache: {e}")
                             else:
-                                logger.info(" S3 cache does not exist (already deleted)")
+                                logger.info(
+                                    " S3 cache does not exist (already deleted)"
+                                )
                 except Exception as e:
                     logger.warning(f"Failed to clear S3 cache: {e}")
-                
+
                 # Clear session state cache keys safely
                 cache_keys_to_clear = [
                     "processed_s3_keys",
@@ -5590,24 +5740,26 @@ if is_super_admin():
                         if key in st.session_state:
                             del st.session_state[key]
                     except Exception as e:
-                        logger.warning(f"Failed to clear session state key '{key}': {e}")
-                
+                        logger.warning(
+                            f"Failed to clear session state key '{key}': {e}"
+                        )
+
                 # Mark that full dataset should be cached after this reload
                 st.session_state["full_dataset_cached"] = (
                     False  # Will be set to True after load completes
                 )
-                
+
                 # Clear load in progress flag to allow new load
                 try:
                     if "_data_load_in_progress" in st.session_state:
                         del st.session_state["_data_load_in_progress"]
                 except Exception as e:
                     logger.warning(f"Failed to clear load in progress flag: {e}")
-                
+
                 # Set flag to trigger full load
                 st.session_state["reload_all_triggered"] = True
                 reload_success = True
-                
+
                 st.success(" Cache cleared! Reloading all data from S3...")
                 logger.info("Reload ALL Data button clicked - starting full reload")
                 st.rerun()
@@ -5625,7 +5777,9 @@ if is_super_admin():
                             del st.session_state["_data_load_in_progress"]
                         logger.info(" Cleared reload flags due to error")
                     except Exception as clear_error:
-                        logger.warning(f"Failed to clear flags in finally block: {clear_error}")
+                        logger.warning(
+                            f"Failed to clear flags in finally block: {clear_error}"
+                        )
                 # Clear all flags if there was an error
                 if "reload_all_triggered" in st.session_state:
                     st.session_state["reload_all_triggered"] = False
@@ -5668,7 +5822,7 @@ logger.info("Starting data load process (user is authenticated)")
 try:
     # Quick connection test with aggressive timeouts (only after login)
     import botocore.config
-    
+
     config = botocore.config.Config(
         connect_timeout=5,  # 5 seconds max
         read_timeout=10,  # 10 seconds max
@@ -5681,10 +5835,10 @@ try:
         region_name=st.secrets["s3"].get("region_name", "us-east-1"),
         config=config,
     )
-    
+
     status_text.text(" Testing S3 connection...")
     logger.debug(f"Testing connection to bucket: {s3_bucket_name}")
-    
+
     # Quick test - just check if we can access the bucket with timeout
     try:
         test_client.head_bucket(Bucket=s3_bucket_name)
@@ -5701,13 +5855,13 @@ try:
         st.info(" **If not, check your S3 credentials or network connection.**")
         # Don't stop - try to load from cache instead
         status_text.text(" Attempting to load from cache...")
-    
+
     # Skip CSV count for faster startup - just load data directly
     pdf_count = None
     logger.debug(
         "Skipping PDF count for faster startup - proceeding to data loading..."
     )
-    
+
 except ClientError as e:
     status_text.empty()
     error_code = e.response.get("Error", {}).get("Code", "Unknown")
@@ -5744,11 +5898,11 @@ errors = []
 try:
     status_text.text(" Loading CSV files from S3...")
     logger.debug("Status text updated, starting timer...")
-    
+
     t0 = time.time()
     was_processing = False  # Track if we actually processed files
     logger.debug(f"Timer started at {t0}")
-    
+
     # Check if we have merged data from smart refresh
     logger.debug("Checking for merged calls in session state...")
     if "merged_calls" in st.session_state:
@@ -5805,7 +5959,7 @@ try:
             # Load all files - first load will process all CSV files, then cached indefinitely for instant access
             # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
             logger.debug("Setting up progress tracking...")
-            
+
             # Initialize progress tracking
             if "csv_processing_progress" not in st.session_state:
                 st.session_state.csv_processing_progress = {
@@ -5816,12 +5970,12 @@ try:
                 logger.debug("Initialized new progress tracking in session state")
             else:
                 logger.debug("Using existing progress tracking from session state")
-            
+
             # Create progress bar placeholder
             progress_placeholder = st.empty()
             progress_bar = None
             logger.debug("Progress placeholder created")
-            
+
             # Show progress if we're processing files
             def update_progress():
                 if st.session_state.csv_processing_progress["total"] > 0:
@@ -5833,17 +5987,17 @@ try:
                         progress,
                         text=f"Processing CSV files: {processed}/{total} ({errors} errors)",
                     )
-            
+
             # Load data (this will trigger processing if not cached)
             # SIMPLE approach: Just call the cached function. Streamlit's cache handles everything.
             # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
             logger.debug("Loading data - Streamlit cache will handle it automatically")
-        
+
         try:
             # Add timeout wrapper
             def timeout_handler(signum, frame):
                 raise TimeoutError("Data loading timed out after 5 minutes")
-            
+
             # Try to load with better error visibility
             loading_placeholder = st.empty()
             with loading_placeholder.container():
@@ -5857,7 +6011,7 @@ try:
             # Store errors in session state for potential cache updates
             st.session_state["_last_load_errors"] = errors
             logger.info(f"Data loaded. Got {len(call_data) if call_data else 0} calls")
-            
+
             # Clear loading messages
             loading_placeholder.empty()
         except TimeoutError:
@@ -5896,7 +6050,7 @@ try:
 
                 st.code(traceback.format_exc())
             st.stop()
-        
+
         # Clear progress after loading
         was_processing = st.session_state.csv_processing_progress.get("total", 0) > 0
         if was_processing:
@@ -5907,12 +6061,14 @@ try:
                 "errors": 0,
                 "processing_start_time": None,
             }
-        
+
         elapsed = time.time() - t0
         status_text.empty()
-    
+
     # Check if we got valid data
-    logger.debug(f"Checking call_data: type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}")
+    logger.debug(
+        f"Checking call_data: type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}"
+    )
     if not call_data and not errors:
         status_text.empty()
         st.warning(
@@ -5922,7 +6078,7 @@ try:
             " Try refreshing the page or clicking ' Reload ALL Data (Admin Only)' if you're an admin."
         )
         st.stop()
-    
+
     # Handle errors - could be a tuple (errors_list, info_message) or just errors
     if errors:
         if isinstance(errors, tuple) and len(errors) == 2:
@@ -5950,8 +6106,10 @@ try:
             # Single error message
             st.error(f" {errors}")
             st.stop()
-    
-    logger.debug(f"Before final check: call_data type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}")
+
+    logger.debug(
+        f"Before final check: call_data type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}"
+    )
     if call_data:
         # Only show cache messages if we actually processed files or refresh was triggered
         refresh_in_progress = st.session_state.get("refresh_in_progress", False)
@@ -6019,9 +6177,11 @@ if call_data:
             if original_agent != normalized_agent:
                 call["Agent"] = normalized_agent
                 agent_normalized_count += 1
-    
+
     if agent_normalized_count > 0:
-        logger.info(f" Normalized {agent_normalized_count} agent IDs before DataFrame creation")
+        logger.info(
+            f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
+        )
 
 meta_df = pd.DataFrame(call_data)
 
@@ -6037,17 +6197,17 @@ def create_anonymous_mapping(values, prefix="ID"):
     """
     if not is_anonymous_user:
         return {}
-    
+
     # Filter out null/empty values and get unique sorted list for consistency
     unique_values = sorted(
         [str(v).strip() for v in values if pd.notna(v) and str(v).strip()]
     )
-    
+
     # Create mapping: real value -> anonymous ID (Agent-001, Agent-002, etc.)
     mapping = {}
     for idx, value in enumerate(unique_values, start=1):
         mapping[value] = f"{prefix}-{idx:03d}"
-    
+
     return mapping
 
 
@@ -6059,26 +6219,26 @@ if "anonymization_mappings" not in st.session_state:
 def anonymize_dataframe(df, create_mappings_from=None):
     """
     Anonymize identifying columns in the dataframe using vectorized operations for speed.
-    
+
     Args:
         df: DataFrame to anonymize
         create_mappings_from: Optional DataFrame to use for creating mappings (for consistency)
     """
     if not is_anonymous_user:
         return df
-    
+
     df = df.copy()
-    
+
     # Use provided dataframe for mapping creation, or use current df
     mapping_source = create_mappings_from if create_mappings_from is not None else df
-    
+
     # Create or reuse mappings from session state for consistency
     if "Agent" in mapping_source.columns:
         if "agent_mapping" not in st.session_state.anonymization_mappings:
             logger.info("Creating agent anonymization mapping...")
             st.session_state.anonymization_mappings["agent_mapping"] = (
                 create_anonymous_mapping(
-                mapping_source["Agent"].dropna().unique(), "Agent"
+                    mapping_source["Agent"].dropna().unique(), "Agent"
                 )
             )
         agent_mapping = st.session_state.anonymization_mappings["agent_mapping"]
@@ -6089,13 +6249,13 @@ def anonymize_dataframe(df, create_mappings_from=None):
             df.loc[mask, "Agent"] = (
                 df.loc[mask, "Agent"].astype(str).str.strip().replace(agent_mapping)
             )
-    
+
     if "Company" in mapping_source.columns:
         if "company_mapping" not in st.session_state.anonymization_mappings:
             logger.info("Creating company anonymization mapping...")
             st.session_state.anonymization_mappings["company_mapping"] = (
                 create_anonymous_mapping(
-                mapping_source["Company"].dropna().unique(), "Company"
+                    mapping_source["Company"].dropna().unique(), "Company"
                 )
             )
         company_mapping = st.session_state.anonymization_mappings["company_mapping"]
@@ -6106,13 +6266,13 @@ def anonymize_dataframe(df, create_mappings_from=None):
             df.loc[mask, "Company"] = (
                 df.loc[mask, "Company"].astype(str).str.strip().replace(company_mapping)
             )
-    
+
     if "Call ID" in mapping_source.columns:
         if "call_id_mapping" not in st.session_state.anonymization_mappings:
             logger.info("Creating call ID anonymization mapping...")
             st.session_state.anonymization_mappings["call_id_mapping"] = (
                 create_anonymous_mapping(
-                mapping_source["Call ID"].dropna().unique(), "Call"
+                    mapping_source["Call ID"].dropna().unique(), "Call"
                 )
             )
         call_id_mapping = st.session_state.anonymization_mappings["call_id_mapping"]
@@ -6123,7 +6283,7 @@ def anonymize_dataframe(df, create_mappings_from=None):
             df.loc[mask, "Call ID"] = (
                 df.loc[mask, "Call ID"].astype(str).str.strip().replace(call_id_mapping)
             )
-    
+
     return df
 
 
@@ -6301,10 +6461,10 @@ meta_df.rename(
         "summary": "Summary",
         "strengths": "Strengths",
         "challenges": "Challenges",
-    "coaching_suggestions": "Coaching Suggestions",
-    "rubric_details": "Rubric Details",
-    "rubric_pass_count": "Rubric Pass Count",
-    "rubric_fail_count": "Rubric Fail Count",
+        "coaching_suggestions": "Coaching Suggestions",
+        "rubric_details": "Rubric Details",
+        "rubric_pass_count": "Rubric Pass Count",
+        "rubric_fail_count": "Rubric Fail Count",
     },
     inplace=True,
 )
@@ -6441,9 +6601,11 @@ if "Agent" in meta_df.columns:
     changed_count = changed_mask.sum()
 
     # VERIFICATION: Check for any non-normalized agent IDs (should not happen after pre-DataFrame normalization)
-    non_normalized_mask = meta_df["Agent"].notna() & ~meta_df["Agent"].astype(str).str.match(r"^Agent \d+$", na=False)
+    non_normalized_mask = meta_df["Agent"].notna() & ~meta_df["Agent"].astype(
+        str
+    ).str.match(r"^Agent \d+$", na=False)
     non_normalized_count = non_normalized_mask.sum()
-    
+
     if non_normalized_count > 0:
         logger.warning(
             f" Found {non_normalized_count} non-normalized agent IDs after DataFrame creation. "
@@ -6520,14 +6682,14 @@ if user_agent_id:
 if user_agent_id:
     # Agent view - filter to their calls only
     agent_calls_df = meta_df[meta_df["Agent"] == user_agent_id].copy()
-    
+
     if agent_calls_df.empty:
         st.warning(f" No calls found for agent: {user_agent_id}")
         st.info(
             "If this is incorrect, please contact your administrator to update your agent ID mapping."
         )
         st.stop()
-    
+
     # Use agent's data for filtering
     filter_df = agent_calls_df
     show_comparison = True  # Always show comparison for agents
@@ -6768,7 +6930,7 @@ with st.sidebar.expander(" Saved Filter Presets"):
                 ):
                     del st.session_state.saved_filter_presets[preset_name]
                     st.rerun()
-    
+
     # Save current filter as preset
     st.markdown("---")
     preset_name = st.text_input(
@@ -6821,9 +6983,9 @@ if "Rubric Details" in meta_df.columns:
             for code, details in rubric_details.items():
                 if code not in all_rubric_codes:
                     all_rubric_codes.append(code)
-    
+
     all_rubric_codes.sort()
-    
+
     if all_rubric_codes:
         rubric_filter_type = st.sidebar.radio(
             "Filter Type",
@@ -6831,7 +6993,7 @@ if "Rubric Details" in meta_df.columns:
             index=0,
             horizontal=True,
         )
-        
+
         selected_rubric_codes = st.sidebar.multiselect(
             f"Select Rubric Codes ({rubric_filter_type})",
             options=all_rubric_codes,
@@ -6842,7 +7004,7 @@ if "Rubric Details" in meta_df.columns:
         )
         st.session_state.selected_rubric_codes = selected_rubric_codes
         st.session_state.rubric_filter_type = rubric_filter_type
-        
+
         # Also collect failed codes for backward compatibility
         failed_rubric_codes = [code for code in all_rubric_codes]
         selected_failed_codes = (
@@ -6905,7 +7067,7 @@ if selected_labels:
 if search_text:
     search_lower = search_text.lower()
     search_mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
-    
+
     # Search across multiple fields
     search_fields = [
         "Reason",
@@ -6924,13 +7086,13 @@ if search_text:
                 .str.contains(search_lower, na=False)
             )
             search_mask = search_mask | field_mask
-    
+
     filtered_df = filtered_df[search_mask].copy()
 
 # Apply enhanced rubric code filter
 if selected_rubric_codes:
     rubric_mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
-    
+
     for idx, row in filtered_df.iterrows():
         rubric_details = row.get("Rubric Details", {})
         if isinstance(rubric_details, dict):
@@ -6948,13 +7110,13 @@ if selected_rubric_codes:
                         elif rubric_filter_type == "Passed Only" and status == "pass":
                             rubric_mask[idx] = True
                             break
-    
+
     filtered_df = filtered_df[rubric_mask].copy()
 
 # Apply legacy failed rubric codes filter (for backward compatibility)
 if selected_failed_codes:
     failed_mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
-    
+
     for idx, row in filtered_df.iterrows():
         rubric_details = row.get("Rubric Details", {})
         if isinstance(rubric_details, dict):
@@ -6964,7 +7126,7 @@ if selected_failed_codes:
                     if isinstance(details, dict) and details.get("status") == "Fail":
                         failed_mask[idx] = True
                         break
-    
+
     filtered_df = filtered_df[failed_mask].copy()
 
 # Calculate overall averages for comparison (from all data, not filtered)
@@ -6974,52 +7136,55 @@ if show_comparison and user_agent_id:
         (meta_df["Call Date"].dt.date >= start_date)
         & (meta_df["Call Date"].dt.date <= end_date)
     ].copy()
-    
+
     # Calculate averages per agent first, then average those agent averages
     # This gives equal weight to each agent rather than weighting by call volume
     # Exclude the current user's agent from peer comparison
     agent_metrics = []
-    
+
     for agent in overall_df["Agent"].unique():
         # Skip if this is the current user's agent (we want peer average)
         if agent == user_agent_id:
             continue
-            
+
         agent_data = overall_df[overall_df["Agent"] == agent]
         agent_metric = {}
-        
+
         # Average QA Score per agent
         if "QA Score" in agent_data.columns:
             agent_avg_score = agent_data["QA Score"].mean()
             if not pd.isna(agent_avg_score):
                 agent_metric["avg_score"] = agent_avg_score
-        
+
         # Pass rate per agent
-        if "Rubric Pass Count" in agent_data.columns and "Rubric Fail Count" in agent_data.columns:
+        if (
+            "Rubric Pass Count" in agent_data.columns
+            and "Rubric Fail Count" in agent_data.columns
+        ):
             total_pass = agent_data["Rubric Pass Count"].sum()
             total_fail = agent_data["Rubric Fail Count"].sum()
             if (total_pass + total_fail) > 0:
-                agent_metric["pass_rate"] = (total_pass / (total_pass + total_fail) * 100)
-        
+                agent_metric["pass_rate"] = total_pass / (total_pass + total_fail) * 100
+
         # Average AHT per agent
         if "Call Duration (min)" in agent_data.columns:
             aht_values = agent_data["Call Duration (min)"].dropna()
             if len(aht_values) > 0:
                 agent_metric["avg_aht"] = aht_values.mean()
-        
+
         if agent_metric:
             agent_metrics.append(agent_metric)
-    
+
     # Now average the agent averages
     if agent_metrics:
         # Average QA Score (average of agent averages)
         scores = [m.get("avg_score") for m in agent_metrics if "avg_score" in m]
         overall_avg_score = sum(scores) / len(scores) if scores else 0
-        
+
         # Average Pass Rate (average of agent pass rates)
         pass_rates = [m.get("pass_rate") for m in agent_metrics if "pass_rate" in m]
         overall_pass_rate = sum(pass_rates) / len(pass_rates) if pass_rates else 0
-        
+
         # Average AHT (average of agent averages)
         ahts = [m.get("avg_aht") for m in agent_metrics if "avg_aht" in m]
         overall_avg_aht = sum(ahts) / len(ahts) if ahts else None
@@ -7027,7 +7192,7 @@ if show_comparison and user_agent_id:
         overall_avg_score = 0
         overall_pass_rate = 0
         overall_avg_aht = None
-    
+
     overall_total_calls = len(overall_df)
 else:
     overall_avg_score = None
@@ -7075,7 +7240,7 @@ if selected_failed_codes:
                     if isinstance(details, dict) and details.get("status") == "Fail":
                         return True
         return False
-    
+
     filtered_df = filtered_df[
         filtered_df.apply(
             lambda row: has_failed_code(row, selected_failed_codes), axis=1
@@ -7100,7 +7265,7 @@ if is_super_admin():
     ):
         st.markdown("### Usage Metrics")
         metrics = load_metrics()
-        
+
         metric_col1, metric_col2, metric_col3 = st.columns(3)
         with metric_col1:
             st.metric("Total Sessions", metrics.get("sessions", 0))
@@ -7112,7 +7277,7 @@ if is_super_admin():
         with metric_col3:
             unique_features = len(metrics.get("features_used", {}))
             st.metric("Features Used", unique_features)
-        
+
         # Show repeated failures
         repeated_failures = {
             k: v for k, v in metrics.get("errors", {}).items() if v.get("count", 0) >= 5
@@ -7125,13 +7290,13 @@ if is_super_admin():
                 st.markdown(
                     f"- **{error_key}**: {error_data['count']} occurrences (First: {error_data.get('first_seen', 'N/A')}, Last: {error_data.get('last_seen', 'N/A')})"
                 )
-        
+
         # Show feature usage
         if metrics.get("features_used"):
             st.markdown("### Feature Usage")
             feature_df = pd.DataFrame(
                 [
-                {"Feature": k, "Usage Count": v}
+                    {"Feature": k, "Usage Count": v}
                     for k, v in sorted(
                         metrics.get("features_used", {}).items(),
                         key=lambda x: x[1],
@@ -7140,16 +7305,16 @@ if is_super_admin():
                 ]
             )
             st.dataframe(feature_df, hide_index=True)
-        
+
         # Show recent errors
         if metrics.get("errors"):
             st.markdown("### Recent Errors")
             error_df = pd.DataFrame(
                 [
-                {
-                    "Error": k.split(":")[0],
-                    "Message": k.split(":", 1)[1] if ":" in k else k,
-                    "Count": v.get("count", 0),
+                    {
+                        "Error": k.split(":")[0],
+                        "Message": k.split(":", 1)[1] if ":" in k else k,
+                        "Count": v.get("count", 0),
                         "Last Seen": v.get("last_seen", "N/A"),
                     }
                     for k, v in sorted(
@@ -7160,10 +7325,10 @@ if is_super_admin():
                 ]
             )
             st.dataframe(error_df, hide_index=True)
-        
+
         if st.button("Refresh Metrics"):
             st.rerun()
-        
+
         # Audit Log Viewer (Shannon and Chloe only)
         if current_username and current_username.lower() in ["chloe", "shannon"]:
             st.markdown("---")
@@ -7173,7 +7338,7 @@ if is_super_admin():
                 try:
                     with open(audit_file, "r") as f:
                         audit_log = json.load(f)
-                    
+
                     if audit_log:
                         # Show recent audit entries
                         st.write(f"**Total audit entries:** {len(audit_log)}")
@@ -7182,7 +7347,7 @@ if is_super_admin():
                         audit_df["timestamp"] = pd.to_datetime(audit_df["timestamp"])
                         audit_df = audit_df.sort_values("timestamp", ascending=False)
                         st.dataframe(audit_df, hide_index=True)
-                        
+
                         # Filter by action type
                         action_types = audit_df["action"].unique().tolist()
                         selected_action = st.selectbox(
@@ -7206,10 +7371,10 @@ if is_super_admin():
 if is_super_admin():
     with st.expander("Data Quality Validation", expanded=False):
         st.markdown("### Data Quality Metrics")
-        
+
         validation_issues = []
         validation_stats = {}
-        
+
         # Check for missing required fields
         required_fields = ["Agent", "Call Date", "QA Score", "Label"]
         for field in required_fields:
@@ -7228,7 +7393,7 @@ if is_super_admin():
                     validation_issues.append(
                         f"**{field}**: {missing_count} missing ({missing_pct:.1f}%)"
                     )
-        
+
         # Check for invalid QA scores
         if "QA Score" in meta_df.columns:
             invalid_scores = meta_df[
@@ -7240,7 +7405,7 @@ if is_super_admin():
                     f"**QA Score**: {invalid_count} invalid scores (outside 0-100%)"
                 )
             validation_stats["Invalid QA Scores"] = invalid_count
-        
+
         # Check for missing rubric details
         if "Rubric Details" in meta_df.columns:
             missing_rubric = meta_df["Rubric Details"].isna().sum()
@@ -7249,7 +7414,7 @@ if is_super_admin():
                     f"**Rubric Details**: {missing_rubric} calls missing rubric data"
                 )
             validation_stats["Missing Rubric"] = missing_rubric
-        
+
         # Check for duplicate call IDs
         if "Call ID" in meta_df.columns:
             duplicates = meta_df[meta_df["Call ID"].duplicated(keep=False)]
@@ -7259,7 +7424,7 @@ if is_super_admin():
                     f"**Call ID**: {duplicate_count} duplicate call IDs found"
                 )
             validation_stats["Duplicate Call IDs"] = duplicate_count
-        
+
         # Display validation results
         if validation_issues:
             st.warning(f" Found {len(validation_issues)} data quality issue(s):")
@@ -7267,7 +7432,7 @@ if is_super_admin():
                 st.markdown(f"- {issue}")
         else:
             st.success(" No data quality issues detected!")
-        
+
         # Show detailed stats table
         if validation_stats:
             st.markdown("### Detailed Statistics")
@@ -7285,7 +7450,7 @@ if is_super_admin():
                         if isinstance(v, dict)
                         else "N/A",
                     }
-                for k, v in validation_stats.items()
+                    for k, v in validation_stats.items()
                 ]
             )
             st.dataframe(stats_df, hide_index=True)
@@ -7294,14 +7459,14 @@ if is_super_admin():
 if show_comparison and user_agent_id:
     # Agent view with comparison
     col1, col2, col3, col4, col5, col6 = st.columns(6)
-    
+
     with col1:
         my_calls = len(filtered_df)
         st.metric(
             "My Calls",
             my_calls,
         )
-    
+
     with col2:
         my_avg_score = (
             filtered_df["QA Score"].mean() if "QA Score" in filtered_df.columns else 0
@@ -7310,10 +7475,10 @@ if show_comparison and user_agent_id:
         st.metric(
             "My Avg Score",
             f"{my_avg_score:.1f}%",
-                 delta=f"{delta_score:+.1f}%" if delta_score is not None else None,
+            delta=f"{delta_score:+.1f}%" if delta_score is not None else None,
             delta_color="normal" if delta_score and delta_score >= 0 else "inverse",
         )
-    
+
     with col3:
         my_total_pass = (
             filtered_df["Rubric Pass Count"].sum()
@@ -7334,10 +7499,10 @@ if show_comparison and user_agent_id:
         st.metric(
             "My Pass Rate",
             f"{my_pass_rate:.1f}%",
-                 delta=f"{delta_pass:+.1f}%" if delta_pass is not None else None,
+            delta=f"{delta_pass:+.1f}%" if delta_pass is not None else None,
             delta_color="normal" if delta_pass and delta_pass >= 0 else "inverse",
         )
-    
+
     with col4:
         my_avg_aht = (
             filtered_df["Call Duration (min)"].mean()
@@ -7362,7 +7527,7 @@ if show_comparison and user_agent_id:
             delta=delta_value,
             delta_color=delta_color_value,
         )
-    
+
     with col5:
         st.metric(
             "Overall Avg Score",
@@ -7374,11 +7539,11 @@ if show_comparison and user_agent_id:
             "Overall Pass Rate",
             f"{overall_pass_rate:.1f}%" if overall_pass_rate else "N/A",
         )
-    
+
     # Comparison section
     st.subheader("My Performance vs. Team Average")
     comp_col1, comp_col2, comp_col3 = st.columns(3)
-    
+
     with comp_col1:
         st.write("**QA Score Comparison**")
         comparison_data = pd.DataFrame(
@@ -7408,7 +7573,7 @@ if show_comparison and user_agent_id:
         plt.xticks(rotation=0)
         plt.tight_layout()
         st_pyplot_safe(fig_comp)
-    
+
     with comp_col2:
         st.write("**Pass Rate Comparison**")
         pass_comparison = pd.DataFrame(
@@ -7455,7 +7620,7 @@ if show_comparison and user_agent_id:
             st_pyplot_safe(fig_aht)
         else:
             st.info("AHT data not available")
-    
+
 else:
     # Admin/All data view
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -7624,9 +7789,9 @@ if not user_agent_id:
         filtered_df.groupby("Agent")
         .agg(
             Total_Calls=("Call ID", "count"),
-        Avg_QA_Score=("QA Score", "mean"),
-        Total_Pass=("Rubric Pass Count", "sum"),
-        Total_Fail=("Rubric Fail Count", "sum"),
+            Avg_QA_Score=("QA Score", "mean"),
+            Total_Pass=("Rubric Pass Count", "sum"),
+            Total_Fail=("Rubric Fail Count", "sum"),
             Avg_Call_Duration=("Call Duration (min)", "mean"),
         )
         .reset_index()
@@ -7744,10 +7909,10 @@ else:
     my_performance = (
         filtered_df.groupby("Agent")
         .agg(
-        Total_Calls=("Call ID", "count"),
-        Avg_QA_Score=("QA Score", "mean"),
-        Total_Pass=("Rubric Pass Count", "sum"),
-        Total_Fail=("Rubric Fail Count", "sum"),
+            Total_Calls=("Call ID", "count"),
+            Avg_QA_Score=("QA Score", "mean"),
+            Total_Pass=("Rubric Pass Count", "sum"),
+            Total_Fail=("Rubric Fail Count", "sum"),
             Avg_Call_Duration=("Call Duration (min)", "mean"),
         )
         .reset_index()
@@ -7758,7 +7923,7 @@ else:
         / (my_performance["Total_Pass"] + my_performance["Total_Fail"])
         * 100
     ).fillna(0)
-    
+
     # Create comparison table
     comparison_table = pd.DataFrame(
         {
@@ -7769,22 +7934,22 @@ else:
                 "Avg Call Duration (min)",
             ],
             "My Performance": [
-            str(int(my_performance["Total_Calls"].iloc[0])),
-            f"{my_performance['Avg_QA_Score'].iloc[0]:.1f}%",
-            f"{my_performance['Pass_Rate'].iloc[0]:.1f}%",
+                str(int(my_performance["Total_Calls"].iloc[0])),
+                f"{my_performance['Avg_QA_Score'].iloc[0]:.1f}%",
+                f"{my_performance['Pass_Rate'].iloc[0]:.1f}%",
                 f"{my_performance['Avg_Call_Duration'].iloc[0]:.1f}"
                 if not pd.isna(my_performance["Avg_Call_Duration"].iloc[0])
                 else "N/A",
-        ],
+            ],
             "Team Average": [
-            str(overall_total_calls) if overall_total_calls else "0",
-            f"{overall_avg_score:.1f}%" if overall_avg_score else "0.0%",
-            f"{overall_pass_rate:.1f}%" if overall_pass_rate else "0.0%",
+                str(overall_total_calls) if overall_total_calls else "0",
+                f"{overall_avg_score:.1f}%" if overall_avg_score else "0.0%",
+                f"{overall_pass_rate:.1f}%" if overall_pass_rate else "0.0%",
                 "N/A",  # Could calculate if needed
             ],
         }
     )
-    
+
     st.dataframe(comparison_table, hide_index=True)
 
 # --- Call Reason & Outcome Analysis ---
@@ -7881,7 +8046,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             index="Date", columns="Reason", values="Count"
                         ).fillna(0)
 
-                        fig_reason_trend, ax_reason_trend = plt.subplots(figsize=(12, 6))
+                        fig_reason_trend, ax_reason_trend = plt.subplots(
+                            figsize=(12, 6)
+                        )
                         for reason in top_5_reasons:
                             if reason in reason_trend_pivot.columns:
                                 ax_reason_trend.plot(
@@ -7966,7 +8133,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                     filtered_df_outcome["Call Date"] = pd.to_datetime(
                         filtered_df_outcome["Call Date"], errors="coerce"
                     )
-                    filtered_df_outcome = filtered_df_outcome.dropna(subset=["Call Date"])
+                    filtered_df_outcome = filtered_df_outcome.dropna(
+                        subset=["Call Date"]
+                    )
 
                     if len(filtered_df_outcome) > 0:
                         # Group by date and outcome
@@ -7982,7 +8151,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             index="Date", columns="Outcome", values="Count"
                         ).fillna(0)
 
-                        fig_outcome_trend, ax_outcome_trend = plt.subplots(figsize=(12, 6))
+                        fig_outcome_trend, ax_outcome_trend = plt.subplots(
+                            figsize=(12, 6)
+                        )
                         for outcome in top_5_outcomes:
                             if outcome in outcome_trend_pivot.columns:
                                 ax_outcome_trend.plot(
@@ -8029,7 +8200,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         product_counts = pd.Series(product_data).value_counts().head(10)
                         if len(product_counts) > 0:
                             fig_product, ax_product = plt.subplots(figsize=(8, 6))
-                            product_counts.plot(kind="barh", ax=ax_product, color="orange")
+                            product_counts.plot(
+                                kind="barh", ax=ax_product, color="orange"
+                            )
                             ax_product.set_xlabel("Number of Mentions")
                             ax_product.set_title("Top 10 Products Discussed")
                             plt.tight_layout()
@@ -8054,7 +8227,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             else:
                                 pie_data = top_products
 
-                            fig_product_pie, ax_product_pie = plt.subplots(figsize=(8, 6))
+                            fig_product_pie, ax_product_pie = plt.subplots(
+                                figsize=(8, 6)
+                            )
                             wedges, texts, autotexts = ax_product_pie.pie(
                                 pie_data.values,
                                 labels=None,  # Remove labels from pie chart
@@ -8144,7 +8319,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                                             )
                                     ax_product_trend.set_xlabel("Date")
                                     ax_product_trend.set_ylabel("Number of Mentions")
-                                    ax_product_trend.set_title("Top 5 Products Over Time")
+                                    ax_product_trend.set_title(
+                                        "Top 5 Products Over Time"
+                                    )
                                     ax_product_trend.legend()
                                     ax_product_trend.grid(True, alpha=0.3)
                                     plt.xticks(rotation=45)
@@ -8945,7 +9122,7 @@ with st.expander("QA Score Trends Over Time", expanded=False):
                 .reset_index()
             )
             daily_scores.columns = ["Date", "Avg QA Score"]
-            
+
             fig_trend, ax_trend = plt.subplots(figsize=(10, 5))
             ax_trend.plot(
                 daily_scores["Date"],
@@ -8990,7 +9167,7 @@ with st.expander("QA Score Trends Over Time", expanded=False):
             daily_stats["Fail_Rate"] = (
                 daily_stats["Total_Fail"] / daily_stats["Total"] * 100
             ).fillna(0)
-            
+
             # Create line chart
             fig_pf, ax_pf = plt.subplots(figsize=(10, 5))
             ax_pf.plot(
@@ -9031,7 +9208,7 @@ with st.expander("Rubric Code Analysis", expanded=False):
                     if isinstance(details, dict):
                         status = details.get("status", "N/A")
                         note = details.get("note", "")
-                        
+
                         if code not in code_stats:
                             code_stats[code] = {
                                 "total": 0,
@@ -9050,7 +9227,7 @@ with st.expander("Rubric Code Analysis", expanded=False):
                             code_stats[code]["fail_notes"].append(note)
                         elif status == "N/A":
                             code_stats[code]["na"] += 1
-        
+
         if code_stats:
             rubric_analysis = pd.DataFrame(
                 [
@@ -9077,36 +9254,21 @@ with st.expander("Rubric Code Analysis", expanded=False):
             )
             rubric_analysis = rubric_analysis.sort_values("Fail_Rate", ascending=False)
 
-            rubric_col1, rubric_col2 = st.columns(2)
-
-            with rubric_col1:
-                st.write("**Top 10 Failed Rubric Codes**")
-                top_failed = rubric_analysis.head(10)
-                st.dataframe(
-                    top_failed[
-                        [
-                            "Code",
-                            "Total",
-                            "Fail",
-                            "Fail_Rate",
-                            "Most_Common_Fail_Reason",
-                        ]
-                    ],
-                    hide_index=True,
-                )
-
-            with rubric_col2:
-                st.write("**Fail Rate Distribution**")
-                fig_rubric, ax_rubric = plt.subplots(figsize=(8, 6))
-                top_failed.plot(
-                    x="Code", y="Fail_Rate", kind="bar", ax=ax_rubric, color="red"
-                )
-                ax_rubric.set_ylabel("Fail Rate (%)")
-                ax_rubric.set_xlabel("Rubric Code")
-                ax_rubric.set_title("Top 10 Failed Rubric Codes")
-                plt.xticks(rotation=45, ha="right")
-                plt.tight_layout()
-                st_pyplot_safe(fig_rubric)
+            # Top 10 Failed Rubric Codes - full width
+            st.write("**Top 10 Failed Rubric Codes**")
+            top_failed = rubric_analysis.head(10)
+            st.dataframe(
+                top_failed[
+                    [
+                        "Code",
+                        "Total",
+                        "Fail",
+                        "Fail_Rate",
+                        "Most_Common_Fail_Reason",
+                    ]
+                ],
+                hide_index=True,
+            )
 
             # Category-level analysis
             if code_stats:
@@ -9114,7 +9276,11 @@ with st.expander("Rubric Code Analysis", expanded=False):
                 for code, stats in code_stats.items():
                     # Extract category from code (e.g., "A1" from "A1.1")
                     category = (
-                        code.split(".")[0] if "." in code else code[0] if code else "Other"
+                        code.split(".")[0]
+                        if "." in code
+                        else code[0]
+                        if code
+                        else "Other"
                     )
 
                     if category not in category_stats:
@@ -9146,27 +9312,46 @@ with st.expander("Rubric Code Analysis", expanded=False):
                             for cat, stats in category_stats.items()
                         ]
                     )
-                    category_df = category_df.sort_values("Avg_Fail_Rate", ascending=False)
-
-                    st.write("**Fail Rate by Rubric Category**")
-                    fig_heat, ax_heat = plt.subplots(figsize=(3, 2))
-                    colors = [
-                        "green" if x < 20 else "orange" if x < 40 else "red"
-                        for x in category_df["Avg_Fail_Rate"]
-                    ]
-                    category_df.plot(
-                        x="Category",
-                        y="Avg_Fail_Rate",
-                        kind="bar",
-                        ax=ax_heat,
-                        color=colors,
+                    category_df = category_df.sort_values(
+                        "Avg_Fail_Rate", ascending=False
                     )
-                    ax_heat.set_ylabel("Average Fail Rate (%)")
-                    ax_heat.set_xlabel("Rubric Category")
-                    ax_heat.set_title("Fail Rate by Rubric Category")
-                    plt.xticks(rotation=0)
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_heat)
+
+                    # Put Fail Rate Distribution and Fail Rate by Rubric Category side by side
+                    rubric_col1, rubric_col2 = st.columns(2)
+
+                    with rubric_col1:
+                        st.write("**Fail Rate Distribution**")
+                        fig_rubric, ax_rubric = plt.subplots(figsize=(8, 6))
+                        top_failed.plot(
+                            x="Code", y="Fail_Rate", kind="bar", ax=ax_rubric, color="red"
+                        )
+                        ax_rubric.set_ylabel("Fail Rate (%)")
+                        ax_rubric.set_xlabel("Rubric Code")
+                        ax_rubric.set_title("Top 10 Failed Rubric Codes")
+                        plt.xticks(rotation=45, ha="right")
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_rubric)
+
+                    with rubric_col2:
+                        st.write("**Fail Rate by Rubric Category**")
+                        fig_heat, ax_heat = plt.subplots(figsize=(8, 6))
+                        colors = [
+                            "green" if x < 20 else "orange" if x < 40 else "red"
+                            for x in category_df["Avg_Fail_Rate"]
+                        ]
+                        category_df.plot(
+                            x="Category",
+                            y="Avg_Fail_Rate",
+                            kind="bar",
+                            ax=ax_heat,
+                            color=colors,
+                        )
+                        ax_heat.set_ylabel("Average Fail Rate (%)")
+                        ax_heat.set_xlabel("Rubric Category")
+                        ax_heat.set_title("Fail Rate by Rubric Category")
+                        plt.xticks(rotation=0)
+                        plt.tight_layout()
+                        st_pyplot_safe(fig_heat)
 
 # --- Trend Forecasting (Predictive Analytics) ---
 with st.expander("Trend Forecasting", expanded=False):
@@ -9327,184 +9512,184 @@ if user_agent_id:
                 )
 
         agent_trends_col1, agent_trends_col2 = st.columns(2)
-        
+
         with agent_trends_col1:
             st.write("**My QA Score Trend**")
         if len(agent_data) > 0:
-                agent_daily = (
-                    agent_data.groupby(agent_data["Call Date"].dt.date)
-                    .agg(Avg_QA_Score=("QA Score", "mean"))
-                    .reset_index()
-                )
-                agent_daily.columns = ["Date", "My_Score"]
-                
-                # Get team average for same dates
-                overall_daily = (
-                    overall_df.groupby(overall_df["Call Date"].dt.date)
-                    .agg(Avg_QA_Score=("QA Score", "mean"))
-                    .reset_index()
-                )
-                overall_daily.columns = ["Date", "Team_Avg"]
-                
-                # Merge on date
-                trend_comparison = pd.merge(
-                    agent_daily, overall_daily, on="Date", how="outer"
-                ).sort_values("Date")
-                
-                fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
-                ax_agent.plot(
-                    trend_comparison["Date"],
-                    trend_comparison["My_Score"],
-                    marker="o",
-                    linewidth=2,
-                    label="My Score",
-                    color="steelblue",
-                )
-                ax_agent.plot(
-                    trend_comparison["Date"],
-                    trend_comparison["Team_Avg"],
-                    marker="s",
-                    linewidth=2,
-                    label="Team Average",
-                    color="orange",
-                    linestyle="--",
-                )
-                ax_agent.set_xlabel("Date")
-                ax_agent.set_ylabel("Average QA Score (%)")
-                ax_agent.set_title("My Performance Trend vs Team Average")
-                ax_agent.grid(True, alpha=0.3)
-                ax_agent.axhline(
-                    y=alert_threshold,
-                    color="r",
-                    linestyle="--",
-                    alpha=0.5,
-                    label=f"Threshold ({alert_threshold}%)",
-                )
-                ax_agent.legend()
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                st_pyplot_safe(fig_agent)
-        
+            agent_daily = (
+                agent_data.groupby(agent_data["Call Date"].dt.date)
+                .agg(Avg_QA_Score=("QA Score", "mean"))
+                .reset_index()
+            )
+            agent_daily.columns = ["Date", "My_Score"]
+
+            # Get team average for same dates
+            overall_daily = (
+                overall_df.groupby(overall_df["Call Date"].dt.date)
+                .agg(Avg_QA_Score=("QA Score", "mean"))
+                .reset_index()
+            )
+            overall_daily.columns = ["Date", "Team_Avg"]
+
+            # Merge on date
+            trend_comparison = pd.merge(
+                agent_daily, overall_daily, on="Date", how="outer"
+            ).sort_values("Date")
+
+            fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
+            ax_agent.plot(
+                trend_comparison["Date"],
+                trend_comparison["My_Score"],
+                marker="o",
+                linewidth=2,
+                label="My Score",
+                color="steelblue",
+            )
+            ax_agent.plot(
+                trend_comparison["Date"],
+                trend_comparison["Team_Avg"],
+                marker="s",
+                linewidth=2,
+                label="Team Average",
+                color="orange",
+                linestyle="--",
+            )
+            ax_agent.set_xlabel("Date")
+            ax_agent.set_ylabel("Average QA Score (%)")
+            ax_agent.set_title("My Performance Trend vs Team Average")
+            ax_agent.grid(True, alpha=0.3)
+            ax_agent.axhline(
+                y=alert_threshold,
+                color="r",
+                linestyle="--",
+                alpha=0.5,
+                label=f"Threshold ({alert_threshold}%)",
+            )
+            ax_agent.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st_pyplot_safe(fig_agent)
+
         with agent_trends_col2:
             st.write("**My Pass Rate Trend vs Team**")
         if len(agent_data) > 0:
-                agent_pass_daily = (
-                    agent_data.groupby(agent_data["Call Date"].dt.date)
-                    .agg(
-                Total_Pass=("Rubric Pass Count", "sum"),
-                        Total_Fail=("Rubric Fail Count", "sum"),
-                    )
-                    .reset_index()
+            agent_pass_daily = (
+                agent_data.groupby(agent_data["Call Date"].dt.date)
+                .agg(
+                    Total_Pass=("Rubric Pass Count", "sum"),
+                    Total_Fail=("Rubric Fail Count", "sum"),
                 )
-                agent_pass_daily["Total"] = (
-                    agent_pass_daily["Total_Pass"] + agent_pass_daily["Total_Fail"]
-                )
-                agent_pass_daily["My_Pass_Rate"] = (
-                    agent_pass_daily["Total_Pass"] / agent_pass_daily["Total"] * 100
-                ).fillna(0)
+                .reset_index()
+            )
+            agent_pass_daily["Total"] = (
+                agent_pass_daily["Total_Pass"] + agent_pass_daily["Total_Fail"]
+            )
+            agent_pass_daily["My_Pass_Rate"] = (
+                agent_pass_daily["Total_Pass"] / agent_pass_daily["Total"] * 100
+            ).fillna(0)
 
-                team_pass_daily = (
-                    overall_df.groupby(overall_df["Call Date"].dt.date)
-                    .agg(
-                Total_Pass=("Rubric Pass Count", "sum"),
-                        Total_Fail=("Rubric Fail Count", "sum"),
-                    )
-                    .reset_index()
+            team_pass_daily = (
+                overall_df.groupby(overall_df["Call Date"].dt.date)
+                .agg(
+                    Total_Pass=("Rubric Pass Count", "sum"),
+                    Total_Fail=("Rubric Fail Count", "sum"),
                 )
-                team_pass_daily["Total"] = (
-                    team_pass_daily["Total_Pass"] + team_pass_daily["Total_Fail"]
-                )
-                team_pass_daily["Team_Pass_Rate"] = (
-                    team_pass_daily["Total_Pass"] / team_pass_daily["Total"] * 100
-                ).fillna(0)
-                
-                pass_comparison = pd.merge(
-                    agent_pass_daily[["Call Date", "My_Pass_Rate"]],
-                    team_pass_daily[["Call Date", "Team_Pass_Rate"]],
+                .reset_index()
+            )
+            team_pass_daily["Total"] = (
+                team_pass_daily["Total_Pass"] + team_pass_daily["Total_Fail"]
+            )
+            team_pass_daily["Team_Pass_Rate"] = (
+                team_pass_daily["Total_Pass"] / team_pass_daily["Total"] * 100
+            ).fillna(0)
+
+            pass_comparison = pd.merge(
+                agent_pass_daily[["Call Date", "My_Pass_Rate"]],
+                team_pass_daily[["Call Date", "Team_Pass_Rate"]],
                 on="Call Date",
-                    how="outer",
-                ).sort_values("Call Date")
-                
-                fig_pass_trend, ax_pass_trend = plt.subplots(figsize=(10, 5))
-                ax_pass_trend.plot(
-                    pass_comparison["Call Date"],
-                    pass_comparison["My_Pass_Rate"],
-                    marker="o",
-                    linewidth=2,
-                    label="My Pass Rate",
-                    color="green",
-                )
-                ax_pass_trend.plot(
-                    pass_comparison["Call Date"],
-                    pass_comparison["Team_Pass_Rate"],
-                    marker="s",
-                    linewidth=2,
-                    label="Team Pass Rate",
-                    color="lightgreen",
-                    linestyle="--",
-                )
-                ax_pass_trend.set_xlabel("Date")
-                ax_pass_trend.set_ylabel("Pass Rate (%)")
-                ax_pass_trend.set_title("My Pass Rate Trend vs Team Average")
-                ax_pass_trend.grid(True, alpha=0.3)
-                ax_pass_trend.legend()
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                st_pyplot_safe(fig_pass_trend)
+                how="outer",
+            ).sort_values("Call Date")
 
-                # AHT Trend
-                st.write("**My AHT Trend vs Team**")
-                if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
-                    agent_aht_daily = (
-                        agent_data.groupby(agent_data["Call Date"].dt.date)
-                        .agg(Avg_AHT=("Call Duration (min)", "mean"))
-                        .reset_index()
-                    )
-                    agent_aht_daily.columns = ["Call Date", "My_AHT"]
+            fig_pass_trend, ax_pass_trend = plt.subplots(figsize=(10, 5))
+            ax_pass_trend.plot(
+                pass_comparison["Call Date"],
+                pass_comparison["My_Pass_Rate"],
+                marker="o",
+                linewidth=2,
+                label="My Pass Rate",
+                color="green",
+            )
+            ax_pass_trend.plot(
+                pass_comparison["Call Date"],
+                pass_comparison["Team_Pass_Rate"],
+                marker="s",
+                linewidth=2,
+                label="Team Pass Rate",
+                color="lightgreen",
+                linestyle="--",
+            )
+            ax_pass_trend.set_xlabel("Date")
+            ax_pass_trend.set_ylabel("Pass Rate (%)")
+            ax_pass_trend.set_title("My Pass Rate Trend vs Team Average")
+            ax_pass_trend.grid(True, alpha=0.3)
+            ax_pass_trend.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st_pyplot_safe(fig_pass_trend)
 
-                team_aht_daily = (
-                    overall_df.groupby(overall_df["Call Date"].dt.date)
+            # AHT Trend
+            st.write("**My AHT Trend vs Team**")
+            if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
+                agent_aht_daily = (
+                    agent_data.groupby(agent_data["Call Date"].dt.date)
                     .agg(Avg_AHT=("Call Duration (min)", "mean"))
                     .reset_index()
                 )
-                team_aht_daily.columns = ["Call Date", "Team_AHT"]
+                agent_aht_daily.columns = ["Call Date", "My_AHT"]
 
-                aht_comparison = pd.merge(
-                    agent_aht_daily[["Call Date", "My_AHT"]],
-                    team_aht_daily[["Call Date", "Team_AHT"]],
-                    on="Call Date",
-                    how="outer",
-                ).sort_values("Call Date")
+            team_aht_daily = (
+                overall_df.groupby(overall_df["Call Date"].dt.date)
+                .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                .reset_index()
+            )
+            team_aht_daily.columns = ["Call Date", "Team_AHT"]
 
-                if len(aht_comparison) > 0 and aht_comparison["My_AHT"].notna().any():
-                    fig_aht_trend, ax_aht_trend = plt.subplots(figsize=(10, 5))
-                    ax_aht_trend.plot(
-                        aht_comparison["Call Date"],
-                        aht_comparison["My_AHT"],
-                        marker="o",
-                        linewidth=2,
-                        label="My AHT",
-                        color="purple",
-                    )
-                    ax_aht_trend.plot(
-                        aht_comparison["Call Date"],
-                        aht_comparison["Team_AHT"],
-                        marker="s",
-                        linewidth=2,
-                        label="Team AHT",
-                        color="lavender",
-                        linestyle="--",
-                    )
-                    ax_aht_trend.set_xlabel("Date")
-                    ax_aht_trend.set_ylabel("Average Handle Time (min)")
-                    ax_aht_trend.set_title("My AHT Trend vs Team Average")
-                    ax_aht_trend.grid(True, alpha=0.3)
-                    ax_aht_trend.legend()
-                    plt.xticks(rotation=45)
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_aht_trend)
-                else:
-                    st.info("AHT trend data not available")
+            aht_comparison = pd.merge(
+                agent_aht_daily[["Call Date", "My_AHT"]],
+                team_aht_daily[["Call Date", "Team_AHT"]],
+                on="Call Date",
+                how="outer",
+            ).sort_values("Call Date")
+
+            if len(aht_comparison) > 0 and aht_comparison["My_AHT"].notna().any():
+                fig_aht_trend, ax_aht_trend = plt.subplots(figsize=(10, 5))
+                ax_aht_trend.plot(
+                    aht_comparison["Call Date"],
+                    aht_comparison["My_AHT"],
+                    marker="o",
+                    linewidth=2,
+                    label="My AHT",
+                    color="purple",
+                )
+                ax_aht_trend.plot(
+                    aht_comparison["Call Date"],
+                    aht_comparison["Team_AHT"],
+                    marker="s",
+                    linewidth=2,
+                    label="Team AHT",
+                    color="lavender",
+                    linestyle="--",
+                )
+                ax_aht_trend.set_xlabel("Date")
+                ax_aht_trend.set_ylabel("Average Handle Time (min)")
+                ax_aht_trend.set_title("My AHT Trend vs Team Average")
+                ax_aht_trend.grid(True, alpha=0.3)
+                ax_aht_trend.legend()
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st_pyplot_safe(fig_aht_trend)
+            else:
+                st.info("AHT trend data not available")
 
 else:
     # Admin view - agent selection and comparison
@@ -9512,13 +9697,15 @@ else:
         st.subheader("Agent-Specific Performance Trends")
         if len(filtered_df) > 0 and len(selected_agents) > 0:
             agent_trends_col1, agent_trends_col2 = st.columns(2)
-            
+
             with agent_trends_col1:
                 selected_agent_for_trend = st.selectbox(
                     "Select Agent for Trend Analysis", selected_agents
                 )
-                
-                agent_data = filtered_df[filtered_df["Agent"] == selected_agent_for_trend]
+
+                agent_data = filtered_df[
+                    filtered_df["Agent"] == selected_agent_for_trend
+                ]
                 if len(agent_data) > 0:
                     agent_daily = (
                         agent_data.groupby(agent_data["Call Date"].dt.date)
@@ -9529,8 +9716,13 @@ else:
                         )
                         .reset_index()
                     )
-                    agent_daily.columns = ["Date", "Avg_QA_Score", "Call_Count", "Avg_AHT"]
-                    
+                    agent_daily.columns = [
+                        "Date",
+                        "Avg_QA_Score",
+                        "Call_Count",
+                        "Avg_AHT",
+                    ]
+
                     fig_agent, ax_agent = plt.subplots(figsize=(10, 5))
                     ax_agent.plot(
                         agent_daily["Date"],
@@ -9578,7 +9770,7 @@ else:
                         plt.xticks(rotation=45)
                         plt.tight_layout()
                         st_pyplot_safe(fig_aht_agent)
-            
+
             with agent_trends_col2:
                 # Agent Comparison
                 st.write("**Agent Comparison**")
@@ -9587,9 +9779,11 @@ else:
                     selected_agents,
                     default=selected_agents[: min(3, len(selected_agents))],
                 )
-                
+
                 if len(compare_agents) > 0:
-                    compare_data = filtered_df[filtered_df["Agent"].isin(compare_agents)]
+                    compare_data = filtered_df[
+                        filtered_df["Agent"].isin(compare_agents)
+                    ]
                     agent_comparison = (
                         compare_data.groupby("Agent")
                         .agg(
@@ -9609,7 +9803,9 @@ else:
                                 )
                                 if (
                                     x.sum()
-                                    + compare_data.loc[x.index, "Rubric Fail Count"].sum()
+                                    + compare_data.loc[
+                                        x.index, "Rubric Fail Count"
+                                    ].sum()
                                 )
                                 > 0
                                 else 0,
@@ -9617,18 +9813,22 @@ else:
                         )
                         .reset_index()
                     )
-                    
+
                     fig_compare, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-                    
+
                     # QA Score comparison
                     agent_comparison.plot(
-                        x="Agent", y="Avg_QA_Score", kind="bar", ax=ax1, color="steelblue"
+                        x="Agent",
+                        y="Avg_QA_Score",
+                        kind="bar",
+                        ax=ax1,
+                        color="steelblue",
                     )
                     ax1.set_ylabel("Avg QA Score (%)")
                     ax1.set_title("Average QA Score Comparison")
                     ax1.axhline(y=alert_threshold, color="r", linestyle="--", alpha=0.5)
                     plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha="right")
-                    
+
                     # Pass Rate comparison
                     agent_comparison.plot(
                         x="Agent", y="Pass_Rate", kind="bar", ax=ax2, color="green"
@@ -9636,7 +9836,7 @@ else:
                     ax2.set_ylabel("Pass Rate (%)")
                     ax2.set_title("Pass Rate Comparison")
                     plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha="right")
-                    
+
                     plt.tight_layout()
                     st_pyplot_safe(fig_compare)
 
@@ -9652,7 +9852,9 @@ else:
                             and agent_aht_comparison["Avg_AHT"].notna().any()
                         ):
                             st.write("**AHT Comparison**")
-                            fig_aht_compare, ax_aht_compare = plt.subplots(figsize=(10, 5))
+                            fig_aht_compare, ax_aht_compare = plt.subplots(
+                                figsize=(10, 5)
+                            )
                             agent_aht_comparison.plot(
                                 x="Agent",
                                 y="Avg_AHT",
@@ -9713,7 +9915,7 @@ with st.expander("Score & Label Distribution Analysis", expanded=False):
 # --- Coaching Insights Aggregation ---
 with st.expander("Coaching Insights", expanded=False):
     st.subheader("Coaching Insights")
-    
+
     if "Coaching Suggestions" in filtered_df.columns:
         # Collect all coaching suggestions
         all_coaching = []
@@ -9723,7 +9925,7 @@ with st.expander("Coaching Insights", expanded=False):
                 all_coaching.extend([c for c in coaching if c and str(c).strip()])
             elif isinstance(coaching, str) and coaching:
                 all_coaching.append(coaching)
-        
+
         if all_coaching:
             from collections import Counter
 
@@ -9732,57 +9934,116 @@ with st.expander("Coaching Insights", expanded=False):
                 """Categorize coaching suggestions into themes using scoring system"""
                 if not text or pd.isna(text):
                     return "Other"
-                
+
                 text_lower = str(text).lower()
-                
+
                 # Product knowledge keywords
                 product_keywords = [
-                    "product", "item", "inventory", "stock", "availability",
-                    "specification", "feature", "model", "brand", "catalog",
-                    "knowledge", "unfamiliar", "unaware", "doesn't know"
+                    "product",
+                    "item",
+                    "inventory",
+                    "stock",
+                    "availability",
+                    "specification",
+                    "feature",
+                    "model",
+                    "brand",
+                    "catalog",
+                    "knowledge",
+                    "unfamiliar",
+                    "unaware",
+                    "doesn't know",
                 ]
-                
+
                 # Communication keywords
                 communication_keywords = [
-                    "communication", "clarity", "explain", "understand",
-                    "confusing", "unclear", "misunderstand", "listening",
-                    "tone", "empathy", "rapport", "connection", "interrupt"
+                    "communication",
+                    "clarity",
+                    "explain",
+                    "understand",
+                    "confusing",
+                    "unclear",
+                    "misunderstand",
+                    "listening",
+                    "tone",
+                    "empathy",
+                    "rapport",
+                    "connection",
+                    "interrupt",
                 ]
-                
+
                 # Hold time keywords
                 hold_keywords = [
-                    "hold", "wait", "transfer", "escalate", "supervisor",
-                    "on hold", "put on hold", "long hold", "excessive hold"
+                    "hold",
+                    "wait",
+                    "transfer",
+                    "escalate",
+                    "supervisor",
+                    "on hold",
+                    "put on hold",
+                    "long hold",
+                    "excessive hold",
                 ]
-                
+
                 # System/Technical keywords
                 system_keywords = [
-                    "system", "technical", "error", "bug", "glitch",
-                    "software", "platform", "tool", "database", "slow",
-                    "loading", "crash", "down", "issue", "problem"
+                    "system",
+                    "technical",
+                    "error",
+                    "bug",
+                    "glitch",
+                    "software",
+                    "platform",
+                    "tool",
+                    "database",
+                    "slow",
+                    "loading",
+                    "crash",
+                    "down",
+                    "issue",
+                    "problem",
                 ]
-                
+
                 # Process/Procedure keywords
                 process_keywords = [
-                    "process", "procedure", "policy", "protocol", "workflow",
-                    "step", "order", "sequence", "method", "approach",
-                    "guideline", "standard", "compliance"
+                    "process",
+                    "procedure",
+                    "policy",
+                    "protocol",
+                    "workflow",
+                    "step",
+                    "order",
+                    "sequence",
+                    "method",
+                    "approach",
+                    "guideline",
+                    "standard",
+                    "compliance",
                 ]
-                
+
                 # Efficiency keywords
                 efficiency_keywords = [
-                    "efficient", "quick", "fast", "speed", "time",
-                    "streamline", "optimize", "reduce time", "faster"
+                    "efficient",
+                    "quick",
+                    "fast",
+                    "speed",
+                    "time",
+                    "streamline",
+                    "optimize",
+                    "reduce time",
+                    "faster",
                 ]
-                
+
                 # Count matches for each category
                 product_score = sum(1 for kw in product_keywords if kw in text_lower)
                 comm_score = sum(1 for kw in communication_keywords if kw in text_lower)
                 hold_score = sum(1 for kw in hold_keywords if kw in text_lower)
                 system_score = sum(1 for kw in system_keywords if kw in text_lower)
                 process_score = sum(1 for kw in process_keywords if kw in text_lower)
-                efficiency_score = sum(1 for kw in efficiency_keywords if kw in text_lower)
-                
+                efficiency_score = sum(
+                    1 for kw in efficiency_keywords if kw in text_lower
+                )
+
                 # Return category with highest score
                 scores = {
                     "Product Knowledge": product_score,
@@ -9792,7 +10053,7 @@ with st.expander("Coaching Insights", expanded=False):
                     "Process/Procedure": process_score,
                     "Efficiency": efficiency_score,
                 }
-                
+
                 max_score = max(scores.values())
                 if max_score > 0:
                     return max(scores, key=scores.get)
@@ -9803,42 +10064,43 @@ with st.expander("Coaching Insights", expanded=False):
                 "Most Common Coaching Suggestions",
                 "Coaching by Category",
                 "Top 10 Coaching Suggestions (Chart)",
-                "All Coaching Suggestions"
+                "All Coaching Suggestions",
             ]
-            
+
             # Dropdown to select coaching insights view
             selected_insight = st.selectbox(
                 "Select Coaching Insights View:",
                 coaching_insights_options,
-                key="coaching_insights_select"
+                key="coaching_insights_select",
             )
 
             coaching_counts = Counter(all_coaching)
-            
+
             if selected_insight == "Most Common Coaching Suggestions":
                 top_coaching = pd.DataFrame(
                     coaching_counts.most_common(10),
                     columns=["Coaching Suggestion", "Frequency"],
                 )
                 st.write("**Most Common Coaching Suggestions**")
-                st.dataframe(top_coaching, width='stretch')
-                
+                st.dataframe(top_coaching, width="stretch")
+
             elif selected_insight == "Coaching by Category":
                 # Categorize all coaching suggestions
                 categorized_coaching = [categorize_coaching(c) for c in all_coaching]
                 category_counts = Counter(categorized_coaching)
-                
+
                 category_df = pd.DataFrame(
-                    category_counts.most_common(),
-                    columns=["Category", "Frequency"]
+                    category_counts.most_common(), columns=["Category", "Frequency"]
                 )
-                category_df["Percentage"] = (category_df["Frequency"] / len(all_coaching) * 100).round(1)
-                
+                category_df["Percentage"] = (
+                    category_df["Frequency"] / len(all_coaching) * 100
+                ).round(1)
+
                 col_cat1, col_cat2 = st.columns(2)
                 with col_cat1:
                     st.write("**Coaching Suggestions by Category**")
-                    st.dataframe(category_df, width='stretch')
-                
+                    st.dataframe(category_df, width="stretch")
+
                 with col_cat2:
                     fig_cat, ax_cat = plt.subplots(figsize=(8, 6))
                     category_df.plot(
@@ -9852,7 +10114,7 @@ with st.expander("Coaching Insights", expanded=False):
                     ax_cat.set_title("Coaching Suggestions by Category")
                     plt.tight_layout()
                     st_pyplot_safe(fig_cat)
-                    
+
             elif selected_insight == "Top 10 Coaching Suggestions (Chart)":
                 top_coaching = pd.DataFrame(
                     coaching_counts.most_common(10),
@@ -9870,15 +10132,19 @@ with st.expander("Coaching Insights", expanded=False):
                 ax_coach.set_title("Top 10 Coaching Suggestions")
                 plt.tight_layout()
                 st_pyplot_safe(fig_coach)
-                
+
             elif selected_insight == "All Coaching Suggestions":
                 all_coaching_df = pd.DataFrame(
                     coaching_counts.most_common(),
                     columns=["Coaching Suggestion", "Frequency"],
                 )
-                all_coaching_df["Percentage"] = (all_coaching_df["Frequency"] / len(all_coaching) * 100).round(1)
-                st.write(f"**All Coaching Suggestions ({len(all_coaching_df)} unique suggestions)**")
-                st.dataframe(all_coaching_df, width='stretch')
+                all_coaching_df["Percentage"] = (
+                    all_coaching_df["Frequency"] / len(all_coaching) * 100
+                ).round(1)
+                st.write(
+                    f"**All Coaching Suggestions ({len(all_coaching_df)} unique suggestions)**"
+                )
+                st.dataframe(all_coaching_df, width="stretch")
         else:
             st.info("No coaching suggestions found in the filtered data.")
     else:
@@ -9904,7 +10170,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                 if os.path.exists(rubric_excel_path):
                     with open(rubric_excel_path, "rb") as f:
                         rubric_excel_bytes = f.read()
-                    
+
                     st.download_button(
                         label=" Download Rubric (Excel)",
                         data=rubric_excel_bytes,
@@ -9918,9 +10184,9 @@ with st.expander("QA Rubric Reference", expanded=False):
                     )
             except Exception as e:
                 st.error(f"Error loading rubric Excel: {e}")
-        
+
         rubric_tab1, rubric_tab2 = st.tabs([" Search All Items", " Browse by Section"])
-        
+
         with rubric_tab1:
             # Search interface
             col_search1, col_search2 = st.columns([3, 1])
@@ -9934,7 +10200,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                 show_all = st.checkbox(
                     "Show all", value=not bool(rubric_search), key="show_all_rubric"
                 )
-        
+
             if rubric_search and not show_all:
                 search_lower = rubric_search.lower()
                 filtered_items = [
@@ -9951,7 +10217,7 @@ with st.expander("QA Rubric Reference", expanded=False):
             else:
                 filtered_items = rubric_data
                 st.write(f"**All {len(rubric_data)} rubric items**")
-            
+
             # Display filtered items with pagination
             items_per_page = 20
             if len(filtered_items) > items_per_page:
@@ -9971,7 +10237,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                 )
             else:
                 display_items = filtered_items
-            
+
             # Display items
             for item in display_items:
                 with st.expander(
@@ -9982,7 +10248,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                     st.write(f"**Item:** {item.get('item', 'N/A')}")
                     st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
                     st.write(f"**Weight:** {item.get('weight', 'N/A')}")
-                    
+
                     # Full width display for criteria
                     st.markdown("** Pass Criteria:**")
                     st.info(item.get("pass", "N/A"))
@@ -9994,7 +10260,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                     if item.get("agent_script_example"):
                         st.markdown("**Agent Script Example:**")
                         st.code(item.get("agent_script_example"), language=None)
-        
+
         with rubric_tab2:
             # Group by section
             sections = {}
@@ -10003,15 +10269,15 @@ with st.expander("QA Rubric Reference", expanded=False):
                 if section not in sections:
                     sections[section] = []
                 sections[section].append(item)
-            
+
             selected_section = st.selectbox(
                 "Select Section", sorted(sections.keys()), key="rubric_section"
             )
-            
+
             if selected_section:
                 section_items = sections[selected_section]
                 st.write(f"**{len(section_items)} items in {selected_section}**")
-                
+
                 # Pagination for section items too
                 if len(section_items) > items_per_page:
                     section_total_pages = (len(section_items) - 1) // items_per_page + 1
@@ -10032,7 +10298,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                     )
                 else:
                     display_section_items = section_items
-                
+
                 for item in display_section_items:
                     with st.expander(
                         f"{item.get('code', 'N/A')} - {item.get('item', 'N/A')} | Weight: {item.get('weight', 'N/A')}",
@@ -10042,7 +10308,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                         st.write(f"**Item:** {item.get('item', 'N/A')}")
                         st.write(f"**Criterion:** {item.get('criterion', 'N/A')}")
                         st.write(f"**Weight:** {item.get('weight', 'N/A')}")
-                        
+
                         # Full width display for criteria
                         st.markdown("** Pass Criteria:**")
                         st.info(item.get("pass", "N/A"))
@@ -10050,7 +10316,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                         st.error(item.get("fail", "N/A"))
                         st.markdown("**N/A Criteria:**")
                         st.warning(item.get("na", "N/A"))
-                        
+
                         if item.get("agent_script_example"):
                             st.markdown("**Agent Script Example:**")
                             st.code(item.get("agent_script_example"), language=None)
@@ -10073,14 +10339,14 @@ with st.expander("Individual Call Details", expanded=False):
                 options=call_options,
                 format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID'] == x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0]) else 'N/A'}%",
             )
-            
+
             if selected_call_id:
-                call_details = filtered_df[filtered_df["Call ID"] == selected_call_id].iloc[
-                    0
-                ]
-                
+                call_details = filtered_df[
+                    filtered_df["Call ID"] == selected_call_id
+                ].iloc[0]
+
                 detail_col1, detail_col2 = st.columns(2)
-                
+
                 with detail_col1:
                     st.write("**Call Information**")
                     st.write(f"**Call ID:** {call_details.get('Call ID', 'N/A')}")
@@ -10099,23 +10365,23 @@ with st.expander("Individual Call Details", expanded=False):
                         st.write(f"**Call Length:** {call_dur:.2f} min")
                     else:
                         st.write(f"**Call Length:** {call_dur}")
-                    
+
                     st.write("**Reason:**")
                     st.write(call_details.get("Reason", "N/A"))
-                    
+
                     st.write("**Outcome:**")
                     st.write(call_details.get("Outcome", "N/A"))
-                
+
                 with detail_col2:
                     st.write("**Summary**")
                     st.write(call_details.get("Summary", "N/A"))
-                    
+
                     st.write("**Strengths**")
                     st.write(call_details.get("Strengths", "N/A"))
-                    
+
                     st.write("**Challenges**")
                     st.write(call_details.get("Challenges", "N/A"))
-                    
+
                     st.write("**Coaching Suggestions**")
                     coaching = call_details.get("Coaching Suggestions", [])
                     if isinstance(coaching, list):
@@ -10123,7 +10389,7 @@ with st.expander("Individual Call Details", expanded=False):
                             st.write(f"- {suggestion}")
                     else:
                         st.write(coaching if coaching else "N/A")
-                
+
                 # Rubric Details
                 st.write("**Rubric Details**")
                 rubric_details = call_details.get("Rubric Details", {})
@@ -10143,7 +10409,7 @@ with st.expander("Individual Call Details", expanded=False):
                         ]
                     )
                     st.dataframe(rubric_df)
-                    
+
                     # Export individual call report
                     st.markdown("---")
                     call_dur_export = call_details.get("Call Duration (min)", "N/A")
@@ -10151,7 +10417,7 @@ with st.expander("Individual Call Details", expanded=False):
                         call_dur_formatted = f"{call_dur_export:.2f}"
                     else:
                         call_dur_formatted = call_dur_export
-                    
+
                     report_text = f"""
 # QA Call Report
 
@@ -10201,7 +10467,7 @@ with st.expander("Call Volume Analysis", expanded=False):
     st.subheader("Call Volume Analysis")
     if len(filtered_df) > 0:
         vol_col1, vol_col2 = st.columns(2)
-        
+
         with vol_col1:
             st.write("**Call Volume by Agent**")
             agent_volume = (
@@ -10212,7 +10478,7 @@ with st.expander("Call Volume Analysis", expanded=False):
                 .reset_index()
                 .sort_values("Total_Calls", ascending=False)
             )
-            
+
             fig_vol, ax_vol = plt.subplots(figsize=(10, 6))
             agent_volume.plot(
                 x="Agent", y="Total_Calls", kind="bar", ax=ax_vol, color="steelblue"
@@ -10223,7 +10489,7 @@ with st.expander("Call Volume Analysis", expanded=False):
             plt.xticks(rotation=45, ha="right")
             plt.tight_layout()
             st_pyplot_safe(fig_vol)
-        
+
         with vol_col2:
             st.write("**Call Volume Over Time**")
             daily_volume = (
@@ -10232,7 +10498,7 @@ with st.expander("Call Volume Analysis", expanded=False):
                 .reset_index()
             )
             daily_volume.columns = ["Date", "Call Count"]
-            
+
             fig_vol_time, ax_vol_time = plt.subplots(figsize=(10, 5))
             ax_vol_time.plot(
                 daily_volume["Date"],
@@ -10254,7 +10520,7 @@ with st.expander("Time of Day Analysis", expanded=False):
     st.subheader("Time of Day Analysis")
     if "Call Time" in filtered_df.columns and len(filtered_df) > 0:
         time_col1, time_col2 = st.columns(2)
-        
+
         with time_col1:
             st.write("**QA Score by Time of Day**")
             # Extract hour from time
@@ -10263,7 +10529,7 @@ with st.expander("Time of Day Analysis", expanded=False):
             ).dt.hour
             time_scores = filtered_df.groupby("Hour")["QA Score"].mean().reset_index()
             time_scores = time_scores.dropna()
-            
+
             if len(time_scores) > 0:
                 fig_time, ax_time = plt.subplots(figsize=(10, 5))
                 ax_time.plot(
@@ -10280,13 +10546,13 @@ with st.expander("Time of Day Analysis", expanded=False):
                 ax_time.set_xticks(range(0, 24, 2))
                 plt.tight_layout()
                 st_pyplot_safe(fig_time)
-        
+
         with time_col2:
             st.write("**Call Volume by Time of Day**")
             time_volume = filtered_df.groupby("Hour").size().reset_index()
             time_volume.columns = ["Hour", "Call Count"]
             time_volume = time_volume.dropna()
-            
+
             if len(time_volume) > 0:
                 fig_time_vol, ax_time_vol = plt.subplots(figsize=(10, 5))
                 ax_time_vol.bar(
@@ -10315,116 +10581,116 @@ with st.expander("Advanced Analytics", expanded=False):
 
 with analytics_tab1:
     st.markdown("### Week-over-Week Performance Comparison")
-    
+
     if "Call Date" in filtered_df.columns and "QA Score" in filtered_df.columns:
         # Group by week
-            filtered_df["Week"] = (
-                pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
+        filtered_df["Week"] = (
+            pd.to_datetime(filtered_df["Call Date"]).dt.to_period("W").astype(str)
+        )
+        weekly_stats = (
+            filtered_df.groupby("Week")
+            .agg(
+                {
+                    "QA Score": ["mean", "count"],
+                    "Rubric Pass Count": "sum",
+                    "Rubric Fail Count": "sum",
+                }
             )
-            weekly_stats = (
-                filtered_df.groupby("Week")
-                .agg(
-                    {
-            "QA Score": ["mean", "count"],
-            "Rubric Pass Count": "sum",
-                        "Rubric Fail Count": "sum",
-                    }
-                )
-                .reset_index()
-            )
+            .reset_index()
+        )
 
-            weekly_stats.columns = [
-                "Week",
-                "Avg_QA_Score",
-                "Call_Count",
-                "Total_Pass",
-                "Total_Fail",
-            ]
-            weekly_stats["Pass_Rate"] = (
-                weekly_stats["Total_Pass"]
-                / (weekly_stats["Total_Pass"] + weekly_stats["Total_Fail"])
-                * 100
-            ).fillna(0)
-            weekly_stats = weekly_stats.sort_values("Week")
-            
-            if len(weekly_stats) > 1:
-                # Calculate week-over-week change
-                weekly_stats["WoW_Score_Change"] = weekly_stats["Avg_QA_Score"].diff()
-                weekly_stats["WoW_PassRate_Change"] = weekly_stats["Pass_Rate"].diff()
-                weekly_stats["WoW_CallCount_Change"] = weekly_stats["Call_Count"].diff()
-                
-                wow_col1, wow_col2 = st.columns(2)
-                
-                with wow_col1:
-                    st.write("**QA Score Week-over-Week**")
-                    fig_wow_score, ax_wow_score = plt.subplots(figsize=(12, 6))
-                    ax_wow_score.plot(
-                        weekly_stats["Week"],
-                        weekly_stats["Avg_QA_Score"],
-                        marker="o",
-                        linewidth=2,
-                        label="Avg QA Score",
-                    )
-                    ax_wow_score.set_xlabel("Week")
-                    ax_wow_score.set_ylabel("Average QA Score (%)")
-                    ax_wow_score.set_title("Week-over-Week QA Score Trend")
-                    ax_wow_score.grid(True, alpha=0.3)
-                    ax_wow_score.legend()
-                    plt.xticks(rotation=45, ha="right")
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_wow_score)
-                    
-                    # Show WoW changes
-                    st.write("**Week-over-Week Changes**")
-                    wow_display = weekly_stats[
-                        [
-                            "Week",
-                            "Avg_QA_Score",
-                            "WoW_Score_Change",
-                            "Call_Count",
-                            "WoW_CallCount_Change",
-                        ]
-                    ].copy()
-                    wow_display["WoW_Score_Change"] = wow_display[
-                        "WoW_Score_Change"
-                    ].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
-                    wow_display["WoW_CallCount_Change"] = wow_display[
-                        "WoW_CallCount_Change"
-                    ].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
-                    wow_display.columns = [
+        weekly_stats.columns = [
+            "Week",
+            "Avg_QA_Score",
+            "Call_Count",
+            "Total_Pass",
+            "Total_Fail",
+        ]
+        weekly_stats["Pass_Rate"] = (
+            weekly_stats["Total_Pass"]
+            / (weekly_stats["Total_Pass"] + weekly_stats["Total_Fail"])
+            * 100
+        ).fillna(0)
+        weekly_stats = weekly_stats.sort_values("Week")
+
+        if len(weekly_stats) > 1:
+            # Calculate week-over-week change
+            weekly_stats["WoW_Score_Change"] = weekly_stats["Avg_QA_Score"].diff()
+            weekly_stats["WoW_PassRate_Change"] = weekly_stats["Pass_Rate"].diff()
+            weekly_stats["WoW_CallCount_Change"] = weekly_stats["Call_Count"].diff()
+
+            wow_col1, wow_col2 = st.columns(2)
+
+            with wow_col1:
+                st.write("**QA Score Week-over-Week**")
+                fig_wow_score, ax_wow_score = plt.subplots(figsize=(12, 6))
+                ax_wow_score.plot(
+                    weekly_stats["Week"],
+                    weekly_stats["Avg_QA_Score"],
+                    marker="o",
+                    linewidth=2,
+                    label="Avg QA Score",
+                )
+                ax_wow_score.set_xlabel("Week")
+                ax_wow_score.set_ylabel("Average QA Score (%)")
+                ax_wow_score.set_title("Week-over-Week QA Score Trend")
+                ax_wow_score.grid(True, alpha=0.3)
+                ax_wow_score.legend()
+                plt.xticks(rotation=45, ha="right")
+                plt.tight_layout()
+                st_pyplot_safe(fig_wow_score)
+
+                # Show WoW changes
+                st.write("**Week-over-Week Changes**")
+                wow_display = weekly_stats[
+                    [
                         "Week",
-                        "Avg QA Score",
-                        "WoW Change",
-                        "Call Count",
-                        "WoW Count Change",
+                        "Avg_QA_Score",
+                        "WoW_Score_Change",
+                        "Call_Count",
+                        "WoW_CallCount_Change",
                     ]
-                    st.dataframe(wow_display, hide_index=True)
-                
-                with wow_col2:
-                    st.write("**Pass Rate Week-over-Week**")
-                    fig_wow_pass, ax_wow_pass = plt.subplots(figsize=(12, 6))
-                    ax_wow_pass.plot(
-                        weekly_stats["Week"],
-                        weekly_stats["Pass_Rate"],
-                        marker="s",
-                        linewidth=2,
-                        color="green",
-                        label="Pass Rate",
-                    )
-                    ax_wow_pass.set_xlabel("Week")
-                    ax_wow_pass.set_ylabel("Pass Rate (%)")
-                    ax_wow_pass.set_title("Week-over-Week Pass Rate Trend")
-                    ax_wow_pass.grid(True, alpha=0.3)
-                    ax_wow_pass.legend()
-                    plt.xticks(rotation=45, ha="right")
-                    plt.tight_layout()
-                    st_pyplot_safe(fig_wow_pass)
-            else:
-                st.info(" Need at least 2 weeks of data for week-over-week comparison")
+                ].copy()
+                wow_display["WoW_Score_Change"] = wow_display["WoW_Score_Change"].apply(
+                    lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A"
+                )
+                wow_display["WoW_CallCount_Change"] = wow_display[
+                    "WoW_CallCount_Change"
+                ].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "N/A")
+                wow_display.columns = [
+                    "Week",
+                    "Avg QA Score",
+                    "WoW Change",
+                    "Call Count",
+                    "WoW Count Change",
+                ]
+                st.dataframe(wow_display, hide_index=True)
+
+            with wow_col2:
+                st.write("**Pass Rate Week-over-Week**")
+                fig_wow_pass, ax_wow_pass = plt.subplots(figsize=(12, 6))
+                ax_wow_pass.plot(
+                    weekly_stats["Week"],
+                    weekly_stats["Pass_Rate"],
+                    marker="s",
+                    linewidth=2,
+                    color="green",
+                    label="Pass Rate",
+                )
+                ax_wow_pass.set_xlabel("Week")
+                ax_wow_pass.set_ylabel("Pass Rate (%)")
+                ax_wow_pass.set_title("Week-over-Week Pass Rate Trend")
+                ax_wow_pass.grid(True, alpha=0.3)
+                ax_wow_pass.legend()
+                plt.xticks(rotation=45, ha="right")
+                plt.tight_layout()
+                st_pyplot_safe(fig_wow_pass)
+        else:
+            st.info(" Need at least 2 weeks of data for week-over-week comparison")
 
 with analytics_tab2:
     st.markdown("### Agent Improvement Trends")
-    
+
     if (
         "Agent" in filtered_df.columns
         and "Call Date" in filtered_df.columns
@@ -10440,7 +10706,7 @@ with analytics_tab2:
             .reset_index()
         )
         agent_weekly.columns = ["Agent", "Week", "Avg_QA_Score", "Call_Count"]
-        
+
         # Calculate improvement (first week vs last week for each agent)
         agent_improvement = []
         for agent in agent_weekly["Agent"].unique():
@@ -10464,41 +10730,39 @@ with analytics_tab2:
                         else " Stable",
                     }
                 )
-        
+
         if agent_improvement:
             improvement_df = pd.DataFrame(agent_improvement)
             improvement_df = improvement_df.sort_values(
                 "Improvement",
-                key=lambda x: x.str.replace("%", "")
-                .str.replace("+", "")
-                .astype(float),
+                key=lambda x: x.str.replace("%", "").str.replace("+", "").astype(float),
                 ascending=False,
             )
             st.dataframe(improvement_df, hide_index=True)
-            
+
             # Show trend chart for selected agents
             selected_agents_trend = st.multiselect(
                 "Select agents to view trend:",
                 options=filtered_df["Agent"].unique().tolist(),
-                    default=filtered_df["Agent"].unique().tolist()[:5]
-                    if len(filtered_df["Agent"].unique()) > 5
-                    else filtered_df["Agent"].unique().tolist(),
+                default=filtered_df["Agent"].unique().tolist()[:5]
+                if len(filtered_df["Agent"].unique()) > 5
+                else filtered_df["Agent"].unique().tolist(),
             )
-            
+
             if selected_agents_trend:
                 fig_agent_trend, ax_agent_trend = plt.subplots(figsize=(14, 6))
                 for agent in selected_agents_trend:
-                        agent_data = agent_weekly[
-                            agent_weekly["Agent"] == agent
-                        ].sort_values("Week")
-                        ax_agent_trend.plot(
-                            agent_data["Week"],
-                            agent_data["Avg_QA_Score"],
-                            marker="o",
-                            label=agent,
-                            linewidth=2,
-                        )
-                
+                    agent_data = agent_weekly[
+                        agent_weekly["Agent"] == agent
+                    ].sort_values("Week")
+                    ax_agent_trend.plot(
+                        agent_data["Week"],
+                        agent_data["Avg_QA_Score"],
+                        marker="o",
+                        label=agent,
+                        linewidth=2,
+                    )
+
                 ax_agent_trend.set_xlabel("Week")
                 ax_agent_trend.set_ylabel("Average QA Score (%)")
                 ax_agent_trend.set_title("Agent Performance Trends Over Time")
@@ -10508,15 +10772,13 @@ with analytics_tab2:
                 plt.tight_layout()
                 st_pyplot_safe(fig_agent_trend)
         else:
-                st.info(
-                    " Need multiple weeks of data per agent to show improvement trends"
-                )
+            st.info(" Need multiple weeks of data per agent to show improvement trends")
     else:
-            st.warning(" Missing required columns for agent improvement analysis")
+        st.warning(" Missing required columns for agent improvement analysis")
 
 with analytics_tab3:
     st.markdown("### Most Common Failure Reasons")
-    
+
     if "Rubric Details" in filtered_df.columns:
         # Collect all failed rubric codes with their frequencies
         failure_reasons = {}
@@ -10539,39 +10801,39 @@ with analytics_tab3:
                         note = details.get("note", "")
                         if note and note not in failure_reasons[code]["notes"]:
                             failure_reasons[code]["notes"].append(note)
-        
+
         if failure_reasons:
             # Sort by frequency
             sorted_failures = sorted(
                 failure_reasons.items(), key=lambda x: x[1]["count"], reverse=True
             )
-            
+
             failure_col1, failure_col2 = st.columns([2, 1])
-            
+
             with failure_col1:
                 st.write("**Top Failure Reasons**")
                 failure_data = []
                 for code, data in sorted_failures[:20]:  # Top 20
-                        failure_data.append(
-                            {
-                        "Rubric Code": code,
-                                "Failure Count": data["count"],
-                                "Affected Calls": len(data["calls"]),
-                                "Sample Notes": data["notes"][0][:50] + "..."
-                                if data["notes"]
-                                else "N/A",
-                            }
-                        )
-                
+                    failure_data.append(
+                        {
+                            "Rubric Code": code,
+                            "Failure Count": data["count"],
+                            "Affected Calls": len(data["calls"]),
+                            "Sample Notes": data["notes"][0][:50] + "..."
+                            if data["notes"]
+                            else "N/A",
+                        }
+                    )
+
                 failure_df = pd.DataFrame(failure_data)
                 st.dataframe(failure_df, hide_index=True)
-            
+
             with failure_col2:
                 st.write("**Failure Distribution**")
                 top_10_failures = sorted_failures[:10]
                 codes = [item[0] for item in top_10_failures]
                 counts = [item[1]["count"] for item in top_10_failures]
-                
+
                 fig_fail, ax_fail = plt.subplots(figsize=(8, 6))
                 ax_fail.barh(range(len(codes)), counts, color="red", alpha=0.7)
                 ax_fail.set_yticks(range(len(codes)))
@@ -10580,20 +10842,20 @@ with analytics_tab3:
                 ax_fail.set_title("Top 10 Failure Reasons")
                 plt.tight_layout()
                 st_pyplot_safe(fig_fail)
-            
+
             # Show detailed view for selected failure code
             selected_failure_code = st.selectbox(
                 "View details for failure code:",
                 options=[code for code, _ in sorted_failures],
                 help="Select a failure code to see detailed information",
             )
-            
+
             if selected_failure_code:
                 failure_info = failure_reasons[selected_failure_code]
                 st.markdown(f"### Failure Code: {selected_failure_code}")
                 st.metric("Total Failures", failure_info["count"])
                 st.metric("Affected Calls", len(failure_info["calls"]))
-                
+
                 if failure_info["notes"]:
                     st.write("**Sample Failure Notes:**")
                     for note in failure_info["notes"][:5]:  # Show first 5 notes
@@ -10603,12 +10865,12 @@ with analytics_tab3:
                             height=68,
                             disabled=True,
                             key=f"note_{hash(note)}",
-                                label_visibility="collapsed",
-                            )
+                            label_visibility="collapsed",
+                        )
         else:
-                st.info(" No failed rubric items found in the filtered data")
+            st.info(" No failed rubric items found in the filtered data")
     else:
-            st.warning(" Rubric Details column not found")
+        st.warning(" Rubric Details column not found")
 
 # --- Export Options ---
 st.markdown("---")
@@ -10639,7 +10901,7 @@ if "export_templates" not in st.session_state:
 
 with st.expander(" Export Templates", expanded=False):
     template_col1, template_col2 = st.columns(2)
-    
+
     with template_col1:
         st.write("**Saved Templates:**")
         selected_template = st.selectbox(
@@ -10647,7 +10909,7 @@ with st.expander(" Export Templates", expanded=False):
             options=list(st.session_state.export_templates.keys()),
             help="Select a template to customize or use as-is",
         )
-    
+
     with template_col2:
         if st.button("➕ Save Current as Template"):
             template_name = st.text_input("Template name:", key="new_template_name")
@@ -10659,7 +10921,7 @@ with st.expander(" Export Templates", expanded=False):
                 }
                 st.success(f"Template '{template_name}' saved!")
                 st.rerun()
-    
+
     # Template customization
     if selected_template:
         template = st.session_state.export_templates[selected_template]
@@ -10677,7 +10939,7 @@ with st.expander(" Export Templates", expanded=False):
             ["Excel", "CSV"],
             index=0 if template.get("format") == "excel" else 1,
         )
-        
+
         # Update template
         st.session_state.export_templates[selected_template]["columns"] = (
             selected_columns
@@ -10726,7 +10988,7 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
         export_df_template[col] = export_df_template[col].map(_clean)
 
     export_df_template.to_excel(writer, sheet_name="QA Data", index=False)
-    
+
     # Add Agent Leaderboard sheet for admin view
     if not user_agent_id:
         # Ensure Agent column is normalized for export (safety check)
@@ -10740,10 +11002,10 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
         agent_perf_export = (
             export_filtered_df.groupby("Agent")
             .agg(
-            Total_Calls=("Call ID", "count"),
-            Avg_QA_Score=("QA Score", "mean"),
-            Total_Pass=("Rubric Pass Count", "sum"),
-            Total_Fail=("Rubric Fail Count", "sum"),
+                Total_Calls=("Call ID", "count"),
+                Avg_QA_Score=("QA Score", "mean"),
+                Total_Pass=("Rubric Pass Count", "sum"),
+                Total_Fail=("Rubric Fail Count", "sum"),
                 Avg_Call_Duration=("Call Duration (min)", "mean"),
             )
             .reset_index()
@@ -10772,7 +11034,7 @@ with export_col1:
                 f"Generated Excel export: {start_date} to {end_date}, {len(export_df)} rows",
             )
         st.session_state[export_key] = True
-    
+
     st.download_button(
         label=" Download QA Data (Excel)",
         data=excel_buffer.getvalue(),
@@ -10784,7 +11046,7 @@ with export_col2:
     # CSV export
     csv_buffer = io.StringIO()
     export_df_csv = filtered_df.copy()
-    
+
     # Clean data for CSV export
     from datetime import datetime, timezone
 
@@ -10795,12 +11057,12 @@ with export_col2:
             val = val.astimezone(timezone.utc).replace(tzinfo=None)
             return val
         return val
-    
+
     for col in export_df_csv.columns:
         export_df_csv[col] = export_df_csv[col].map(_clean_csv)
-    
+
     export_df_csv.to_csv(csv_buffer, index=False)
-    
+
     # Track export generation for audit
     export_csv_key = f"export_csv_{start_date}_{end_date}_{len(export_df_csv)}"
     if export_csv_key not in st.session_state:
@@ -10811,7 +11073,7 @@ with export_col2:
                 f"Generated CSV export: {start_date} to {end_date}, {len(export_df_csv)} rows",
             )
         st.session_state[export_csv_key] = True
-    
+
     st.download_button(
         label=" Download QA Data (CSV)",
         data=csv_buffer.getvalue(),
@@ -10834,11 +11096,11 @@ if len(filtered_df) > 0:
             if st.button("Clear Selection", key="clear_selection_bottom"):
                 st.session_state.selected_call_ids = []
                 st.rerun()
-        
+
         # Multi-select for calls
         if "selected_call_ids" not in st.session_state:
             st.session_state.selected_call_ids = []
-        
+
         # Filter out invalid default values (calls that no longer exist in options)
         # This prevents StreamlitAPIException when old selections are not in current options
         valid_defaults = [
@@ -10854,7 +11116,7 @@ if len(filtered_df) > 0:
                 f"Removed {removed_count} invalid call IDs from selection defaults"
             )
             st.session_state.selected_call_ids = valid_defaults
-        
+
         selected_for_export = st.multiselect(
             "Choose calls to export (you can select multiple):",
             options=call_options,
@@ -10863,7 +11125,7 @@ if len(filtered_df) > 0:
             format_func=lambda x: f"{x[:50]}... - {filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0] if len(filtered_df[filtered_df['Call ID'] == x]) > 0 and 'QA Score' in filtered_df.columns and not pd.isna(filtered_df[filtered_df['Call ID'] == x]['QA Score'].iloc[0]) else 'N/A'}%",
         )
         st.session_state.selected_call_ids = selected_for_export
-        
+
         if selected_for_export:
             st.info(f" {len(selected_for_export)} call(s) selected for export")
 
@@ -10872,19 +11134,17 @@ if "selected_call_ids" not in st.session_state:
     st.session_state.selected_call_ids = []
 
 if len(filtered_df) > 0:
-    st.caption(
-        "Export the calls selected above"
-    )
-    
+    st.caption("Export the calls selected above")
+
     # Show selected calls count
     if st.session_state.selected_call_ids:
         selected_calls_df = filtered_df[
             filtered_df["Call ID"].isin(st.session_state.selected_call_ids)
         ]
         st.info(f" {len(selected_calls_df)} call(s) selected for export")
-        
+
         export_selected_col1, export_selected_col2 = st.columns(2)
-        
+
         with export_selected_col1:
             # Excel export for selected calls
             selected_excel_buffer = io.BytesIO()
@@ -10895,14 +11155,14 @@ if len(filtered_df) > 0:
                 selected_export_df.to_excel(
                     writer, sheet_name="Selected Calls", index=False
                 )
-            
+
             st.download_button(
                 label=" Export Selected (Excel)",
                 data=selected_excel_buffer.getvalue(),
                 file_name=f"selected_calls_{start_date}_to_{end_date}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-        
+
         with export_selected_col2:
             # CSV export for selected calls
             selected_csv_buffer = io.StringIO()
@@ -10912,21 +11172,19 @@ if len(filtered_df) > 0:
                     _clean_csv
                 )
             selected_export_df_csv.to_csv(selected_csv_buffer, index=False)
-            
+
             st.download_button(
                 label=" Export Selected (CSV)",
                 data=selected_csv_buffer.getvalue(),
                 file_name=f"selected_calls_{start_date}_to_{end_date}.csv",
                 mime="text/csv",
             )
-        
+
         if st.button(" Clear Selection"):
             st.session_state.selected_call_ids = []
             st.rerun()
     else:
-        st.caption(
-            " No calls selected. Select calls above."
-        )
+        st.caption(" No calls selected. Select calls above.")
 
 st.markdown("---")
 st.markdown(
