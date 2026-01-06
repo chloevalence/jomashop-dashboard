@@ -66,6 +66,10 @@ KNOWN_AGENT_MAPPINGS = {
     "bpagent093540654": "Agent 9",
     # Agent 10: Angel
     "bpagent102256681": "Agent 10",
+    # Agent 5: (Left, but calls need to be accessible to admins)
+    "bpagent051705087": "Agent 5",
+    # Agent 11: (No agent account, but viewable to admins)
+    "bpagent113827380": "Agent 11",
 }
 
 
@@ -80,7 +84,9 @@ def load_agent_mapping():
                 merged_mapping = {**mapping, **KNOWN_AGENT_MAPPINGS}
                 return merged_mapping
         except Exception as e:
-            print(f"Warning: Failed to load agent mapping file: {e}, using known mappings only")
+            print(
+                f"Warning: Failed to load agent mapping file: {e}, using known mappings only"
+            )
             return KNOWN_AGENT_MAPPINGS.copy()
     return KNOWN_AGENT_MAPPINGS.copy()
 
@@ -88,11 +94,11 @@ def load_agent_mapping():
 def get_or_create_agent_mapping(agent_id_lower):
     """Get agent number for an agent ID, or create a new mapping deterministically."""
     mapping = load_agent_mapping()
-    
+
     # Check if already mapped
     if agent_id_lower in mapping:
         return mapping[agent_id_lower]
-    
+
     # Check if already in normalized format (e.g., "agent 1", "agent 2")
     # This handles cases where cache already has normalized values
     if agent_id_lower.startswith("agent "):
@@ -103,7 +109,7 @@ def get_or_create_agent_mapping(agent_id_lower):
             return f"Agent {agent_num}"
         except ValueError:
             pass  # Not a valid number, continue with mapping logic
-    
+
     # Check special cases first
     if agent_id_lower == "unknown":
         return "Agent 1"
@@ -111,16 +117,17 @@ def get_or_create_agent_mapping(agent_id_lower):
         return "Agent 1"
     if agent_id_lower.startswith("bp01"):
         return "Agent 1"
-    
+
     # For new agent IDs, assign deterministically based on hash
     # This ensures the same agent ID always gets the same number
     import hashlib
+
     hash_value = int(hashlib.md5(agent_id_lower.encode()).hexdigest(), 16)
     # Use modulo to get a number between 1 and 99, but skip 5 (no agent 5 per user spec)
     agent_number = (hash_value % 99) + 1
     if agent_number == 5:
         agent_number = 11  # Skip 5, use 11 instead
-    
+
     return f"Agent {agent_number}"
 
 
@@ -130,7 +137,7 @@ def normalize_agent_id(agent_str):
         return agent_str
 
     agent_str_lower = str(agent_str).lower().strip()
-    
+
     # Use mapping system
     return get_or_create_agent_mapping(agent_str_lower)
 
@@ -376,7 +383,7 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             # Check if it's already datetime, if not convert it
             if not pd.api.types.is_datetime64_any_dtype(df["Call Date"]):
                 df["Call Date"] = pd.to_datetime(df["Call Date"], errors="coerce")
-            
+
             # Only drop the source column if Call Date was successfully created (has valid dates)
             if date_source_col and date_source_col in df.columns:
                 # Check if Call Date has any valid (non-NaT) values
@@ -1717,12 +1724,8 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
         agg_dict["Rubric Pass Count"] = "sum"
     if "Rubric Fail Count" in bpo_df.columns:
         agg_dict["Rubric Fail Count"] = "sum"
-    
-    agent_metrics = (
-        bpo_df.groupby("Agent")
-        .agg(agg_dict)
-        .reset_index()
-    )
+
+    agent_metrics = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
 
     agent_metrics.columns = [
         "Agent",
@@ -1823,12 +1826,8 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         agg_dict["Rubric Pass Count"] = "sum"
     if "Rubric Fail Count" in bpo_df.columns:
         agg_dict["Rubric Fail Count"] = "sum"
-    
-    monthly_metrics = (
-        bpo_df.groupby("Month")
-        .agg(agg_dict)
-        .reset_index()
-    )
+
+    monthly_metrics = bpo_df.groupby("Month").agg(agg_dict).reset_index()
 
     monthly_metrics.columns = [
         "Month",
@@ -2271,12 +2270,8 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         agg_dict["Rubric Pass Count"] = "sum"
     if "Rubric Fail Count" in bpo_df.columns:
         agg_dict["Rubric Fail Count"] = "sum"
-    
-    agent_perf = (
-        bpo_df.groupby("Agent")
-        .agg(agg_dict)
-        .reset_index()
-    )
+
+    agent_perf = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
 
     agent_perf.columns = [
         "Agent",

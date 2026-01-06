@@ -471,6 +471,12 @@ KNOWN_AGENT_MAPPINGS = {
     # Agent 10: Angel
     "bpagent102256681": "Agent 10",
     "bp agent 102256681": "Agent 10",  # Space version
+    # Agent 5: (Left, but calls need to be accessible to admins)
+    "bpagent051705087": "Agent 5",
+    "bp agent 051705087": "Agent 5",  # Space version
+    # Agent 11: (No agent account, but viewable to admins)
+    "bpagent113827380": "Agent 11",
+    "bp agent 113827380": "Agent 11",  # Space version
 }
 
 
@@ -590,10 +596,14 @@ def get_or_create_agent_mapping(agent_id_lower):
     # Use normalized version for hash to ensure consistency
     import hashlib
     hash_value = int(hashlib.md5(agent_id_normalized.encode()).hexdigest(), 16)
-    # Use modulo to get a number between 1 and 99, but skip 5 (no agent 5 per user spec)
+    # Use modulo to get a number between 1 and 99
+    # Note: Agent 5 and Agent 11 are now reserved for known mappings, skip them in hash assignment
     agent_number = (hash_value % 99) + 1
+    # Skip 5 and 11 in hash assignment (they're reserved for known mappings)
     if agent_number == 5:
-        agent_number = 11  # Skip 5, use 11 instead
+        agent_number = 12  # Skip 5, use 12 instead
+    if agent_number == 11:
+        agent_number = 12  # Skip 11, use 12 instead (if it was already 12, it stays 12)
     
     agent_name = f"Agent {agent_number}"
     
