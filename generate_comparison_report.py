@@ -1770,7 +1770,11 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
 
     # Normalize data for better visualization (0-100 scale)
     heatmap_data["Avg_Score"] = heatmap_data["Avg_Score"]  # Already 0-100
-    heatmap_data["Pass_Rate"] = heatmap_data["Pass_Rate"]  # Already 0-100
+    # Handle NA values in Pass_Rate (when no rubric data exists)
+    # Fill NA with 0 for visualization purposes (heatmap needs numeric values)
+    heatmap_data["Pass_Rate"] = heatmap_data["Pass_Rate"].fillna(
+        0
+    )  # Already 0-100, or 0 if no data
     heatmap_data["Call_Count"] = (
         (heatmap_data["Call_Count"] / heatmap_data["Call_Count"].max() * 100)
         if heatmap_data["Call_Count"].max() > 0
@@ -1873,7 +1877,7 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         monthly_metrics["Pass_Count"] = 0
     if "Fail_Count" not in monthly_metrics.columns:
         monthly_metrics["Fail_Count"] = 0
-    
+
     # Calculate pass rate - only when there's actual rubric data
     # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
     total_rubric = monthly_metrics["Pass_Count"] + monthly_metrics["Fail_Count"]
@@ -1914,20 +1918,26 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     # 2. Pass Rate Trend
     ax2 = axes[0, 1]
     x_indices = range(len(monthly_metrics))
+    # For plotting, matplotlib handles NaN/NA by skipping those points
+    # This is correct - we don't want to plot 0% when there's no data
+    pass_rate_plot = monthly_metrics["Pass_Rate"]
     ax2.plot(
         x_indices,
-        monthly_metrics["Pass_Rate"],
+        pass_rate_plot,
         marker="s",
         linewidth=2,
         markersize=8,
         color="#A23B72",
     )
-    ax2.fill_between(
-        x_indices,
-        monthly_metrics["Pass_Rate"],
-        alpha=0.3,
-        color="#A23B72",
-    )
+    # Only fill between where we have valid data (non-NA)
+    valid_mask = pass_rate_plot.notna()
+    if valid_mask.any():
+        ax2.fill_between(
+            [i for i, valid in zip(x_indices, valid_mask) if valid],
+            pass_rate_plot[valid_mask],
+            alpha=0.3,
+            color="#A23B72",
+        )
     ax2.set_xticks(x_indices)
     ax2.set_xticklabels(monthly_metrics["Month_Str"], rotation=45, ha="right")
     ax2.set_title("Pass Rate Trend", fontsize=12, fontweight="bold")
@@ -1971,9 +1981,11 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         color="#2E86AB",
         label="Avg Score",
     )
+    # Handle NA values for plotting - use forward fill then backward fill, then 0 as last resort
+    pass_rate_combined = monthly_metrics["Pass_Rate"].fillna(method='ffill').fillna(method='bfill').fillna(0)
     line2 = ax4_twin.plot(
         monthly_metrics["Month_Str"],
-        monthly_metrics["Pass_Rate"],
+        pass_rate_combined,
         marker="s",
         linewidth=2,
         markersize=8,
@@ -2341,13 +2353,13 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         agent_perf["Pass_Count"] = 0
     if "Fail_Count" not in agent_perf.columns:
         agent_perf["Fail_Count"] = 0
-    
+
     # Calculate pass rate - only when there's actual rubric data
     # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
     total_rubric = agent_perf["Pass_Count"] + agent_perf["Fail_Count"]
-    agent_perf["Pass_Rate"] = (
-        agent_perf["Pass_Count"] / total_rubric * 100
-    ).where(total_rubric > 0, pd.NA)
+    agent_perf["Pass_Rate"] = (agent_perf["Pass_Count"] / total_rubric * 100).where(
+        total_rubric > 0, pd.NA
+    )
 
     # Sort by average score
     agent_perf = agent_perf.sort_values("Avg_Score", ascending=False)
