@@ -715,7 +715,7 @@ def get_or_create_agent_mapping(agent_id_lower):
 
 def normalize_agent_id(agent_str):
     """Normalize agent ID by extracting first two digits after 'bpagent'.
-    
+
     Format: 'bpagent###########' → extract first two digits → 'Agent ##'
     Exceptions: Special cases for Jesus (unknown, bp016803073, bp016803074, bp01*)
     This same normalized value is used everywhere (display and filtering).
@@ -728,7 +728,9 @@ def normalize_agent_id(agent_str):
     # Check if already in "Agent X" or "BPO Agent X" format - return as-is
     if agent_str_lower.startswith("agent ") or agent_str_lower.startswith("bpo agent "):
         # Extract number and return in consistent format
-        agent_str_clean = agent_str_lower.replace("bpo agent ", "").replace("agent ", "").strip()
+        agent_str_clean = (
+            agent_str_lower.replace("bpo agent ", "").replace("agent ", "").strip()
+        )
         try:
             agent_num = int(agent_str_clean)
             return f"Agent {agent_num}"
@@ -5849,76 +5851,101 @@ else:
 # --- Fetch Call Metadata ---
 # Only test S3 connection AFTER user is logged in (moved from before login)
 status_text = st.empty()
-status_text.text(" Preparing to load data...")
-logger.info("Starting data load process (user is authenticated)")
 
-try:
-    # Quick connection test with aggressive timeouts (only after login)
-    import botocore.config
+# Check if data is already loaded - skip S3 test if so
+data_already_loaded = (
+    "merged_calls" in st.session_state
+    or st.session_state.get("_s3_cache_result") is not None
+    or st.session_state.get("_data_load_in_progress", False)
+)
 
-    config = botocore.config.Config(
-        connect_timeout=5,  # 5 seconds max
-        read_timeout=10,  # 10 seconds max
-        retries={"max_attempts": 1},  # No retries for faster failure
-    )
-    test_client = boto3.client(
-        "s3",
-        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-        region_name=st.secrets["s3"].get("region_name", "us-east-1"),
-        config=config,
-    )
+if not data_already_loaded:
+    status_text.text(" Preparing to load data...")
+    logger.info("Starting data load process (user is authenticated)")
 
-    status_text.text(" Testing S3 connection...")
-    logger.debug(f"Testing connection to bucket: {s3_bucket_name}")
-
-    # Quick test - just check if we can access the bucket with timeout
     try:
-        test_client.head_bucket(Bucket=s3_bucket_name)
-        logger.debug("S3 connection test successful")
-        status_text.text(" Connected! Loading data...")
-    except Exception as bucket_error:
-        logger.error(f"S3 bucket access failed: {bucket_error}")
+        # Quick connection test with aggressive timeouts (only after login)
+        # Only test once per session to avoid unnecessary tests
+        s3_test_key = "_s3_connection_tested"
+        if not st.session_state.get(s3_test_key, False):
+            import botocore.config
+
+            config = botocore.config.Config(
+                connect_timeout=5,  # 5 seconds max
+                read_timeout=10,  # 10 seconds max
+                retries={"max_attempts": 1},  # No retries for faster failure
+            )
+            test_client = boto3.client(
+                "s3",
+                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+                config=config,
+            )
+
+            status_text.text(" Testing S3 connection...")
+            logger.debug(f"Testing connection to bucket: {s3_bucket_name}")
+
+            # Quick test - just check if we can access the bucket with timeout
+            try:
+                test_client.head_bucket(Bucket=s3_bucket_name)
+                logger.debug("S3 connection test successful")
+                status_text.text(" Connected! Loading data...")
+                st.session_state[s3_test_key] = True  # Mark as tested
+            except Exception as bucket_error:
+                logger.error(f"S3 bucket access failed: {bucket_error}")
+                status_text.empty()
+                st.warning(" **S3 Connection Issue**")
+                st.warning(
+                    "Could not connect to S3. The app will try to use cached data if available."
+                )
+                st.info(
+                    " **If you see cached data below, you can continue using the app.**"
+                )
+                st.info(" **If not, check your S3 credentials or network connection.**")
+                # Don't stop - try to load from cache instead
+                status_text.text(" Attempting to load from cache...")
+                st.session_state[s3_test_key] = True  # Mark as tested even on failure
+        else:
+            # Already tested, just show loading message
+            status_text.text(" Loading data...")
+            logger.debug("S3 connection already tested, skipping test")
+
+        # Skip CSV count for faster startup - just load data directly
+        pdf_count = None
+        logger.debug(
+            "Skipping PDF count for faster startup - proceeding to data loading..."
+        )
+
+    except ClientError as e:
         status_text.empty()
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        if error_code == "404":
+            st.error(f" S3 bucket '{s3_bucket_name}' not found.")
+            st.error("Please check the bucket name in your secrets.toml")
+        elif error_code == "403":
+            st.error(f" Access denied to S3 bucket '{s3_bucket_name}'.")
+            st.error("Please check your AWS credentials and IAM permissions")
+        else:
+            st.error(f" S3 connection error: {e}")
+        st.stop()
+    except Exception as e:
+        status_text.empty()
+        logger.exception(f"Error during S3 connection test: {e}")
+        # Don't stop - try to load from cache instead
         st.warning(" **S3 Connection Issue**")
         st.warning(
             "Could not connect to S3. The app will try to use cached data if available."
         )
         st.info(" **If you see cached data below, you can continue using the app.**")
-        st.info(" **If not, check your S3 credentials or network connection.**")
-        # Don't stop - try to load from cache instead
         status_text.text(" Attempting to load from cache...")
-
-    # Skip CSV count for faster startup - just load data directly
-    pdf_count = None
-    logger.debug(
-        "Skipping PDF count for faster startup - proceeding to data loading..."
-    )
-
-except ClientError as e:
+        st.session_state["_s3_connection_tested"] = (
+            True  # Mark as tested to prevent retry
+        )
+else:
+    # Data already loaded, skip S3 test
+    logger.debug("Data already loaded, skipping S3 connection test")
     status_text.empty()
-    error_code = e.response.get("Error", {}).get("Code", "Unknown")
-    if error_code == "404":
-        st.error(f" S3 bucket '{s3_bucket_name}' not found.")
-        st.error("Please check the bucket name in your secrets.toml")
-    elif error_code == "403":
-        st.error(f" Access denied to S3 bucket '{s3_bucket_name}'.")
-        st.error("Please check your AWS credentials and IAM permissions")
-    else:
-        st.error(f" S3 connection error: {e}")
-    st.stop()
-except Exception as e:
-    status_text.empty()
-    st.error(f" Failed to connect to S3: {e}")
-    st.error("Please check:")
-    st.error("1. S3 credentials in secrets.toml")
-    st.error("2. Bucket name and region")
-    st.error("3. Network connection")
-    import traceback
-
-    with st.expander("Show full error details"):
-        st.code(traceback.format_exc())
-    st.stop()
 
 # Always load all files - caching handles performance
 # First load will process all CSV files, then cached indefinitely for instant access
@@ -5988,90 +6015,213 @@ try:
             logger.debug(
                 "No merged calls found, proceeding with normal load from cache or S3"
             )
-            # Normal load from cache or S3
-            # Load all files - first load will process all CSV files, then cached indefinitely for instant access
-            # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
-            logger.debug("Setting up progress tracking...")
+            # Check if data is already loaded and not stale - skip reload if so
+            if (
+                "_s3_cache_result" in st.session_state
+                and st.session_state["_s3_cache_result"] is not None
+                and not st.session_state.get("reload_all_triggered", False)
+                and not st.session_state.get("_data_load_in_progress", False)
+            ):
+                logger.debug(
+                    "Data already loaded in session state, using cached result"
+                )
+                cached_result = st.session_state["_s3_cache_result"]
+                if cached_result and len(cached_result) > 0:
+                    call_data = cached_result
+                    errors = st.session_state.get("_last_load_errors", [])
+                    elapsed = time.time() - t0
+                    status_text.empty()
+                    logger.info(
+                        f"Using cached data from session: {len(call_data)} calls"
+                    )
+                else:
+                    # Cached result is empty, proceed with normal load
+                    logger.debug("Cached result is empty, proceeding with normal load")
+                    # Fall through to normal load below
+                    # Normal load from cache or S3
+                    # Load all files - first load will process all CSV files, then cached indefinitely for instant access
+                    # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
+                    logger.debug("Setting up progress tracking...")
 
-            # Initialize progress tracking
-            if "csv_processing_progress" not in st.session_state:
-                st.session_state.csv_processing_progress = {
-                    "processed": 0,
-                    "total": 0,
-                    "errors": 0,
-                }
-                logger.debug("Initialized new progress tracking in session state")
-            else:
-                logger.debug("Using existing progress tracking from session state")
+                    # Initialize progress tracking
+                    if "csv_processing_progress" not in st.session_state:
+                        st.session_state.csv_processing_progress = {
+                            "processed": 0,
+                            "total": 0,
+                            "errors": 0,
+                        }
+                        logger.debug(
+                            "Initialized new progress tracking in session state"
+                        )
+                    else:
+                        logger.debug(
+                            "Using existing progress tracking from session state"
+                        )
 
-            # Create progress bar placeholder
-            progress_placeholder = st.empty()
-            progress_bar = None
-            logger.debug("Progress placeholder created")
+                    # Create progress bar placeholder
+                    progress_placeholder = st.empty()
+                    progress_bar = None
+                    logger.debug("Progress placeholder created")
 
-            # Show progress if we're processing files
-            def update_progress():
-                if st.session_state.csv_processing_progress["total"] > 0:
-                    processed = st.session_state.csv_processing_progress["processed"]
-                    total = st.session_state.csv_processing_progress["total"]
-                    errors = st.session_state.csv_processing_progress["errors"]
-                    progress = processed / total if total > 0 else 0
-                    progress_placeholder.progress(
-                        progress,
-                        text=f"Processing CSV files: {processed}/{total} ({errors} errors)",
+                    # Show progress if we're processing files
+                    def update_progress():
+                        if st.session_state.csv_processing_progress["total"] > 0:
+                            processed = st.session_state.csv_processing_progress[
+                                "processed"
+                            ]
+                            total = st.session_state.csv_processing_progress["total"]
+                            errors = st.session_state.csv_processing_progress["errors"]
+                            progress = processed / total if total > 0 else 0
+                            progress_placeholder.progress(
+                                progress,
+                                text=f"Processing CSV files: {processed}/{total} ({errors} errors)",
+                            )
+
+                    # Load data (this will trigger processing if not cached)
+                    # SIMPLE approach: Just call the cached function. Streamlit's cache handles everything.
+                    # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
+                    logger.debug(
+                        "Loading data - Streamlit cache will handle it automatically"
                     )
 
-            # Load data (this will trigger processing if not cached)
-            # SIMPLE approach: Just call the cached function. Streamlit's cache handles everything.
-            # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
-            logger.debug("Loading data - Streamlit cache will handle it automatically")
+                    try:
+                        # Add timeout wrapper
+                        def timeout_handler(signum, frame):
+                            raise TimeoutError("Data loading timed out after 5 minutes")
 
-        try:
-            # Add timeout wrapper
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Data loading timed out after 5 minutes")
+                        # Try to load with better error visibility
+                        loading_placeholder = st.empty()
+                        with loading_placeholder.container():
+                            st.spinner(
+                                "Loading PDFs from S3... This may take a few minutes for large datasets."
+                            )
 
-            # Try to load with better error visibility
-            loading_placeholder = st.empty()
-            with loading_placeholder.container():
-                st.spinner(
-                    "Loading PDFs from S3... This may take a few minutes for large datasets."
+                        # Use cache_version to force cache refresh when refresh completes
+                        cache_version = st.session_state.get("_cache_version", 0)
+                        call_data, errors = load_all_calls_cached(
+                            cache_version=cache_version
+                        )
+                        # Store errors in session state for potential cache updates
+                        st.session_state["_last_load_errors"] = errors
+                        logger.info(
+                            f"Data loaded. Got {len(call_data) if call_data else 0} calls"
+                        )
+
+                        # Clear loading messages
+                        loading_placeholder.empty()
+                    except TimeoutError:
+                        logger.exception("Timeout during data loading")
+                        loading_placeholder.empty()
+                        status_text.empty()
+                        st.error(" ⏱️ Data loading timed out. Please try again.")
+                        call_data = []
+                        errors = ["Data loading timed out"]
+                    except Exception as load_error:
+                        logger.exception(f"Error during data loading: {load_error}")
+                        loading_placeholder.empty()
+                        status_text.empty()
+                        st.error(f" ❌ Error loading data: {load_error}")
+                        call_data = []
+                        errors = [str(load_error)]
+            else:
+                # Normal load from cache or S3
+                # Load all files - first load will process all CSV files, then cached indefinitely for instant access
+                # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
+                logger.debug("Setting up progress tracking...")
+
+                # Initialize progress tracking
+                if "csv_processing_progress" not in st.session_state:
+                    st.session_state.csv_processing_progress = {
+                        "processed": 0,
+                        "total": 0,
+                        "errors": 0,
+                    }
+                    logger.debug("Initialized new progress tracking in session state")
+                else:
+                    logger.debug("Using existing progress tracking from session state")
+
+                # Create progress bar placeholder
+                progress_placeholder = st.empty()
+                progress_bar = None
+                logger.debug("Progress placeholder created")
+
+                # Show progress if we're processing files
+                def update_progress():
+                    if st.session_state.csv_processing_progress["total"] > 0:
+                        processed = st.session_state.csv_processing_progress[
+                            "processed"
+                        ]
+                        total = st.session_state.csv_processing_progress["total"]
+                        errors = st.session_state.csv_processing_progress["errors"]
+                        progress = processed / total if total > 0 else 0
+                        progress_placeholder.progress(
+                            progress,
+                            text=f"Processing CSV files: {processed}/{total} ({errors} errors)",
+                        )
+
+                # Load data (this will trigger processing if not cached)
+                # SIMPLE approach: Just call the cached function. Streamlit's cache handles everything.
+                # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
+                logger.debug(
+                    "Loading data - Streamlit cache will handle it automatically"
                 )
 
-            # Use cache_version to force cache refresh when refresh completes
-            cache_version = st.session_state.get("_cache_version", 0)
-            call_data, errors = load_all_calls_cached(cache_version=cache_version)
-            # Store errors in session state for potential cache updates
-            st.session_state["_last_load_errors"] = errors
-            logger.info(f"Data loaded. Got {len(call_data) if call_data else 0} calls")
+                try:
+                    # Add timeout wrapper
+                    def timeout_handler(signum, frame):
+                        raise TimeoutError("Data loading timed out after 5 minutes")
 
-            # Clear loading messages
-            loading_placeholder.empty()
-        except TimeoutError:
-            logger.exception("Timeout during data loading")
-            loading_placeholder.empty()
-            status_text.empty()
-            st.error(" **Loading Timeout**")
-            st.error("The data loading is taking too long. This might be due to:")
-            st.error("1. Slow S3 connection")
-            st.error("2. Large number of files to process")
-            st.error("3. Network issues")
-            st.info(" **Quick Fixes:**")
-            st.info("1. **Refresh the page** - if cache exists, it will load instantly")
-            st.info("2. **Wait 2-3 minutes** and refresh - the cache may be building")
-            st.info("3. **Check your internet connection**")
-            st.info(
-                "4. If you're an admin, try the ' Reload ALL Data' button after refresh"
-            )
-            st.stop()
-        except Exception as e:
-            logger.exception("Error during data loading")
-            loading_placeholder.empty()
-            status_text.empty()
-            st.error(" **Error Loading Data**")
-            st.error(f"**Error:** {str(e)}")
-            st.error("The app may be trying to load too many files at once.")
-            st.info(" **Try this:**")
+                    # Try to load with better error visibility
+                    loading_placeholder = st.empty()
+                    with loading_placeholder.container():
+                        st.spinner(
+                            "Loading PDFs from S3... This may take a few minutes for large datasets."
+                        )
+
+                    # Use cache_version to force cache refresh when refresh completes
+                    cache_version = st.session_state.get("_cache_version", 0)
+                    call_data, errors = load_all_calls_cached(
+                        cache_version=cache_version
+                    )
+                    # Store errors in session state for potential cache updates
+                    st.session_state["_last_load_errors"] = errors
+                    logger.info(
+                        f"Data loaded. Got {len(call_data) if call_data else 0} calls"
+                    )
+
+                    # Clear loading messages
+                    loading_placeholder.empty()
+                except TimeoutError:
+                    logger.exception("Timeout during data loading")
+                    loading_placeholder.empty()
+                    status_text.empty()
+                    st.error(" **Loading Timeout**")
+                    st.error(
+                        "The data loading is taking too long. This might be due to:"
+                    )
+                    st.error("1. Slow S3 connection")
+                    st.error("2. Large number of files to process")
+                    st.error("3. Network issues")
+                    st.info(" **Quick Fixes:**")
+                    st.info(
+                        "1. **Refresh the page** - if cache exists, it will load instantly"
+                    )
+                    st.info(
+                        "2. **Wait 2-3 minutes** and refresh - the cache may be building"
+                    )
+                    st.info("3. **Check your internet connection**")
+                    st.info(
+                        "4. If you're an admin, try the ' Reload ALL Data' button after refresh"
+                    )
+                    st.stop()
+                except Exception as e:
+                    logger.exception("Error during data loading")
+                    loading_placeholder.empty()
+                    status_text.empty()
+                    st.error(" **Error Loading Data**")
+                    st.error(f"**Error:** {str(e)}")
+                    st.error("The app may be trying to load too many files at once.")
+                    st.info(" **Try this:**")
             st.info("1. **Refresh the page** - if cache exists, it will load instantly")
             st.info(
                 "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
