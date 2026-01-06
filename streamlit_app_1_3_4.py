@@ -9119,7 +9119,7 @@ with st.expander("Rubric Code Analysis", expanded=False):
                     category_df = category_df.sort_values("Avg_Fail_Rate", ascending=False)
 
                     st.write("**Fail Rate by Rubric Category**")
-                    fig_heat, ax_heat = plt.subplots(figsize=(4, 2.5))
+                    fig_heat, ax_heat = plt.subplots(figsize=(3, 2))
                     colors = [
                         "green" if x < 20 else "orange" if x < 40 else "red"
                         for x in category_df["Avg_Fail_Rate"]
