@@ -556,12 +556,27 @@ def load_agent_mapping():
 
 
 def save_agent_mapping(mapping):
-    """Save agent ID mapping to file."""
+    """Save agent ID mapping to file, removing any incorrect mappings for known agents."""
     try:
+        # Clean up: remove any mappings for known agents (they should use KNOWN_AGENT_MAPPINGS)
+        cleaned_mapping = {}
+        for key, value in mapping.items():
+            key_normalized = key.replace(" ", "").replace("_", "").lower()
+            # Check if this key matches a known agent ID
+            is_known_agent = False
+            for known_id in KNOWN_AGENT_MAPPINGS.keys():
+                known_id_normalized = known_id.replace(" ", "").replace("_", "").lower()
+                if key_normalized == known_id_normalized or key.lower() == known_id.lower():
+                    is_known_agent = True
+                    break
+            # Only save if it's not a known agent
+            if not is_known_agent:
+                cleaned_mapping[key] = value
+        
         AGENT_MAPPING_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(AGENT_MAPPING_FILE, "w", encoding="utf-8") as f:
-            json.dump(mapping, f, indent=2, ensure_ascii=False)
-        logger.info(f"Saved agent mapping to {AGENT_MAPPING_FILE}")
+            json.dump(cleaned_mapping, f, indent=2, ensure_ascii=False)
+        logger.info(f"Saved agent mapping to {AGENT_MAPPING_FILE} (removed {len(mapping) - len(cleaned_mapping)} incorrect known agent mappings)")
     except Exception as e:
         logger.warning(f"Failed to save agent mapping file: {e}")
 
@@ -572,12 +587,6 @@ def get_or_create_agent_mapping(agent_id_lower):
     
     # Normalize by removing spaces to handle "bp agent 102256681" vs "bpagent102256681"
     agent_id_normalized = agent_id_lower.replace(" ", "").replace("_", "")
-    
-    # Check if already mapped (try both with and without spaces)
-    if agent_id_lower in mapping:
-        return mapping[agent_id_lower]
-    if agent_id_normalized in mapping:
-        return mapping[agent_id_normalized]
     
     # Check if already in normalized format (e.g., "agent 1", "agent 2")
     # This handles cases where cache already has normalized values
@@ -590,8 +599,8 @@ def get_or_create_agent_mapping(agent_id_lower):
         except ValueError:
             pass  # Not a valid number, continue with mapping logic
     
-    # CRITICAL: Check KNOWN_AGENT_MAPPINGS FIRST before hash assignment
-    # This prevents known agents from getting wrong numbers due to hash collisions
+    # CRITICAL: Check KNOWN_AGENT_MAPPINGS FIRST (before checking file mappings)
+    # This ensures known agents always get correct numbers, even if file has incorrect entries
     # Normalize known mapping keys for comparison
     for known_id, known_name in KNOWN_AGENT_MAPPINGS.items():
         known_id_normalized = known_id.replace(" ", "").replace("_", "")
@@ -606,6 +615,27 @@ def get_or_create_agent_mapping(agent_id_lower):
         return "Agent 1"
     if agent_id_normalized.startswith("bp01") or agent_id_lower.startswith("bp01"):
         return "Agent 1"
+    
+    # NOW check file mappings (only for unknown agents)
+    # Double-check: if this is a known agent ID that got incorrectly mapped, use known mapping
+    if agent_id_lower in mapping:
+        mapped_value = mapping[agent_id_lower]
+        # Verify this isn't a known agent that was incorrectly mapped
+        for known_id, known_name in KNOWN_AGENT_MAPPINGS.items():
+            known_id_normalized = known_id.replace(" ", "").replace("_", "")
+            if agent_id_normalized == known_id_normalized or agent_id_lower == known_id.lower():
+                logger.warning(f"Found incorrect mapping in file for known agent {agent_id_lower} -> {mapped_value}, using correct mapping {known_name}")
+                return known_name
+        return mapped_value
+    if agent_id_normalized in mapping:
+        mapped_value = mapping[agent_id_normalized]
+        # Verify this isn't a known agent that was incorrectly mapped
+        for known_id, known_name in KNOWN_AGENT_MAPPINGS.items():
+            known_id_normalized = known_id.replace(" ", "").replace("_", "")
+            if agent_id_normalized == known_id_normalized or agent_id_lower == known_id.lower():
+                logger.warning(f"Found incorrect mapping in file for known agent {agent_id_normalized} -> {mapped_value}, using correct mapping {known_name}")
+                return known_name
+        return mapped_value
     
     # For new agent IDs, assign deterministically based on hash
     # This ensures the same agent ID always gets the same number
