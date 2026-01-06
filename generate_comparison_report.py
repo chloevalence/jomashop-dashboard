@@ -1981,8 +1981,9 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         color="#2E86AB",
         label="Avg Score",
     )
-    # Handle NA values for plotting - use forward fill then backward fill, then 0 as last resort
-    pass_rate_combined = monthly_metrics["Pass_Rate"].fillna(method='ffill').fillna(method='bfill').fillna(0)
+    # For plotting, matplotlib handles NaN/NA by skipping those points
+    # This is correct - we don't want to plot 0% when there's no data
+    pass_rate_combined = monthly_metrics["Pass_Rate"]
     line2 = ax4_twin.plot(
         monthly_metrics["Month_Str"],
         pass_rate_combined,
