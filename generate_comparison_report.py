@@ -1926,7 +1926,6 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
     ax2.set_ylabel("Pass Rate (%)", fontsize=10)
     ax2.grid(True, alpha=0.3)
     ax2.set_ylim(bottom=0, top=100)
-    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
     # 3. Call Volume Trend
     ax3 = axes[1, 0]
