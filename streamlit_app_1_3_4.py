@@ -2325,9 +2325,40 @@ def load_all_calls_cached(cache_version=0):
         else:
             logger.warning(
                 f"Data load already in progress (started {load_duration:.1f}s ago), "
-                f"skipping duplicate load"
+                f"waiting for completion or using cache"
             )
-            # Try to return cached data if available instead of empty DataFrame
+            # Wait a short time for the first load to complete (max 5 seconds)
+            max_wait = 5.0
+            wait_interval = 0.5
+            waited = 0.0
+            while waited < max_wait:
+                time.sleep(wait_interval)
+                waited += wait_interval
+                # Check if load completed
+                if not st.session_state.get(load_in_progress_key, False):
+                    # Load completed, try to get cached result
+                    break
+                # Check if we should give up and use cache
+                if waited >= max_wait:
+                    break
+            
+            # Try multiple sources for data
+            # 1. Try Streamlit cache (if load completed)
+            try:
+                # Force cache refresh by using a dummy cache key
+                # The actual cache will be used if available
+                from streamlit.runtime.caching import cache_data_api
+                # Try to get from cache using the function's cache key
+                cache_key = f"load_all_calls_cached_{cache_version}"
+                if hasattr(st.session_state, '_cached_call_data'):
+                    cached_data = st.session_state.get('_cached_call_data')
+                    if cached_data and len(cached_data) > 0:
+                        logger.info(f"Returning cached data from session state: {len(cached_data)} calls")
+                        return cached_data, []
+            except Exception as e:
+                logger.debug(f"Could not get from Streamlit cache: {e}")
+            
+            # 2. Try disk cache
             try:
                 disk_result = load_cached_data_from_disk()
                 if disk_result and disk_result[0] and len(disk_result[0]) > 0:
@@ -2336,7 +2367,19 @@ def load_all_calls_cached(cache_version=0):
                     return migrated, disk_result[1] if disk_result[1] else []
             except Exception as e:
                 logger.warning(f"Could not load disk cache during concurrent load: {e}")
-            # Return empty data to prevent crash, will retry on next run
+            
+            # 3. Try S3 cache as last resort
+            try:
+                s3_result = load_cached_data_from_s3()
+                if s3_result and s3_result[0] and len(s3_result[0]) > 0:
+                    migrated = migrate_old_cache_format(s3_result[0])
+                    logger.info(f"Returning S3 cache during concurrent load: {len(migrated)} calls")
+                    return migrated, s3_result[1] if s3_result[1] else []
+            except Exception as e:
+                logger.warning(f"Could not load S3 cache during concurrent load: {e}")
+            
+            # If all else fails, return empty (will retry on next run)
+            logger.warning("No cached data available during concurrent load, returning empty")
             return [], []
     
     # Mark load as in progress with timestamp
