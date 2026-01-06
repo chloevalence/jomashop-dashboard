@@ -9199,10 +9199,10 @@ if user_agent_id:
                     help="Standard deviation of scores (lower is more consistent)",
                 )
 
-    agent_trends_col1, agent_trends_col2 = st.columns(2)
-    
-    with agent_trends_col1:
-        st.write("**My QA Score Trend**")
+        agent_trends_col1, agent_trends_col2 = st.columns(2)
+        
+        with agent_trends_col1:
+            st.write("**My QA Score Trend**")
         if len(agent_data) > 0:
                 agent_daily = (
                     agent_data.groupby(agent_data["Call Date"].dt.date)
@@ -9257,9 +9257,9 @@ if user_agent_id:
                 plt.xticks(rotation=45)
                 plt.tight_layout()
                 st_pyplot_safe(fig_agent)
-    
-    with agent_trends_col2:
-        st.write("**My Pass Rate Trend vs Team**")
+        
+        with agent_trends_col2:
+            st.write("**My Pass Rate Trend vs Team**")
         if len(agent_data) > 0:
                 agent_pass_daily = (
                     agent_data.groupby(agent_data["Call Date"].dt.date)
