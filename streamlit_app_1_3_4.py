@@ -4905,6 +4905,8 @@ try:
         agent_id_value = user_mapping[current_username].get("agent_id", "")
         if agent_id_value:
             user_agent_id = agent_id_value
+            # Normalize agent ID immediately so it's consistent everywhere
+            user_agent_id = normalize_agent_id(user_agent_id)
 except Exception:
     pass
 
@@ -6686,9 +6688,7 @@ if is_anonymous_user:
     )
 
 # --- Determine if agent view or admin view ---
-# Normalize user_agent_id if it exists
-if user_agent_id:
-    user_agent_id = normalize_agent_id(user_agent_id)
+# user_agent_id is already normalized above (when set from user mapping)
 
 # If user has agent_id, automatically filter to their data
 if user_agent_id:
@@ -9660,26 +9660,26 @@ if user_agent_id:
         with aht_col1:
             st.write("**My AHT Trend vs Team**")
             if len(agent_data) > 0 and "Call Duration (min)" in agent_data.columns:
-            agent_aht_daily = (
-                agent_data.groupby(agent_data["Call Date"].dt.date)
-                .agg(Avg_AHT=("Call Duration (min)", "mean"))
-                .reset_index()
-            )
-            agent_aht_daily.columns = ["Call Date", "My_AHT"]
+                agent_aht_daily = (
+                    agent_data.groupby(agent_data["Call Date"].dt.date)
+                    .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                    .reset_index()
+                )
+                agent_aht_daily.columns = ["Call Date", "My_AHT"]
 
-            team_aht_daily = (
-                overall_df.groupby(overall_df["Call Date"].dt.date)
-                .agg(Avg_AHT=("Call Duration (min)", "mean"))
-                .reset_index()
-            )
-            team_aht_daily.columns = ["Call Date", "Team_AHT"]
+                team_aht_daily = (
+                    overall_df.groupby(overall_df["Call Date"].dt.date)
+                    .agg(Avg_AHT=("Call Duration (min)", "mean"))
+                    .reset_index()
+                )
+                team_aht_daily.columns = ["Call Date", "Team_AHT"]
 
-            aht_comparison = pd.merge(
-                agent_aht_daily[["Call Date", "My_AHT"]],
-                team_aht_daily[["Call Date", "Team_AHT"]],
-                on="Call Date",
-                how="outer",
-            ).sort_values("Call Date")
+                aht_comparison = pd.merge(
+                    agent_aht_daily[["Call Date", "My_AHT"]],
+                    team_aht_daily[["Call Date", "Team_AHT"]],
+                    on="Call Date",
+                    how="outer",
+                ).sort_values("Call Date")
 
                 if len(aht_comparison) > 0 and aht_comparison["My_AHT"].notna().any():
                     fig_aht_trend, ax_aht_trend = plt.subplots(figsize=(8, 5))
