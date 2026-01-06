@@ -6879,24 +6879,59 @@ if show_comparison and user_agent_id:
         & (meta_df["Call Date"].dt.date <= end_date)
     ].copy()
     
-    overall_avg_score = (
-        overall_df["QA Score"].mean() if "QA Score" in overall_df.columns else 0
-    )
-    overall_total_pass = (
-        overall_df["Rubric Pass Count"].sum()
-        if "Rubric Pass Count" in overall_df.columns
-        else 0
-    )
-    overall_total_fail = (
-        overall_df["Rubric Fail Count"].sum()
-        if "Rubric Fail Count" in overall_df.columns
-        else 0
-    )
-    overall_pass_rate = (
-        (overall_total_pass / (overall_total_pass + overall_total_fail) * 100)
-        if (overall_total_pass + overall_total_fail) > 0
-        else 0
-    )
+    # Calculate averages per agent first, then average those agent averages
+    # This gives equal weight to each agent rather than weighting by call volume
+    # Exclude the current user's agent from peer comparison
+    agent_metrics = []
+    
+    for agent in overall_df["Agent"].unique():
+        # Skip if this is the current user's agent (we want peer average)
+        if agent == user_agent_id:
+            continue
+            
+        agent_data = overall_df[overall_df["Agent"] == agent]
+        agent_metric = {}
+        
+        # Average QA Score per agent
+        if "QA Score" in agent_data.columns:
+            agent_avg_score = agent_data["QA Score"].mean()
+            if not pd.isna(agent_avg_score):
+                agent_metric["avg_score"] = agent_avg_score
+        
+        # Pass rate per agent
+        if "Rubric Pass Count" in agent_data.columns and "Rubric Fail Count" in agent_data.columns:
+            total_pass = agent_data["Rubric Pass Count"].sum()
+            total_fail = agent_data["Rubric Fail Count"].sum()
+            if (total_pass + total_fail) > 0:
+                agent_metric["pass_rate"] = (total_pass / (total_pass + total_fail) * 100)
+        
+        # Average AHT per agent
+        if "Call Duration (min)" in agent_data.columns:
+            aht_values = agent_data["Call Duration (min)"].dropna()
+            if len(aht_values) > 0:
+                agent_metric["avg_aht"] = aht_values.mean()
+        
+        if agent_metric:
+            agent_metrics.append(agent_metric)
+    
+    # Now average the agent averages
+    if agent_metrics:
+        # Average QA Score (average of agent averages)
+        scores = [m.get("avg_score") for m in agent_metrics if "avg_score" in m]
+        overall_avg_score = sum(scores) / len(scores) if scores else 0
+        
+        # Average Pass Rate (average of agent pass rates)
+        pass_rates = [m.get("pass_rate") for m in agent_metrics if "pass_rate" in m]
+        overall_pass_rate = sum(pass_rates) / len(pass_rates) if pass_rates else 0
+        
+        # Average AHT (average of agent averages)
+        ahts = [m.get("avg_aht") for m in agent_metrics if "avg_aht" in m]
+        overall_avg_aht = sum(ahts) / len(ahts) if ahts else None
+    else:
+        overall_avg_score = 0
+        overall_pass_rate = 0
+        overall_avg_aht = None
+    
     overall_total_calls = len(overall_df)
 else:
     overall_avg_score = None
@@ -7213,12 +7248,7 @@ if show_comparison and user_agent_id:
             and filtered_df["Call Duration (min)"].notna().any()
             else None
         )
-        # Calculate overall AHT - check both column existence and non-null values
-        overall_avg_aht = None
-        if "Call Duration (min)" in overall_df.columns:
-            aht_values = overall_df["Call Duration (min)"].dropna()
-            if len(aht_values) > 0:
-                overall_avg_aht = aht_values.mean()
+        # overall_avg_aht is already calculated above (average of agent averages, excluding current agent)
         delta_aht = (
             my_avg_aht - overall_avg_aht
             if my_avg_aht is not None and overall_avg_aht is not None
@@ -7244,8 +7274,8 @@ if show_comparison and user_agent_id:
 
     with col6:
         st.metric(
-            "Overall Avg AHT",
-            f"{overall_avg_aht:.1f} min" if overall_avg_aht is not None else "N/A",
+            "Overall Pass Rate",
+            f"{overall_pass_rate:.1f}%" if overall_pass_rate else "N/A",
         )
     
     # Comparison section
