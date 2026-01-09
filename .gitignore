@@ -24,3 +24,12 @@ bpo_review_report.pdf
 # Colab notebooks with API keys
 TranscriptParser_BPOCenters_MASTER.ipynb
 valence_QA_bpocenters.ipynb
+
+# Lambda functions and related files
+audio_processor_lambda/
+qa_insights_lambda/
+json_aggregator_lambda/
+qa_calculations_handler.py
+qa_calculations_requirements.txt
+QA_CALCULATIONS_LAMBDA_README.md
+lambda_calculations.py
