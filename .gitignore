@@ -21,3 +21,6 @@ bpo_review_report.pdf
 # Generated Excel reports
 *_report.xlsx
 *_export.xlsx
+# Colab notebooks with API keys
+TranscriptParser_BPOCenters_MASTER.ipynb
+valence_QA_bpocenters.ipynb
