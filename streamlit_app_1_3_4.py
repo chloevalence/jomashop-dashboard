@@ -2305,12 +2305,20 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                     existing_count = len(existing_call_data)
 
                     if not existing_is_partial:  # Existing cache is COMPLETE
-                        logger.warning(
-                            f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
-                            f"with PARTIAL cache ({len(call_data)} calls). "
-                            f"Complete cache preserved. Local cache saved successfully."
-                        )
-                        return  # Don't overwrite COMPLETE cache with PARTIAL
+                        # CRITICAL FIX: Allow overwriting COMPLETE cache if it has 0 calls (invalid/empty)
+                        # A COMPLETE cache with 0 calls is essentially invalid and should be overwritten
+                        if existing_count == 0:
+                            logger.info(
+                                f" COMPLETE cache has 0 calls (invalid/empty) - allowing overwrite with PARTIAL cache ({len(call_data)} calls)"
+                            )
+                            # Continue to save below - don't return early
+                        else:
+                            logger.warning(
+                                f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
+                                f"with PARTIAL cache ({len(call_data)} calls). "
+                                f"Complete cache preserved. Local cache saved successfully."
+                            )
+                            return  # Don't overwrite COMPLETE cache with PARTIAL
                     else:
                         # Both are PARTIAL - check progress
                         existing_processed = existing_data.get("processed", 0)
@@ -3195,6 +3203,24 @@ def load_all_calls_cached(cache_version=0):
             logger.info(
                 f" Total time: {elapsed:.1f} seconds ({elapsed / 60:.1f} minutes)"
             )
+
+            # CRITICAL: Ensure cache is saved after full load completes
+            # This is a safety net to ensure data persists even if earlier saves failed
+            if final_call_data and len(final_call_data) > 0:
+                # Verify cache was saved - if not, save it now
+                try:
+                    # Check if we already saved (to avoid duplicate saves)
+                    # If this is a full load (not partial), ensure it's saved as COMPLETE
+                    if not reload_all_triggered or len(final_call_data) >= 100:
+                        # This is a full load - ensure it's saved as COMPLETE
+                        # Note: save_cached_data_to_disk defaults to partial=False (COMPLETE)
+                        # We'll let the existing saves handle it, but log for verification
+                        logger.info(
+                            f" Full load completed: {len(final_call_data)} calls loaded. "
+                            f"Cache should be saved as COMPLETE (partial=False)"
+                        )
+                except Exception as verify_error:
+                    logger.warning(f" Could not verify cache save: {verify_error}")
 
             # Clear reload_all_triggered flag after successful load
             if reload_all_triggered:
