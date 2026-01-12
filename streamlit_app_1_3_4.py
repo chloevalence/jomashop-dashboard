@@ -3238,6 +3238,15 @@ def load_all_calls_cached(cache_version=0):
             if final_call_data:
                 final_call_data = migrate_old_cache_format(final_call_data)
 
+            # CRITICAL FIX: Store loaded data in session state BEFORE clearing load_in_progress flag
+            # This allows concurrent requests to immediately access the data
+            if final_call_data and len(final_call_data) > 0:
+                st.session_state["_s3_cache_result"] = (final_call_data, final_errors)
+                st.session_state["_s3_cache_timestamp"] = datetime.now().isoformat()
+                logger.info(
+                    f" Stored {len(final_call_data)} calls in session state for concurrent requests"
+                )
+
             # Clear load in progress flag
             if load_in_progress_key in st.session_state:
                 del st.session_state[load_in_progress_key]
