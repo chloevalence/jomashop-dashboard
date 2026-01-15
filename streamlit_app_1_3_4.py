@@ -2469,23 +2469,37 @@ def load_all_calls_cached(cache_version=0):
                     # Try session state cache
                     if "_s3_cache_result" in st.session_state:
                         cached_result = st.session_state["_s3_cache_result"]
-                        if cached_result and len(cached_result) >= 100:
-                            logger.info(
-                                f"Found session cache during wait: {len(cached_result)} calls (waited {waited:.1f}s)"
-                            )
-                            return cached_result, st.session_state.get(
+                        # Handle both tuple (data, errors) and just data formats for backward compatibility
+                        if isinstance(cached_result, tuple):
+                            cached_data, cached_errors = cached_result
+                        else:
+                            cached_data = cached_result
+                            cached_errors = st.session_state.get(
                                 "_last_load_errors", []
                             )
+
+                        if cached_data and len(cached_data) >= 100:
+                            logger.info(
+                                f"Found session cache during wait: {len(cached_data)} calls (waited {waited:.1f}s)"
+                            )
+                            return cached_data, cached_errors
 
             # Try multiple sources for data after wait
             # 1. Try session state cache first (fastest)
             if "_s3_cache_result" in st.session_state:
                 cached_result = st.session_state["_s3_cache_result"]
-                if cached_result and len(cached_result) >= 100:
+                # Handle both tuple (data, errors) and just data formats for backward compatibility
+                if isinstance(cached_result, tuple):
+                    cached_data, cached_errors = cached_result
+                else:
+                    cached_data = cached_result
+                    cached_errors = st.session_state.get("_last_load_errors", [])
+
+                if cached_data and len(cached_data) >= 100:
                     logger.info(
-                        f"Returning session cache after wait: {len(cached_result)} calls"
+                        f"Returning session cache after wait: {len(cached_data)} calls"
                     )
-                    return cached_result, st.session_state.get("_last_load_errors", [])
+                    return cached_data, cached_errors
 
             # 2. Try Streamlit cache (if load completed)
             try:
