@@ -2685,16 +2685,108 @@ def load_all_calls_cached(cache_version=0):
             s3_cache_result = None
             s3_cache_timestamp = None
 
-            # Check session state first to avoid duplicate S3 loads
+            # Check session state first, but verify S3 cache isn't newer
+            # CRITICAL FIX: Check if S3 cache is newer than session state before using it
+            # This ensures we don't use stale session cache when another app instance updated S3
             s3_cache_key = "_s3_cache_result"
             s3_timestamp_key = "_s3_cache_timestamp"
+            s3_cache_newer = False
+            local_session_timestamp = None
+
             if (
                 s3_cache_key in st.session_state
                 and s3_timestamp_key in st.session_state
             ):
+                local_session_timestamp = st.session_state[s3_timestamp_key]
+                # Quick check: use head_object to see if S3 cache is newer
+                try:
+                    s3_client, s3_bucket = get_s3_client_and_bucket()
+                    if s3_client and s3_bucket:
+                        response = s3_client.head_object(
+                            Bucket=s3_bucket, Key=S3_CACHE_KEY
+                        )
+                        s3_last_modified = response.get("LastModified")
+
+                        if local_session_timestamp and s3_last_modified:
+                            # Convert local timestamp to datetime for comparison
+                            try:
+                                if isinstance(local_session_timestamp, str):
+                                    local_dt = datetime.fromisoformat(
+                                        local_session_timestamp.replace("Z", "+00:00")
+                                    )
+                                elif isinstance(local_session_timestamp, (int, float)):
+                                    local_dt = datetime.fromtimestamp(
+                                        local_session_timestamp
+                                    )
+                                else:
+                                    local_dt = local_session_timestamp
+
+                                # Make timezone-aware for comparison
+                                s3_dt = s3_last_modified
+                                comparison_done = False
+                                if local_dt.tzinfo is None and s3_dt.tzinfo is not None:
+                                    # Make local_dt timezone-aware for comparison
+                                    try:
+                                        local_dt = local_dt.replace(tzinfo=s3_dt.tzinfo)
+                                    except Exception:
+                                        # Fallback: convert both to timestamps for comparison
+                                        try:
+                                            s3_ts = s3_dt.timestamp()
+                                            local_ts = local_dt.timestamp()
+                                            if s3_ts > local_ts:
+                                                s3_cache_newer = True
+                                                logger.info(
+                                                    f" S3 cache is newer (timestamp comparison: {s3_ts} > {local_ts}) - clearing stale session cache"
+                                                )
+                                            comparison_done = True
+                                        except Exception:
+                                            # If timestamp conversion fails, assume S3 is newer to be safe
+                                            s3_cache_newer = True
+                                            logger.debug(
+                                                " Could not compare timestamps, assuming S3 is newer"
+                                            )
+                                            comparison_done = True
+
+                                # Compare directly if we haven't already done the comparison
+                                if not comparison_done and s3_dt > local_dt:
+                                    s3_cache_newer = True
+                                    logger.info(
+                                        f" S3 cache is newer ({s3_dt}) than session cache ({local_dt}) - clearing stale session cache"
+                                    )
+                            except Exception as compare_error:
+                                logger.debug(
+                                    f" Could not compare S3 and session timestamps: {compare_error}, will check S3 cache"
+                                )
+                                # If comparison fails, check S3 to be safe
+                                s3_cache_newer = True
+                except ClientError as s3_error:
+                    error_code = s3_error.response.get("Error", {}).get("Code", "")
+                    if error_code != "NoSuchKey":
+                        logger.debug(
+                            f" Could not check S3 cache timestamp: {s3_error}, using session cache"
+                        )
+                except Exception as s3_check_error:
+                    logger.debug(
+                        f" Could not check S3 cache timestamp: {s3_check_error}, using session cache"
+                    )
+
+            # If S3 cache is newer, clear session state and reload from S3
+            if s3_cache_newer:
+                logger.info(
+                    " Clearing stale session cache - S3 cache is newer (updated by another app instance)"
+                )
+                if s3_cache_key in st.session_state:
+                    del st.session_state[s3_cache_key]
+                if s3_timestamp_key in st.session_state:
+                    del st.session_state[s3_timestamp_key]
+                s3_cache_result = None
+                s3_cache_timestamp = None
+            elif (
+                s3_cache_key in st.session_state
+                and s3_timestamp_key in st.session_state
+            ):
+                # Session cache is still valid - use it
                 cached_timestamp = st.session_state[s3_timestamp_key]
-                # Use cached result if timestamp matches (cache is still valid)
-                # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
                 cached_result = st.session_state[s3_cache_key]
                 if (
                     cached_result is not None
@@ -2718,8 +2810,9 @@ def load_all_calls_cached(cache_version=0):
                         del st.session_state[s3_timestamp_key]
                     s3_cache_result = None
                     s3_cache_timestamp = None
-            else:
-                # Load from S3 (only if not in session state)
+
+            # Load from S3 if we don't have a valid session cache
+            if s3_cache_result is None:
                 s3_client, s3_bucket = get_s3_client_and_bucket()
                 if s3_client and s3_bucket:
                     try:
@@ -4841,6 +4934,8 @@ else:
                 or "frontend assets" in error_msg
                 or "network latency" in error_msg
                 or "proxy settings" in error_msg
+                or "importing a module script failed" in error_msg
+                or "module script failed" in error_msg
             )
 
             if is_component_error and attempt < max_retries - 1:
@@ -4945,6 +5040,8 @@ if auth_status is None:
             or "cookie_manager" in error_msg
             or "cannot assemble" in error_msg
             or "cookie manager" in error_msg
+            or "importing a module script failed" in error_msg
+            or "module script failed" in error_msg
         )
 
         if is_component_error:
