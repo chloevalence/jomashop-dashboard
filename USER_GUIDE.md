@@ -31,7 +31,7 @@ Welcome to the Jomashop QA Rubric Dashboard! This comprehensive guide will help 
 
 ### First-Time Setup
 
-- The dashboard automatically loads data from your S3 bucket
+- The dashboard automatically loads data from your database
 - Initial load may take a few minutes depending on data volume
 - Data is cached for faster subsequent access
 

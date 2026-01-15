@@ -3905,8 +3905,108 @@ def load_new_calls_only():
     """
     try:
         # OPTIMIZATION: Load cache ONCE at start and reuse throughout refresh
-        # This prevents repeated cache reads (3-4 times per batch) that cause lock contention
+        # CRITICAL FIX: Check if S3 cache is newer than local cache before using stale data
         logger.debug(" Loading cache once at start of refresh (will reuse throughout)")
+
+        # Check S3 cache timestamp to see if it's newer than local/session cache
+        s3_cache_newer = False
+        try:
+            s3_bucket_name = st.secrets["s3"]["bucket_name"]
+            s3_cache_client = boto3.client(
+                "s3",
+                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            )
+            # Use head_object for faster check (just metadata, no body download)
+            response = s3_cache_client.head_object(
+                Bucket=s3_bucket_name, Key=S3_CACHE_KEY
+            )
+            s3_last_modified = response.get("LastModified")
+
+            # Compare with session state timestamp
+            local_timestamp = st.session_state.get("_s3_cache_timestamp")
+            if local_timestamp and s3_last_modified:
+                # Convert local timestamp to datetime for comparison
+                try:
+                    if isinstance(local_timestamp, str):
+                        # Parse ISO format string
+                        local_dt = datetime.fromisoformat(
+                            local_timestamp.replace("Z", "+00:00")
+                        )
+                    elif isinstance(local_timestamp, (int, float)):
+                        # Unix timestamp
+                        local_dt = datetime.fromtimestamp(local_timestamp)
+                    else:
+                        local_dt = local_timestamp
+
+                    # Compare timestamps (S3 LastModified is timezone-aware, ensure local_dt is too)
+                    s3_dt = s3_last_modified
+
+                    # Make local_dt timezone-aware if S3 timestamp is timezone-aware
+                    comparison_done = False
+                    if local_dt.tzinfo is None and s3_dt.tzinfo is not None:
+                        # Make local_dt timezone-aware for comparison (use S3's timezone)
+                        try:
+                            local_dt = local_dt.replace(tzinfo=s3_dt.tzinfo)
+                            # Now both are timezone-aware, can compare directly below
+                        except Exception:
+                            # Fallback: convert both to timestamps for comparison
+                            try:
+                                s3_ts = s3_dt.timestamp()
+                                local_ts = local_dt.timestamp()
+                                if s3_ts > local_ts:
+                                    s3_cache_newer = True
+                                    logger.debug(
+                                        f" S3 cache is newer (timestamp comparison: {s3_ts} > {local_ts}) - clearing stale cache"
+                                    )
+                                comparison_done = True
+                            except Exception:
+                                # If timestamp conversion fails, assume S3 is newer to be safe
+                                s3_cache_newer = True
+                                logger.debug(
+                                    " Could not compare timestamps, assuming S3 is newer"
+                                )
+                                comparison_done = True
+
+                    # Compare directly if we haven't already done the comparison
+                    if not comparison_done and s3_dt > local_dt:
+                        s3_cache_newer = True
+                        logger.debug(
+                            f" S3 cache is newer ({s3_dt}) than local ({local_dt}) - clearing stale cache"
+                        )
+                except Exception as compare_error:
+                    logger.debug(
+                        f" Could not compare timestamps: {compare_error}, assuming S3 is newer"
+                    )
+                    s3_cache_newer = True
+            elif not local_timestamp:
+                # No local timestamp, assume S3 might be newer (first load or cache cleared)
+                s3_cache_newer = True
+                logger.debug(" No local timestamp found - will check S3 cache")
+        except ClientError as s3_error:
+            error_code = s3_error.response.get("Error", {}).get("Code", "")
+            if error_code == "NoSuchKey":
+                # S3 cache doesn't exist, use local cache
+                logger.debug(" S3 cache does not exist, using local cache")
+            else:
+                logger.debug(
+                    f" Could not check S3 cache timestamp: {s3_error}, will use existing cache"
+                )
+        except Exception as s3_check_error:
+            logger.debug(
+                f" Could not check S3 cache timestamp: {s3_check_error}, will use existing cache"
+            )
+
+        # Clear session state cache only if S3 is newer
+        if s3_cache_newer:
+            if "_s3_cache_result" in st.session_state:
+                logger.debug(" Clearing stale session cache to force fresh S3 load")
+                del st.session_state["_s3_cache_result"]
+            if "_s3_cache_timestamp" in st.session_state:
+                del st.session_state["_s3_cache_timestamp"]
+
+        # Load from cache (will use S3 if session state was cleared, otherwise uses existing cache)
         disk_result = load_cached_data_from_disk()
         # CRITICAL FIX: Check if disk_result is None before accessing its elements
         existing_calls = (
@@ -3927,12 +4027,40 @@ def load_new_calls_only():
             )
 
         # Get last_save_time from cache metadata (if available)
+        # CRITICAL FIX: Read from S3 cache (shared source of truth) first, then fall back to local
         last_save_time = 0
-        if existing_calls and CACHE_FILE.exists():
+
+        # First, try to get last_save_time from S3 cache (shared across all app instances)
+        try:
+            s3_bucket_name = st.secrets["s3"]["bucket_name"]
+            s3_cache_client = boto3.client(
+                "s3",
+                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            )
+            response = s3_cache_client.get_object(
+                Bucket=s3_bucket_name, Key=S3_CACHE_KEY
+            )
+            cached_data = json.loads(response["Body"].read().decode("utf-8"))
+            if isinstance(cached_data, dict):
+                last_save_time = cached_data.get("last_save_time", 0)
+                logger.debug(f" Read last_save_time from S3 cache: {last_save_time}")
+        except Exception as s3_error:
+            logger.debug(f" Could not read last_save_time from S3 cache: {s3_error}")
+            # Fall back to local cache below
+            pass
+
+        # Fallback: Read from local disk cache if S3 read failed
+        if not last_save_time and existing_calls and CACHE_FILE.exists():
             try:
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     cached_data = json.load(f)
-                last_save_time = cached_data.get("last_save_time", 0)
+                if isinstance(cached_data, dict):
+                    last_save_time = cached_data.get("last_save_time", 0)
+                    logger.debug(
+                        f" Read last_save_time from local cache: {last_save_time}"
+                    )
             except Exception:
                 pass
 
@@ -7509,7 +7637,11 @@ if is_super_admin():
             st.rerun()
 
         # Audit Log Viewer (Chloe, Shannon, and Jerson only)
-        if current_username and current_username.lower() in ["chloe", "shannon", "jerson"]:
+        if current_username and current_username.lower() in [
+            "chloe",
+            "shannon",
+            "jerson",
+        ]:
             st.markdown("---")
             st.markdown("###  Audit Log")
             audit_file = Path("logs/audit_log.json")
