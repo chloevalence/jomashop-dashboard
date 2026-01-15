@@ -4919,8 +4919,8 @@ time_remaining = SESSION_TIMEOUT_MINUTES - (
 if 0 < time_remaining <= 5:
     st.sidebar.warning(f"Session expires in {int(time_remaining)} minute(s)")
 
-# Audit logging (admin only - Shannon and Chloe)
-if current_username and current_username.lower() in ["chloe", "shannon"]:
+# Audit logging (all users)
+if current_username:
     log_audit_event(
         current_username,
         "page_access",
@@ -7508,8 +7508,8 @@ if is_super_admin():
         if st.button("Refresh Metrics"):
             st.rerun()
 
-        # Audit Log Viewer (Shannon and Chloe only)
-        if current_username and current_username.lower() in ["chloe", "shannon"]:
+        # Audit Log Viewer (Chloe, Shannon, and Jerson only)
+        if current_username and current_username.lower() in ["chloe", "shannon", "jerson"]:
             st.markdown("---")
             st.markdown("###  Audit Log")
             audit_file = Path("logs/audit_log.json")
@@ -11212,7 +11212,7 @@ with export_col1:
     # Track export generation for audit (download buttons don't have callbacks)
     export_key = f"export_excel_{start_date}_{end_date}_{len(export_df)}"
     if export_key not in st.session_state:
-        if current_username and current_username.lower() in ["chloe", "shannon"]:
+        if current_username:
             log_audit_event(
                 current_username,
                 "export_data",
@@ -11251,7 +11251,7 @@ with export_col2:
     # Track export generation for audit
     export_csv_key = f"export_csv_{start_date}_{end_date}_{len(export_df_csv)}"
     if export_csv_key not in st.session_state:
-        if current_username and current_username.lower() in ["chloe", "shannon"]:
+        if current_username:
             log_audit_event(
                 current_username,
                 "export_data",
