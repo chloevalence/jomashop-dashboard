@@ -5040,6 +5040,9 @@ if auth_status is None:
             or "cookie_manager" in error_msg
             or "cannot assemble" in error_msg
             or "cookie manager" in error_msg
+            or "frontend assets" in error_msg
+            or "network latency" in error_msg
+            or "proxy settings" in error_msg
             or "importing a module script failed" in error_msg
             or "module script failed" in error_msg
         )
@@ -7927,10 +7930,11 @@ if show_comparison and user_agent_id:
         delta_value = f"{delta_aht:+.1f} min" if delta_aht is not None else None
         delta_color_value = None
         if delta_aht is not None:
-            # For AHT: lower is better
-            # When delta_aht < 0 (AHT decreased), this is GOOD → green (use "inverse" to invert default red for negative)
-            # When delta_aht >= 0 (AHT increased), this is BAD → red (use "normal" to keep default red for positive)
-            delta_color_value = "inverse" if delta_aht < 0 else "normal"
+            # For AHT: lower is better (inverse polarity)
+            # Always use "inverse" so that:
+            # - Negative delta (AHT decreased, good) → green
+            # - Positive delta (AHT increased, bad) → red
+            delta_color_value = "inverse"
 
         st.metric(
             "My Avg AHT",
