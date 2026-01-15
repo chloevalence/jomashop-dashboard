@@ -33,3 +33,14 @@ qa_calculations_handler.py
 qa_calculations_requirements.txt
 QA_CALCULATIONS_LAMBDA_README.md
 lambda_calculations.py
+
+# Documentation files (keep only README.md and USER_GUIDE.md in git)
+AGENT_MAPPING_GUIDE.md
+AGENT_SETUP_INSTRUCTIONS.md
+ANONYMOUS_MODE.md
+AWS_CLI_SETUP.md
+AWS_CREDENTIALS_GUIDE.md
+QUICK_START.md
+S3_SETUP.md
+SECURITY.md
+TROUBLESHOOTING.md
