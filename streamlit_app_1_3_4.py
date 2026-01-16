@@ -5117,9 +5117,13 @@ def load_new_calls_only():
                         logger.error(traceback.format_exc())
 
                 # Log batch completion
-                logger.debug(
+                logger.info(
                     f" Completed batch {batch_num}/{total_batches}: processed {len(batch_calls)} calls from this batch"
                 )
+                if batch_num == total_batches:
+                    logger.info(
+                        f" DIAGNOSTIC: Last batch ({batch_num}/{total_batches}) completed, preparing to exit batch loop"
+                    )
 
             except Exception as batch_error:
                 # CRITICAL FIX: Catch any exceptions during batch processing to prevent crashes
@@ -5165,7 +5169,10 @@ def load_new_calls_only():
                 # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
                 # Progress updates will be visible when refresh completes or user interacts
 
-        logger.debug(" Exiting batch loop, starting final processing...")
+        logger.info(" DIAGNOSTIC: Exiting batch loop, starting final processing...")
+        logger.info(
+            f" DIAGNOSTIC: Batch loop exit - processed_count={processed_count}, total_new={total_new}, len(new_calls)={len(new_calls) if new_calls else 0}, len(errors)={len(errors) if errors else 0}"
+        )
         try:
             logger.info(
                 f" Batch loop completed. Processed {processed_count} files. Starting final processing..."
