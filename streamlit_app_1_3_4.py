@@ -5047,9 +5047,9 @@ def load_new_calls_only():
                     import traceback
 
                     logger.error(traceback.format_exc())
-            
-            # Log batch completion
-            logger.debug(f" Completed batch {batch_num}/{total_batches}: processed {len(batch_calls)} calls from this batch")
+                
+                # Log batch completion
+                logger.debug(f" Completed batch {batch_num}/{total_batches}: processed {len(batch_calls)} calls from this batch")
 
             except Exception as batch_error:
                 # CRITICAL FIX: Catch any exceptions during batch processing to prevent crashes
