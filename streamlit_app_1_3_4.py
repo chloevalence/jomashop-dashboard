@@ -6338,11 +6338,19 @@ try:
                     "Data already loaded in session state, checking cached result"
                 )
                 cached_result = st.session_state["_s3_cache_result"]
+                # CRITICAL FIX: Unpack tuple before checking length
+                # Handle both tuple (data, errors) and just data formats for backward compatibility
+                if isinstance(cached_result, tuple):
+                    cached_data, cached_errors = cached_result
+                else:
+                    cached_data = cached_result
+                    cached_errors = st.session_state.get("_last_load_errors", [])
+                
                 # Only use cached data if it's substantial (at least 100 calls)
                 # This prevents using stale/partial data from previous sessions
-                if cached_result and len(cached_result) >= 100:
-                    call_data = cached_result
-                    errors = st.session_state.get("_last_load_errors", [])
+                if cached_data and len(cached_data) >= 100:
+                    call_data = cached_data
+                    errors = cached_errors
                     elapsed = time.time() - t0
                     status_text.empty()
                     logger.info(
@@ -6351,7 +6359,7 @@ try:
                 else:
                     # Cached result is too small or empty, proceed with normal load
                     logger.debug(
-                        f"Cached result is too small ({len(cached_result) if cached_result else 0} calls), proceeding with normal load"
+                        f"Cached result is too small ({len(cached_data) if cached_data else 0} calls), proceeding with normal load"
                     )
                     # Clear the invalid cache and proceed to normal load
                     if "_s3_cache_result" in st.session_state:
@@ -6416,8 +6424,9 @@ try:
                     call_data, errors = load_all_calls_cached(
                         cache_version=cache_version
                     )
+                    # CRITICAL FIX: Store tuple (data, errors) instead of just data
                     # Store data and errors in session state for reuse
-                    st.session_state["_s3_cache_result"] = call_data
+                    st.session_state["_s3_cache_result"] = (call_data, errors)
                     st.session_state["_last_load_errors"] = errors
                     if call_data:
                         st.session_state["_s3_cache_timestamp"] = time.time()
