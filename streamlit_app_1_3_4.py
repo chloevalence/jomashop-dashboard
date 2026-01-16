@@ -5090,20 +5090,31 @@ def load_new_calls_only():
                 # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
                 # Progress updates will be visible when refresh completes or user interacts
 
-        logger.info(
-            f" Batch loop completed. Processed {processed_count} files. Starting final processing..."
-        )
-        elapsed_total = time.time() - processing_start_time
-        logger.info(
-            f" Refresh completed: Processed {total_new} new files in {elapsed_total / 60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}. Cache updated with {len(new_calls)} new calls."
-        )
+        try:
+            logger.info(
+                f" Batch loop completed. Processed {processed_count} files. Starting final processing..."
+            )
+            elapsed_total = time.time() - processing_start_time
+            logger.info(
+                f" Refresh completed: Processed {total_new} new files in {elapsed_total / 60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}. Cache updated with {len(new_calls)} new calls."
+            )
 
-        logger.debug(
-            f" Preparing to return from load_new_calls_only(): {len(new_calls)} calls, {len(errors) if errors else 0} errors"
-        )
-        result = (new_calls, errors if errors else None, len(new_calls))
-        logger.debug(" Successfully created return tuple")
-        return result
+            logger.debug(
+                f" Preparing to return from load_new_calls_only(): {len(new_calls)} calls, {len(errors) if errors else 0} errors"
+            )
+            # CRITICAL FIX: Safely create return tuple to prevent crashes
+            error_result = errors if errors else None
+            call_count = len(new_calls) if new_calls else 0
+            result = (new_calls if new_calls else [], error_result, call_count)
+            logger.debug(" Successfully created return tuple")
+            logger.info(f" Returning from load_new_calls_only(): {call_count} calls")
+            return result
+        except Exception as return_error:
+            logger.error(f" Error preparing return value: {return_error}")
+            import traceback
+            logger.error(f" Return error traceback: {traceback.format_exc()}")
+            # Return safe default values
+            return ([], None, 0)
 
     except Exception as e:
         logger.error(f" Error in load_new_calls_only(): {e}")
