@@ -4316,17 +4316,25 @@ def load_new_calls_only():
 
         # Clear session state cache only if S3 is newer
         if s3_cache_newer:
+            logger.info(
+                " DIAGNOSTIC: S3 cache is newer - clearing stale session cache to force fresh S3 load"
+            )
             # CRITICAL FIX: Protect st.session_state access - could fail if Streamlit not ready
             try:
                 if "_s3_cache_result" in st.session_state:
-                    logger.debug(" Clearing stale session cache to force fresh S3 load")
+                    logger.info(" DIAGNOSTIC: Clearing _s3_cache_result from session state")
                     del st.session_state["_s3_cache_result"]
                 if "_s3_cache_timestamp" in st.session_state:
+                    logger.info(" DIAGNOSTIC: Clearing _s3_cache_timestamp from session state")
                     del st.session_state["_s3_cache_timestamp"]
             except (RuntimeError, AttributeError) as session_error:
-                logger.debug(
+                logger.warning(
                     f" Could not clear session state cache: {session_error}, continuing anyway"
                 )
+        else:
+            logger.debug(
+                " DIAGNOSTIC: S3 cache is NOT newer (or could not compare) - keeping session cache"
+            )
 
         # Load from cache (will use S3 if session state was cleared, otherwise uses existing cache)
         disk_result = load_cached_data_from_disk()
@@ -4334,6 +4342,21 @@ def load_new_calls_only():
         existing_calls = (
             disk_result[0] if (disk_result and disk_result[0] is not None) else []
         )
+        # DIAGNOSTIC: Log what load_cached_data_from_disk() returned
+        logger.info(
+            f" DIAGNOSTIC: load_cached_data_from_disk() returned: "
+            f"disk_result is {'None' if disk_result is None else 'not None'}, "
+            f"disk_result[0] has {len(disk_result[0]) if (disk_result and disk_result[0]) else 0} calls, "
+            f"existing_calls has {len(existing_calls)} calls"
+        )
+        # DIAGNOSTIC: Check if cache file exists and its size
+        if CACHE_FILE.exists():
+            cache_size = CACHE_FILE.stat().st_size
+            logger.info(
+                f" DIAGNOSTIC: Cache file exists at {CACHE_FILE}, size: {cache_size} bytes"
+            )
+        else:
+            logger.info(f" DIAGNOSTIC: Cache file does NOT exist at {CACHE_FILE}")
 
         # Extract existing_cache_keys once for duplicate checking
         # Use consistent key extraction logic that matches cache check logic
@@ -4440,19 +4463,30 @@ def load_new_calls_only():
                 else:
                     keys_missing += 1
 
-            logger.debug(
+            logger.info(
                 f" File Key Extraction: {keys_found} file keys found ({csv_files} CSV files, {pdf_files} PDF files), {keys_missing} missing"
             )
             if sample_keys:
-                logger.debug(f" Sample cached keys (first 5): {sample_keys[:5]}")
+                logger.info(f" Sample cached keys (first 5): {sample_keys[:5]}")
+            # DIAGNOSTIC: Check if calls have filename fields
+            if len(cached_calls) > 0:
+                sample_call = cached_calls[0]
+                has_filename = "filename" in sample_call and sample_call.get("filename")
+                has_s3_key = "_s3_key" in sample_call and sample_call.get("_s3_key")
+                has_id = "_id" in sample_call and sample_call.get("_id")
+                logger.info(
+                    f" DIAGNOSTIC: Sample call has filename={has_filename} ('{sample_call.get('filename', '')[:50] if has_filename else ''}'), "
+                    f"_s3_key={has_s3_key} ('{sample_call.get('_s3_key', '')[:50] if has_s3_key else ''}'), "
+                    f"_id={has_id} ('{sample_call.get('_id', '')[:50] if has_id else ''}')"
+                )
             if keys_missing > 0:
                 logger.warning(
-                    f" {keys_missing} cached calls are missing _s3_key - they may be reprocessed"
+                    f" {keys_missing} cached calls are missing file keys (filename/_s3_key) - they may be reprocessed"
                 )
-            else:
-                logger.info(
-                    " No disk cache found in count_new_csvs - all files will be treated as new"
-                )
+        else:
+            logger.info(
+                " No disk cache found - existing_calls is empty - all files will be treated as new"
+            )
 
         # Also check session state (for files processed in current session)
         session_keys = st.session_state.get("processed_s3_keys", set())
