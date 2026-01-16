@@ -4516,11 +4516,29 @@ def load_new_calls_only():
             config=config,
         )
 
-        # List all CSV files in S3 (PDFs are ignored)
-        paginator = s3_client_with_timeout.get_paginator("list_objects_v2")
-        pages = paginator.paginate(
-            Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=1000
-        )
+        # OPTIMIZATION: Check if we have a cached CSV file list (avoid re-pagination)
+        cache_key = "_s3_csv_keys_cache"
+        cache_timestamp_key = "_s3_csv_keys_cache_timestamp"
+        use_cached_keys = False
+
+        if cache_key in st.session_state:
+            try:
+                cache_timestamp = st.session_state.get(cache_timestamp_key)
+                if cache_timestamp:
+                    cache_age = (
+                        datetime.now() - datetime.fromisoformat(cache_timestamp)
+                    ).total_seconds() / 60
+                    if cache_age < 5:  # 5 minutes TTL
+                        cached_keys = st.session_state[cache_key]
+                        if cached_keys and len(cached_keys) > 0:
+                            use_cached_keys = True
+                            logger.info(
+                                f" Using cached S3 CSV file list ({len(cached_keys)} files, {cache_age:.1f} min old)"
+                            )
+            except Exception as cache_check_error:
+                logger.debug(
+                    f" Could not check cache validity: {cache_check_error}, will re-paginate"
+                )
 
         # Find new CSV files (not in processed_keys)
         new_csv_keys = []
@@ -4529,56 +4547,124 @@ def load_new_calls_only():
         sample_s3_keys = []
         all_s3_keys = []  # Store all S3 keys for comparison
 
-        # Track pagination progress
-        page_count = 0
-        files_per_page = []
-        is_truncated = False
+        if use_cached_keys:
+            # Use cached keys - skip pagination
+            all_s3_keys = st.session_state[cache_key]
+            total_s3_files = len(all_s3_keys)
+            sample_s3_keys = all_s3_keys[:10] if len(all_s3_keys) >= 10 else all_s3_keys
+            # Find new CSV files from cached keys
+            for key in all_s3_keys:
+                if key not in processed_keys_normalized:
+                    new_csv_keys.append(
+                        {
+                            "key": key,
+                            "last_modified": None,  # Cached keys don't have timestamps
+                        }
+                    )
+            logger.info(
+                f" Skipped pagination: Using {total_s3_files} cached CSV file keys"
+            )
+            # Set pagination tracking variables for cached path
+            page_count = 0
+            files_per_page = []
+            is_truncated = False
+        else:
+            # List all CSV files in S3 (PDFs are ignored) - pagination required
+            paginator = s3_client_with_timeout.get_paginator("list_objects_v2")
+            pages = paginator.paginate(
+                Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=1000
+            )
 
-        for page in pages:
-            page_count += 1
-            page_file_count = 0
+            # Track pagination progress
+            page_count = 0
+            files_per_page = []
+            is_truncated = False
+            consecutive_empty = 0  # Track consecutive empty pages for early exit
 
-            if isinstance(page, dict) and "Contents" in page:
-                for obj in page["Contents"]:
-                    key_raw = obj.get("Key")
-                    if not key_raw:
-                        continue
-                    key = key_raw.strip(
-                        "/"
-                    )  # Normalize S3 key (consistent with cache normalization)
-                    if key.lower().endswith(".csv"):
-                        total_s3_files += 1
-                        page_file_count += 1
-                        all_s3_keys.append(key)
-                        if len(sample_s3_keys) < 10:
-                            sample_s3_keys.append(key)
-                        if key not in processed_keys_normalized:
-                            last_modified = obj.get("LastModified", datetime.min)
-                            # Ensure LastModified is a datetime object for safe sorting
-                            if not isinstance(last_modified, datetime):
-                                last_modified = datetime.min
-                            new_csv_keys.append(
-                                {
-                                    "key": key,  # Store normalized key
-                                    "last_modified": last_modified,
-                                }
+            for page in pages:
+                page_count += 1
+                page_file_count = 0
+
+                if isinstance(page, dict) and "Contents" in page:
+                    for obj in page["Contents"]:
+                        key_raw = obj.get("Key")
+                        if not key_raw:
+                            continue
+                        key = key_raw.strip(
+                            "/"
+                        )  # Normalize S3 key (consistent with cache normalization)
+                        if key.lower().endswith(".csv"):
+                            total_s3_files += 1
+                            page_file_count += 1
+                            all_s3_keys.append(key)
+                            if len(sample_s3_keys) < 10:
+                                sample_s3_keys.append(key)
+                            if key not in processed_keys_normalized:
+                                last_modified = obj.get("LastModified", datetime.min)
+                                # Ensure LastModified is a datetime object for safe sorting
+                                if not isinstance(last_modified, datetime):
+                                    last_modified = datetime.min
+                                new_csv_keys.append(
+                                    {
+                                        "key": key,  # Store normalized key
+                                        "last_modified": last_modified,
+                                    }
+                                )
+
+                files_per_page.append(page_file_count)
+
+                # Track consecutive empty pages for early exit optimization
+                consecutive_empty = (
+                    0 if page_file_count > 0 else (consecutive_empty + 1)
+                )
+
+                # Check if pagination is truncated (though paginator should handle this automatically)
+                if "IsTruncated" in page:
+                    is_truncated = page["IsTruncated"]
+
+                    # Early exit: if 3+ consecutive empty pages and IsTruncated=False, we're done
+                    if (
+                        consecutive_empty >= 3
+                        and total_s3_files > 0
+                        and not is_truncated
+                    ):
+                        logger.info(
+                            f" Early exit: Found all CSV files after {page_count} pages (last 3 pages were empty)"
+                        )
+                        break
+
+                    # Log IsTruncated status for pages with CSV files or every 10th page
+                    if page_file_count > 0 or page_count % 10 == 0 or is_truncated:
+                        if page_file_count > 0:
+                            logger.info(
+                                f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
+                            )
+                        else:
+                            logger.debug(
+                                f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
                             )
 
-            files_per_page.append(page_file_count)
-            # Check if pagination is truncated (though paginator should handle this automatically)
-            if "IsTruncated" in page:
-                is_truncated = page["IsTruncated"]
-                # Log IsTruncated status every 10 pages or if truncated
-                if page_count % 10 == 0 or is_truncated:
-                    logger.info(
-                        f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
-                    )
+                # Log pagination progress every 10 pages (only if CSV files found so far)
+                if page_count % 10 == 0:
+                    if total_s3_files > 0:
+                        logger.info(
+                            f" Processing page {page_count}, found {total_s3_files} CSV files so far..."
+                        )
+                    else:
+                        logger.debug(
+                            f" Processing page {page_count}, no CSV files found yet..."
+                        )
 
-            # Log pagination progress every 10 pages
-            if page_count % 10 == 0:
+        # Cache the CSV file list for next time (skip pagination if cache is fresh)
+        if not use_cached_keys and all_s3_keys:
+            try:
+                st.session_state[cache_key] = all_s3_keys
+                st.session_state[cache_timestamp_key] = datetime.now().isoformat()
                 logger.info(
-                    f" Processing page {page_count}, found {total_s3_files} CSV files so far..."
+                    f" Cached {len(all_s3_keys)} CSV file keys for future refreshes (TTL: 5 minutes)"
                 )
+            except Exception as cache_save_error:
+                logger.debug(f" Could not cache S3 CSV file list: {cache_save_error}")
 
         # Log pagination completion with final IsTruncated status (combined)
         logger.info(
