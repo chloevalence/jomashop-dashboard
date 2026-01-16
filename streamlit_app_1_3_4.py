@@ -10933,10 +10933,10 @@ with st.expander("Coaching Insights", expanded=False):
                     category_counts.most_common(), columns=["Category", "Frequency"]
                 )
                 category_df["Percentage"] = (
-                    (category_df["Frequency"] / len(all_coaching) * 100)
+                    (category_df["Frequency"] / len(all_coaching) * 100).round(1)
                     if all_coaching
-                    else 0
-                ).round(1)
+                    else pd.Series([0.0] * len(category_df))
+                )
 
                 col_cat1, col_cat2 = st.columns(2)
                 with col_cat1:
@@ -10981,10 +10981,10 @@ with st.expander("Coaching Insights", expanded=False):
                     columns=["Coaching Suggestion", "Frequency"],
                 )
                 all_coaching_df["Percentage"] = (
-                    (all_coaching_df["Frequency"] / len(all_coaching) * 100)
+                    (all_coaching_df["Frequency"] / len(all_coaching) * 100).round(1)
                     if all_coaching
-                    else 0
-                ).round(1)
+                    else pd.Series([0.0] * len(all_coaching_df))
+                )
                 st.write(
                     f"**All Coaching Suggestions ({len(all_coaching_df)} unique suggestions)**"
                 )
