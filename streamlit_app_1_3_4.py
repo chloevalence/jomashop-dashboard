@@ -1090,11 +1090,17 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                 filename = csv_key.split("/")[-1]
 
                 # Process each row
+                # CRITICAL FIX: Ensure all rows are processed - all_calls.append must be inside the loop
+                rows_processed = 0
+                rows_added = 0
                 for idx, row in df.iterrows():
+                    rows_processed += 1
                     try:
                         parsed_data = parse_csv_row(row, filename)
                         if parsed_data:
+                            # CRITICAL: This append MUST be inside the row loop to process all rows
                             all_calls.append(parsed_data)
+                            rows_added += 1
                     except Exception as e:
                         error_msg = (
                             f"Error parsing row {idx + 1} in {filename}: {str(e)}"
@@ -1103,7 +1109,7 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                         logger.warning(error_msg)
                         continue
 
-                logger.info(f"Processed {len(df)} rows from {filename}")
+                logger.info(f"Processed {rows_processed} rows from {filename}, added {rows_added} calls to all_calls (total rows in CSV: {len(df)})")
 
             except Exception as e:
                 error_msg = f"Error processing CSV file {csv_key}: {str(e)}"
@@ -1815,8 +1821,15 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
         # Just check if disk cache exists and is recent, if not, we'll sync on next S3 load
         # This avoids another S3 load just for syncing
 
+        # CRITICAL FIX: Ensure consistent tuple format (data, errors)
+        # Handle both tuple (data, errors) and just data formats for backward compatibility
+        if isinstance(cached_result, tuple):
+            result = cached_result
+        else:
+            # Convert single value to tuple format
+            result = (cached_result, st.session_state.get("_last_load_errors", []))
+        
         # Cache result in session state during refresh
-        result = cached_result
         if refresh_in_progress:
             cache_key = "_disk_cache_during_refresh"
             st.session_state[cache_key] = (result, time.time())
@@ -2540,19 +2553,22 @@ def load_all_calls_cached(cache_version=0):
                     and s3_timestamp_key in st.session_state
                 ):
                     s3_cached_data = st.session_state[s3_cache_key]
+                    # CRITICAL FIX: Safe tuple access with proper type checking
                     if (
                         s3_cached_data
                         and isinstance(s3_cached_data, tuple)
                         and len(s3_cached_data) >= 1
+                        and s3_cached_data[0] is not None
+                        and isinstance(s3_cached_data[0], list)
+                        and len(s3_cached_data[0]) > 0
                     ):
-                        if s3_cached_data[0] and len(s3_cached_data[0]) > 0:
-                            migrated = migrate_old_cache_format(s3_cached_data[0])
-                            logger.info(
-                                f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
-                            )
-                            return migrated, s3_cached_data[1] if len(
-                                s3_cached_data
-                            ) > 1 and s3_cached_data[1] else []
+                        migrated = migrate_old_cache_format(s3_cached_data[0])
+                        logger.info(
+                            f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
+                        )
+                        return migrated, s3_cached_data[1] if len(
+                            s3_cached_data
+                        ) > 1 and s3_cached_data[1] is not None else []
             except Exception as e:
                 logger.debug(
                     f"Could not get S3 cache from session state during concurrent load: {e}"
@@ -2807,11 +2823,15 @@ def load_all_calls_cached(cache_version=0):
                     and isinstance(cached_result, tuple)
                     and len(cached_result) >= 1
                     and cached_result[0] is not None
+                    and isinstance(cached_result[0], list)
                 ):
                     s3_cache_result = cached_result
                     s3_cache_timestamp = cached_timestamp
+                    # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
+                    cache_data = s3_cache_result[0] if len(s3_cache_result) > 0 else []
+                    cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
                     logger.debug(
-                        f" Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
+                        f" Using session-cached S3 result: {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                     )
                 else:
                     # Session state contains invalid data - clear it and reload from S3
@@ -2842,8 +2862,11 @@ def load_all_calls_cached(cache_version=0):
                                 s3_cached_data.get("errors", []),
                             )
                             s3_cache_timestamp = s3_cached_data.get("timestamp", None)
+                            # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
+                            cache_data = s3_cache_result[0] if len(s3_cache_result) > 0 and s3_cache_result[0] is not None else []
+                            cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
                             logger.info(
-                                f" Loaded from S3 cache (source of truth): {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
+                                f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                             )
 
                             # Cache in session state to avoid duplicate loads
@@ -2904,7 +2927,14 @@ def load_all_calls_cached(cache_version=0):
         # CRITICAL: If refresh is in progress, use S3 cache directly (most up-to-date)
         refresh_in_progress = st.session_state.get("refresh_in_progress", False)
         if refresh_in_progress:
-            if s3_cache_result and s3_cache_result[0]:
+            # CRITICAL FIX: Safe tuple access - verify tuple structure before accessing
+            if (
+                s3_cache_result
+                and isinstance(s3_cache_result, tuple)
+                and len(s3_cache_result) > 0
+                and s3_cache_result[0] is not None
+                and isinstance(s3_cache_result[0], list)
+            ):
                 # Migrate old cache format to new format
                 migrated_calls = migrate_old_cache_format(s3_cache_result[0])
                 logger.info(
@@ -2956,7 +2986,14 @@ def load_all_calls_cached(cache_version=0):
         # If _merged_cache_data doesn't exist, fall through to use S3 cache or disk cache
 
         # CRITICAL: Use S3 cache if available (source of truth)
-        if s3_cache_result and s3_cache_result[0]:
+        # CRITICAL FIX: Safe tuple access - verify tuple structure before accessing
+        if (
+            s3_cache_result
+            and isinstance(s3_cache_result, tuple)
+            and len(s3_cache_result) > 0
+            and s3_cache_result[0] is not None
+            and isinstance(s3_cache_result[0], list)
+        ):
             # Migrate old cache format to new format
             migrated_calls = migrate_old_cache_format(s3_cache_result[0])
             logger.info(
@@ -6540,7 +6577,8 @@ try:
     logger.debug(
         f"Before final check: call_data type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}"
     )
-    if call_data:
+    # CRITICAL FIX: Add type checking to ensure call_data is a list before operations
+    if call_data and isinstance(call_data, list) and len(call_data) > 0:
         # Only show cache messages if we actually processed files or refresh was triggered
         refresh_in_progress = st.session_state.get("refresh_in_progress", False)
         if was_processing and "last_actual_processing_time" in st.session_state:
@@ -6591,7 +6629,8 @@ except Exception as e:
 # CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
 # This ensures cached data with old agent IDs gets normalized consistently
 # This fixes the issue where cached DataFrames have wrong agent IDs
-if call_data:
+# CRITICAL FIX: Add type checking to ensure call_data is a list before operations
+if call_data and isinstance(call_data, list) and len(call_data) > 0:
     agent_normalized_count = 0
     for call in call_data:
         if isinstance(call, dict) and "agent" in call:
@@ -6613,7 +6652,14 @@ if call_data:
             f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
         )
 
-meta_df = pd.DataFrame(call_data)
+# CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
+# Handle None, empty list, or invalid types safely
+if call_data and isinstance(call_data, list) and len(call_data) > 0:
+    meta_df = pd.DataFrame(call_data)
+else:
+    # Create empty DataFrame with expected structure if no data
+    logger.warning("No valid call_data available, creating empty DataFrame")
+    meta_df = pd.DataFrame()
 
 # --- ANONYMIZATION FUNCTIONS ---
 # Note: is_anonymous_user is already defined earlier in the code
