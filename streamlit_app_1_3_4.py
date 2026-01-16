@@ -5047,9 +5047,11 @@ def load_new_calls_only():
                         import traceback
 
                         logger.error(traceback.format_exc())
-                
+
                 # Log batch completion
-                logger.debug(f" Completed batch {batch_num}/{total_batches}: processed {len(batch_calls)} calls from this batch")
+                logger.debug(
+                    f" Completed batch {batch_num}/{total_batches}: processed {len(batch_calls)} calls from this batch"
+                )
 
             except Exception as batch_error:
                 # CRITICAL FIX: Catch any exceptions during batch processing to prevent crashes
@@ -5090,7 +5092,9 @@ def load_new_calls_only():
             f" Refresh completed: Processed {total_new} new files in {elapsed_total / 60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}. Cache updated with {len(new_calls)} new calls."
         )
 
-        logger.debug(f" Preparing to return from load_new_calls_only(): {len(new_calls)} calls, {len(errors) if errors else 0} errors")
+        logger.debug(
+            f" Preparing to return from load_new_calls_only(): {len(new_calls)} calls, {len(errors) if errors else 0} errors"
+        )
         result = (new_calls, errors if errors else None, len(new_calls))
         logger.debug(" Successfully created return tuple")
         return result
