@@ -4817,19 +4817,21 @@ def load_new_calls_only():
                     f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
                 )
 
-            # Track calls from this batch only (for incremental save)
-            batch_calls = []
+            # CRITICAL FIX: Wrap entire batch processing in try/except to prevent crashes
+            try:
+                # Track calls from this batch only (for incremental save)
+                batch_calls = []
 
-            # OPTIMIZATION: Reuse existing_cache_keys loaded at start (no need to reload from disk)
-            # existing_cache_keys already loaded at function start
+                # OPTIMIZATION: Reuse existing_cache_keys loaded at start (no need to reload from disk)
+                # existing_cache_keys already loaded at function start
 
-            with ThreadPoolExecutor(
-                max_workers=5
-            ) as executor:  # Reduced from 10 to lower memory pressure
-                future_to_key = {
-                    executor.submit(process_csv, item): item["key"]
-                    for item in batch_keys
-                }
+                with ThreadPoolExecutor(
+                    max_workers=5
+                ) as executor:  # Reduced from 10 to lower memory pressure
+                    future_to_key = {
+                        executor.submit(process_csv, item): item["key"]
+                        for item in batch_keys
+                    }
 
                 for future in as_completed(future_to_key):
                     try:
@@ -4907,137 +4909,153 @@ def load_new_calls_only():
                         except Exception:
                             pass  # Ignore memory check errors
 
-            # Update existing_calls with batch data (for next batch)
-            # OPTIMIZATION: Use extend() instead of concatenation for better performance
-            # This modifies the list in-place (O(k)) instead of creating a new list (O(n))
-            existing_calls.extend(batch_calls)
-            # Update existing_cache_keys to include new batch keys
-            # Use consistent key extraction logic
-            batch_keys_set = {
-                key
-                for call in batch_calls
-                if (key := extract_cache_key(call)) is not None
-            }
-            existing_cache_keys.update(batch_keys_set)
+                # Update existing_calls with batch data (for next batch)
+                # OPTIMIZATION: Use extend() instead of concatenation for better performance
+                # This modifies the list in-place (O(k)) instead of creating a new list (O(n))
+                existing_calls.extend(batch_calls)
+                # Update existing_cache_keys to include new batch keys
+                # Use consistent key extraction logic
+                batch_keys_set = {
+                    key
+                    for call in batch_calls
+                    if (key := extract_cache_key(call)) is not None
+                }
+                existing_cache_keys.update(batch_keys_set)
 
-            # Periodic memory cleanup every 5 batches
-            if batch_num % 5 == 0:
-                import gc
+                # Periodic memory cleanup every 5 batches
+                if batch_num % 5 == 0:
+                    import gc
 
-                gc.collect()
+                    gc.collect()
 
-            batches_since_save += 1
-            time_since_save = time.time() - last_incremental_save_time
-            should_save = (
-                (batches_since_save >= SAVE_INTERVAL_BATCHES)
-                or (time_since_save >= SAVE_INTERVAL_SECONDS)
-                or (batch_num == total_batches)
-            )
+                batches_since_save += 1
+                time_since_save = time.time() - last_incremental_save_time
+                should_save = (
+                    (batches_since_save >= SAVE_INTERVAL_BATCHES)
+                    or (time_since_save >= SAVE_INTERVAL_SECONDS)
+                    or (batch_num == total_batches)
+                )
 
-            # OPTIMIZATION: Save incrementally every 3 batches or 2 minutes (instead of every batch)
-            if should_save:
-                try:
-                    # existing_calls already contains all calls including current batch (updated above)
-                    # Deduplication will happen in save_cached_data_to_disk() - no need to do it here
-                    calls_to_save = existing_calls
+                # OPTIMIZATION: Save incrementally every 3 batches or 2 minutes (instead of every batch)
+                if should_save:
+                    try:
+                        # existing_calls already contains all calls including current batch (updated above)
+                        # Deduplication will happen in save_cached_data_to_disk() - no need to do it here
+                        calls_to_save = existing_calls
 
-                    # CRITICAL FIX: Add retry logic for save failures to prevent silent data loss
-                    # Retry up to 3 times with exponential backoff
-                    max_save_retries = 3
-                    save_success = False
-                    save_error = None
+                        # CRITICAL FIX: Add retry logic for save failures to prevent silent data loss
+                        # Retry up to 3 times with exponential backoff
+                        max_save_retries = 3
+                        save_success = False
+                        save_error = None
 
-                    for save_attempt in range(max_save_retries):
-                        try:
-                            # Use atomic write with locking via save_cached_data_to_disk
-                            save_cached_data_to_disk(
-                                calls_to_save,
-                                errors.copy(),
-                                partial=True,
-                                processed=processed_count,
-                                total=total_new,
+                        for save_attempt in range(max_save_retries):
+                            try:
+                                # Use atomic write with locking via save_cached_data_to_disk
+                                save_cached_data_to_disk(
+                                    calls_to_save,
+                                    errors.copy(),
+                                    partial=True,
+                                    processed=processed_count,
+                                    total=total_new,
+                                )
+                                save_success = True
+                                break  # Success, exit retry loop
+                            except Exception as save_e:
+                                save_error = save_e
+                                if save_attempt < max_save_retries - 1:
+                                    wait_time = 0.5 * (
+                                        save_attempt + 1
+                                    )  # Exponential backoff: 0.5s, 1s, 1.5s
+                                    logger.warning(
+                                        f" Incremental save attempt {save_attempt + 1}/{max_save_retries} failed: {save_e}, retrying in {wait_time}s..."
+                                    )
+                                    time.sleep(wait_time)
+                                else:
+                                    logger.error(
+                                        f" CRITICAL: Failed to save incremental cache after {max_save_retries} attempts: {save_e}"
+                                    )
+                                    logger.error(
+                                        f" Data loss risk: {len(calls_to_save)} calls not saved to disk"
+                                    )
+
+                        if save_success:
+                            last_incremental_save_time = time.time()
+                            st.session_state._last_incremental_save_time = (
+                                last_incremental_save_time
                             )
-                            save_success = True
-                            break  # Success, exit retry loop
-                        except Exception as save_e:
-                            save_error = save_e
-                            if save_attempt < max_save_retries - 1:
-                                wait_time = 0.5 * (
-                                    save_attempt + 1
-                                )  # Exponential backoff: 0.5s, 1s, 1.5s
-                                logger.warning(
-                                    f" Incremental save attempt {save_attempt + 1}/{max_save_retries} failed: {save_e}, retrying in {wait_time}s..."
-                                )
-                                time.sleep(wait_time)
-                            else:
-                                logger.error(
-                                    f" CRITICAL: Failed to save incremental cache after {max_save_retries} attempts: {save_e}"
-                                )
-                                logger.error(
-                                    f" Data loss risk: {len(calls_to_save)} calls not saved to disk"
-                                )
-
-                    if save_success:
-                        last_incremental_save_time = time.time()
-                        st.session_state._last_incremental_save_time = (
-                            last_incremental_save_time
-                        )
-                        batches_since_save = 0  # Reset counter
-                        logger.info(
-                            f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
-                        )
-
-                        # SAFE MEMORY OPTIMIZATION: Clear old batches after successful save, keep last 2 saves as buffer
-                        # This reduces memory while maintaining safety buffer
-                        batches_to_keep = (
-                            SAVE_INTERVAL_BATCHES * 2
-                        )  # Keep last 2 saves worth
-                        calls_per_save = batches_to_keep * BATCH_SIZE
-
-                        # Only clear if we have significantly more calls than we want to keep
-                        if (
-                            len(existing_calls) > calls_per_save * 1.5
-                        ):  # Only clear if 50% more than buffer
-                            calls_to_keep = existing_calls[-calls_per_save:]
-                            cleared_count = len(existing_calls) - len(calls_to_keep)
-                            existing_calls = calls_to_keep
-
-                            # Update existing_cache_keys to match
-                            # Use consistent key extraction logic
-                            existing_cache_keys = {
-                                key
-                                for call in existing_calls
-                                if (key := extract_cache_key(call)) is not None
-                            }
-
+                            batches_since_save = 0  # Reset counter
                             logger.info(
-                                f" Cleared {cleared_count} old calls from memory (kept {len(existing_calls)} as safety buffer)"
+                                f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
                             )
 
-                            # Force garbage collection after clearing
+                            # SAFE MEMORY OPTIMIZATION: Clear old batches after successful save, keep last 2 saves as buffer
+                            # This reduces memory while maintaining safety buffer
+                            batches_to_keep = (
+                                SAVE_INTERVAL_BATCHES * 2
+                            )  # Keep last 2 saves worth
+                            calls_per_save = batches_to_keep * BATCH_SIZE
+
+                            # Only clear if we have significantly more calls than we want to keep
+                            if (
+                                len(existing_calls) > calls_per_save * 1.5
+                            ):  # Only clear if 50% more than buffer
+                                calls_to_keep = existing_calls[-calls_per_save:]
+                                cleared_count = len(existing_calls) - len(calls_to_keep)
+                                existing_calls = calls_to_keep
+
+                                # Update existing_cache_keys to match
+                                # Use consistent key extraction logic
+                                existing_cache_keys = {
+                                    key
+                                    for call in existing_calls
+                                    if (key := extract_cache_key(call)) is not None
+                                }
+
+                                logger.info(
+                                    f" Cleared {cleared_count} old calls from memory (kept {len(existing_calls)} as safety buffer)"
+                                )
+
+                                # Force garbage collection after clearing
+                                import gc
+
+                                gc.collect()
+
+                            # Clear intermediate variables after successful save
+                            del calls_to_save
                             import gc
 
                             gc.collect()
+                        else:
+                            # All retries failed - log critical error but continue processing
+                            # The next save attempt might succeed, and we don't want to lose all progress
+                            logger.error(
+                                f" CRITICAL: All incremental save retries failed. Last error: {save_error}"
+                            )
+                            logger.error(
+                                "Processing will continue, but data may be lost if app crashes"
+                            )
+                    except Exception as e:
+                        logger.error(f" Unexpected error during incremental save: {e}")
+                        import traceback
 
-                        # Clear intermediate variables after successful save
-                        del calls_to_save
-                        import gc
+                        logger.error(traceback.format_exc())
 
-                        gc.collect()
-                    else:
-                        # All retries failed - log critical error but continue processing
-                        # The next save attempt might succeed, and we don't want to lose all progress
-                        logger.error(
-                            f" CRITICAL: All incremental save retries failed. Last error: {save_error}"
-                        )
-                        logger.error(
-                            "Processing will continue, but data may be lost if app crashes"
-                        )
-                except Exception as e:
-                    logger.error(f" Unexpected error during incremental save: {e}")
-                    import traceback
+            except Exception as batch_error:
+                # CRITICAL FIX: Catch any exceptions during batch processing to prevent crashes
+                logger.error(
+                    f" CRITICAL: Error processing batch {batch_num}/{total_batches}: {batch_error}"
+                )
+                import traceback
 
-                    logger.error(traceback.format_exc())
+                logger.error(f" Batch error traceback: {traceback.format_exc()}")
+                # Continue to next batch instead of crashing
+                logger.warning(
+                    f" Continuing with next batch despite error in batch {batch_num}"
+                )
+                # Still increment processed_count to avoid infinite loops
+                processed_count += len(batch_keys)
+                continue
 
             # Update dashboard every 500 calls
             if processed_count >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
