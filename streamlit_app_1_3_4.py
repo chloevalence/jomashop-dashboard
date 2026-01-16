@@ -1824,7 +1824,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
         # CRITICAL FIX: Ensure consistent tuple format (data, errors)
         # Handle both tuple (data, errors) and just data formats for backward compatibility
         if isinstance(cached_result, tuple):
-        result = cached_result
+            result = cached_result
         else:
             # Convert single value to tuple format
             result = (cached_result, st.session_state.get("_last_load_errors", []))
