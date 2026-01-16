@@ -108,16 +108,12 @@ def track_error(error_type: str, error_message: str) -> None:
 
 
 def log_audit_event(username: str, action: str, details: Optional[str] = None) -> None:
-    """Log audit events for admin users (Shannon and Chloe only).
+    """Log audit events for all users.
     
     Args:
         username: Username performing the action.
         details: Additional details about the action.
     """
-    admin_users = ["chloe", "shannon"]
-    if username.lower() not in admin_users:
-        return  # Only log for admins
-    
     audit_file = log_dir / "audit_log.json"
     audit_log = []
     

@@ -1090,11 +1090,17 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                 filename = csv_key.split("/")[-1]
 
                 # Process each row
+                # CRITICAL FIX: Ensure all rows are processed - all_calls.append must be inside the loop
+                rows_processed = 0
+                rows_added = 0
                 for idx, row in df.iterrows():
+                    rows_processed += 1
                     try:
                         parsed_data = parse_csv_row(row, filename)
                         if parsed_data:
+                            # CRITICAL: This append MUST be inside the row loop to process all rows
                             all_calls.append(parsed_data)
+                            rows_added += 1
                     except Exception as e:
                         error_msg = (
                             f"Error parsing row {idx + 1} in {filename}: {str(e)}"
@@ -1103,7 +1109,7 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                         logger.warning(error_msg)
                         continue
 
-                logger.info(f"Processed {len(df)} rows from {filename}")
+                logger.info(f"Processed {rows_processed} rows from {filename}, added {rows_added} calls to all_calls (total rows in CSV: {len(df)})")
 
             except Exception as e:
                 error_msg = f"Error processing CSV file {csv_key}: {str(e)}"
@@ -1815,8 +1821,15 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
         # Just check if disk cache exists and is recent, if not, we'll sync on next S3 load
         # This avoids another S3 load just for syncing
 
+        # CRITICAL FIX: Ensure consistent tuple format (data, errors)
+        # Handle both tuple (data, errors) and just data formats for backward compatibility
+        if isinstance(cached_result, tuple):
+            result = cached_result
+        else:
+            # Convert single value to tuple format
+            result = (cached_result, st.session_state.get("_last_load_errors", []))
+        
         # Cache result in session state during refresh
-        result = cached_result
         if refresh_in_progress:
             cache_key = "_disk_cache_during_refresh"
             st.session_state[cache_key] = (result, time.time())
@@ -2305,12 +2318,20 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                     existing_count = len(existing_call_data)
 
                     if not existing_is_partial:  # Existing cache is COMPLETE
-                        logger.warning(
-                            f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
-                            f"with PARTIAL cache ({len(call_data)} calls). "
-                            f"Complete cache preserved. Local cache saved successfully."
-                        )
-                        return  # Don't overwrite COMPLETE cache with PARTIAL
+                        # CRITICAL FIX: Allow overwriting COMPLETE cache if it has 0 calls (invalid/empty)
+                        # A COMPLETE cache with 0 calls is essentially invalid and should be overwritten
+                        if existing_count == 0:
+                            logger.info(
+                                f" COMPLETE cache has 0 calls (invalid/empty) - allowing overwrite with PARTIAL cache ({len(call_data)} calls)"
+                            )
+                            # Continue to save below - don't return early
+                        else:
+                            logger.warning(
+                                f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
+                                f"with PARTIAL cache ({len(call_data)} calls). "
+                                f"Complete cache preserved. Local cache saved successfully."
+                            )
+                            return  # Don't overwrite COMPLETE cache with PARTIAL
                     else:
                         # Both are PARTIAL - check progress
                         existing_processed = existing_data.get("processed", 0)
@@ -2461,23 +2482,37 @@ def load_all_calls_cached(cache_version=0):
                     # Try session state cache
                     if "_s3_cache_result" in st.session_state:
                         cached_result = st.session_state["_s3_cache_result"]
-                        if cached_result and len(cached_result) >= 100:
-                            logger.info(
-                                f"Found session cache during wait: {len(cached_result)} calls (waited {waited:.1f}s)"
-                            )
-                            return cached_result, st.session_state.get(
+                        # Handle both tuple (data, errors) and just data formats for backward compatibility
+                        if isinstance(cached_result, tuple):
+                            cached_data, cached_errors = cached_result
+                        else:
+                            cached_data = cached_result
+                            cached_errors = st.session_state.get(
                                 "_last_load_errors", []
                             )
+
+                        if cached_data and len(cached_data) >= 100:
+                            logger.info(
+                                f"Found session cache during wait: {len(cached_data)} calls (waited {waited:.1f}s)"
+                            )
+                            return cached_data, cached_errors
 
             # Try multiple sources for data after wait
             # 1. Try session state cache first (fastest)
             if "_s3_cache_result" in st.session_state:
                 cached_result = st.session_state["_s3_cache_result"]
-                if cached_result and len(cached_result) >= 100:
+                # Handle both tuple (data, errors) and just data formats for backward compatibility
+                if isinstance(cached_result, tuple):
+                    cached_data, cached_errors = cached_result
+                else:
+                    cached_data = cached_result
+                    cached_errors = st.session_state.get("_last_load_errors", [])
+
+                if cached_data and len(cached_data) >= 100:
                     logger.info(
-                        f"Returning session cache after wait: {len(cached_result)} calls"
+                        f"Returning session cache after wait: {len(cached_data)} calls"
                     )
-                    return cached_result, st.session_state.get("_last_load_errors", [])
+                    return cached_data, cached_errors
 
             # 2. Try Streamlit cache (if load completed)
             try:
@@ -2518,19 +2553,22 @@ def load_all_calls_cached(cache_version=0):
                     and s3_timestamp_key in st.session_state
                 ):
                     s3_cached_data = st.session_state[s3_cache_key]
+                    # CRITICAL FIX: Safe tuple access with proper type checking
                     if (
                         s3_cached_data
                         and isinstance(s3_cached_data, tuple)
                         and len(s3_cached_data) >= 1
+                        and s3_cached_data[0] is not None
+                        and isinstance(s3_cached_data[0], list)
+                        and len(s3_cached_data[0]) > 0
                     ):
-                        if s3_cached_data[0] and len(s3_cached_data[0]) > 0:
-                            migrated = migrate_old_cache_format(s3_cached_data[0])
-                            logger.info(
-                                f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
-                            )
-                            return migrated, s3_cached_data[1] if len(
-                                s3_cached_data
-                            ) > 1 and s3_cached_data[1] else []
+                        migrated = migrate_old_cache_format(s3_cached_data[0])
+                        logger.info(
+                            f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
+                        )
+                        return migrated, s3_cached_data[1] if len(
+                            s3_cached_data
+                        ) > 1 and s3_cached_data[1] is not None else []
             except Exception as e:
                 logger.debug(
                     f"Could not get S3 cache from session state during concurrent load: {e}"
@@ -2677,27 +2715,123 @@ def load_all_calls_cached(cache_version=0):
             s3_cache_result = None
             s3_cache_timestamp = None
 
-            # Check session state first to avoid duplicate S3 loads
+            # Check session state first, but verify S3 cache isn't newer
+            # CRITICAL FIX: Check if S3 cache is newer than session state before using it
+            # This ensures we don't use stale session cache when another app instance updated S3
             s3_cache_key = "_s3_cache_result"
             s3_timestamp_key = "_s3_cache_timestamp"
+            s3_cache_newer = False
+            local_session_timestamp = None
+
             if (
                 s3_cache_key in st.session_state
                 and s3_timestamp_key in st.session_state
             ):
+                local_session_timestamp = st.session_state[s3_timestamp_key]
+                # Quick check: use head_object to see if S3 cache is newer
+                try:
+                    s3_client, s3_bucket = get_s3_client_and_bucket()
+                    if s3_client and s3_bucket:
+                        response = s3_client.head_object(
+                            Bucket=s3_bucket, Key=S3_CACHE_KEY
+                        )
+                        s3_last_modified = response.get("LastModified")
+
+                        if local_session_timestamp and s3_last_modified:
+                            # Convert local timestamp to datetime for comparison
+                            try:
+                                if isinstance(local_session_timestamp, str):
+                                    local_dt = datetime.fromisoformat(
+                                        local_session_timestamp.replace("Z", "+00:00")
+                                    )
+                                elif isinstance(local_session_timestamp, (int, float)):
+                                    local_dt = datetime.fromtimestamp(
+                                        local_session_timestamp
+                                    )
+                                else:
+                                    local_dt = local_session_timestamp
+
+                                # Make timezone-aware for comparison
+                                s3_dt = s3_last_modified
+                                comparison_done = False
+                                if local_dt.tzinfo is None and s3_dt.tzinfo is not None:
+                                    # Make local_dt timezone-aware for comparison
+                                    try:
+                                        local_dt = local_dt.replace(tzinfo=s3_dt.tzinfo)
+                                    except Exception:
+                                        # Fallback: convert both to timestamps for comparison
+                                        try:
+                                            s3_ts = s3_dt.timestamp()
+                                            local_ts = local_dt.timestamp()
+                                            if s3_ts > local_ts:
+                                                s3_cache_newer = True
+                                                logger.info(
+                                                    f" S3 cache is newer (timestamp comparison: {s3_ts} > {local_ts}) - clearing stale session cache"
+                                                )
+                                            comparison_done = True
+                                        except Exception:
+                                            # If timestamp conversion fails, assume S3 is newer to be safe
+                                            s3_cache_newer = True
+                                            logger.debug(
+                                                " Could not compare timestamps, assuming S3 is newer"
+                                            )
+                                            comparison_done = True
+
+                                # Compare directly if we haven't already done the comparison
+                                if not comparison_done and s3_dt > local_dt:
+                                    s3_cache_newer = True
+                                    logger.info(
+                                        f" S3 cache is newer ({s3_dt}) than session cache ({local_dt}) - clearing stale session cache"
+                                    )
+                            except Exception as compare_error:
+                                logger.debug(
+                                    f" Could not compare S3 and session timestamps: {compare_error}, will check S3 cache"
+                                )
+                                # If comparison fails, check S3 to be safe
+                                s3_cache_newer = True
+                except ClientError as s3_error:
+                    error_code = s3_error.response.get("Error", {}).get("Code", "")
+                    if error_code != "NoSuchKey":
+                        logger.debug(
+                            f" Could not check S3 cache timestamp: {s3_error}, using session cache"
+                        )
+                except Exception as s3_check_error:
+                    logger.debug(
+                        f" Could not check S3 cache timestamp: {s3_check_error}, using session cache"
+                    )
+
+            # If S3 cache is newer, clear session state and reload from S3
+            if s3_cache_newer:
+                logger.info(
+                    " Clearing stale session cache - S3 cache is newer (updated by another app instance)"
+                )
+                if s3_cache_key in st.session_state:
+                    del st.session_state[s3_cache_key]
+                if s3_timestamp_key in st.session_state:
+                    del st.session_state[s3_timestamp_key]
+                s3_cache_result = None
+                s3_cache_timestamp = None
+            elif (
+                s3_cache_key in st.session_state
+                and s3_timestamp_key in st.session_state
+            ):
+                # Session cache is still valid - use it
                 cached_timestamp = st.session_state[s3_timestamp_key]
-                # Use cached result if timestamp matches (cache is still valid)
-                # CRITICAL: Validate cached result before accessing to prevent crashes from corrupted session state
                 cached_result = st.session_state[s3_cache_key]
                 if (
                     cached_result is not None
                     and isinstance(cached_result, tuple)
                     and len(cached_result) >= 1
                     and cached_result[0] is not None
+                    and isinstance(cached_result[0], list)
                 ):
                     s3_cache_result = cached_result
                     s3_cache_timestamp = cached_timestamp
+                    # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
+                    cache_data = s3_cache_result[0] if len(s3_cache_result) > 0 else []
+                    cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
                     logger.debug(
-                        f" Using session-cached S3 result: {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
+                        f" Using session-cached S3 result: {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                     )
                 else:
                     # Session state contains invalid data - clear it and reload from S3
@@ -2710,8 +2844,9 @@ def load_all_calls_cached(cache_version=0):
                         del st.session_state[s3_timestamp_key]
                     s3_cache_result = None
                     s3_cache_timestamp = None
-            else:
-                # Load from S3 (only if not in session state)
+
+            # Load from S3 if we don't have a valid session cache
+            if s3_cache_result is None:
                 s3_client, s3_bucket = get_s3_client_and_bucket()
                 if s3_client and s3_bucket:
                     try:
@@ -2727,8 +2862,11 @@ def load_all_calls_cached(cache_version=0):
                                 s3_cached_data.get("errors", []),
                             )
                             s3_cache_timestamp = s3_cached_data.get("timestamp", None)
+                            # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
+                            cache_data = s3_cache_result[0] if len(s3_cache_result) > 0 and s3_cache_result[0] is not None else []
+                            cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
                             logger.info(
-                                f" Loaded from S3 cache (source of truth): {len(s3_cache_result[0])} calls (timestamp: {s3_cache_timestamp})"
+                                f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                             )
 
                             # Cache in session state to avoid duplicate loads
@@ -2789,7 +2927,14 @@ def load_all_calls_cached(cache_version=0):
         # CRITICAL: If refresh is in progress, use S3 cache directly (most up-to-date)
         refresh_in_progress = st.session_state.get("refresh_in_progress", False)
         if refresh_in_progress:
-            if s3_cache_result and s3_cache_result[0]:
+            # CRITICAL FIX: Safe tuple access - verify tuple structure before accessing
+            if (
+                s3_cache_result
+                and isinstance(s3_cache_result, tuple)
+                and len(s3_cache_result) > 0
+                and s3_cache_result[0] is not None
+                and isinstance(s3_cache_result[0], list)
+            ):
                 # Migrate old cache format to new format
                 migrated_calls = migrate_old_cache_format(s3_cache_result[0])
                 logger.info(
@@ -2841,7 +2986,14 @@ def load_all_calls_cached(cache_version=0):
         # If _merged_cache_data doesn't exist, fall through to use S3 cache or disk cache
 
         # CRITICAL: Use S3 cache if available (source of truth)
-        if s3_cache_result and s3_cache_result[0]:
+        # CRITICAL FIX: Safe tuple access - verify tuple structure before accessing
+        if (
+            s3_cache_result
+            and isinstance(s3_cache_result, tuple)
+            and len(s3_cache_result) > 0
+            and s3_cache_result[0] is not None
+            and isinstance(s3_cache_result[0], list)
+        ):
             # Migrate old cache format to new format
             migrated_calls = migrate_old_cache_format(s3_cache_result[0])
             logger.info(
@@ -3196,6 +3348,24 @@ def load_all_calls_cached(cache_version=0):
                 f" Total time: {elapsed:.1f} seconds ({elapsed / 60:.1f} minutes)"
             )
 
+            # CRITICAL: Ensure cache is saved after full load completes
+            # This is a safety net to ensure data persists even if earlier saves failed
+            if final_call_data and len(final_call_data) > 0:
+                # Verify cache was saved - if not, save it now
+                try:
+                    # Check if we already saved (to avoid duplicate saves)
+                    # If this is a full load (not partial), ensure it's saved as COMPLETE
+                    if not reload_all_triggered or len(final_call_data) >= 100:
+                        # This is a full load - ensure it's saved as COMPLETE
+                        # Note: save_cached_data_to_disk defaults to partial=False (COMPLETE)
+                        # We'll let the existing saves handle it, but log for verification
+                        logger.info(
+                            f" Full load completed: {len(final_call_data)} calls loaded. "
+                            f"Cache should be saved as COMPLETE (partial=False)"
+                        )
+                except Exception as verify_error:
+                    logger.warning(f" Could not verify cache save: {verify_error}")
+
             # Clear reload_all_triggered flag after successful load
             if reload_all_triggered:
                 st.session_state["reload_all_triggered"] = False
@@ -3211,6 +3381,15 @@ def load_all_calls_cached(cache_version=0):
             # This also normalizes agent IDs in cached data
             if final_call_data:
                 final_call_data = migrate_old_cache_format(final_call_data)
+
+            # CRITICAL FIX: Store loaded data in session state BEFORE clearing load_in_progress flag
+            # This allows concurrent requests to immediately access the data
+            if final_call_data and len(final_call_data) > 0:
+                st.session_state["_s3_cache_result"] = (final_call_data, final_errors)
+                st.session_state["_s3_cache_timestamp"] = datetime.now().isoformat()
+                logger.info(
+                    f" Stored {len(final_call_data)} calls in session state for concurrent requests"
+                )
 
             # Clear load in progress flag
             if load_in_progress_key in st.session_state:
@@ -3870,8 +4049,108 @@ def load_new_calls_only():
     """
     try:
         # OPTIMIZATION: Load cache ONCE at start and reuse throughout refresh
-        # This prevents repeated cache reads (3-4 times per batch) that cause lock contention
+        # CRITICAL FIX: Check if S3 cache is newer than local cache before using stale data
         logger.debug(" Loading cache once at start of refresh (will reuse throughout)")
+
+        # Check S3 cache timestamp to see if it's newer than local/session cache
+        s3_cache_newer = False
+        try:
+            s3_bucket_name = st.secrets["s3"]["bucket_name"]
+            s3_cache_client = boto3.client(
+                "s3",
+                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            )
+            # Use head_object for faster check (just metadata, no body download)
+            response = s3_cache_client.head_object(
+                Bucket=s3_bucket_name, Key=S3_CACHE_KEY
+            )
+            s3_last_modified = response.get("LastModified")
+
+            # Compare with session state timestamp
+            local_timestamp = st.session_state.get("_s3_cache_timestamp")
+            if local_timestamp and s3_last_modified:
+                # Convert local timestamp to datetime for comparison
+                try:
+                    if isinstance(local_timestamp, str):
+                        # Parse ISO format string
+                        local_dt = datetime.fromisoformat(
+                            local_timestamp.replace("Z", "+00:00")
+                        )
+                    elif isinstance(local_timestamp, (int, float)):
+                        # Unix timestamp
+                        local_dt = datetime.fromtimestamp(local_timestamp)
+                    else:
+                        local_dt = local_timestamp
+
+                    # Compare timestamps (S3 LastModified is timezone-aware, ensure local_dt is too)
+                    s3_dt = s3_last_modified
+
+                    # Make local_dt timezone-aware if S3 timestamp is timezone-aware
+                    comparison_done = False
+                    if local_dt.tzinfo is None and s3_dt.tzinfo is not None:
+                        # Make local_dt timezone-aware for comparison (use S3's timezone)
+                        try:
+                            local_dt = local_dt.replace(tzinfo=s3_dt.tzinfo)
+                            # Now both are timezone-aware, can compare directly below
+                        except Exception:
+                            # Fallback: convert both to timestamps for comparison
+                            try:
+                                s3_ts = s3_dt.timestamp()
+                                local_ts = local_dt.timestamp()
+                                if s3_ts > local_ts:
+                                    s3_cache_newer = True
+                                    logger.debug(
+                                        f" S3 cache is newer (timestamp comparison: {s3_ts} > {local_ts}) - clearing stale cache"
+                                    )
+                                comparison_done = True
+                            except Exception:
+                                # If timestamp conversion fails, assume S3 is newer to be safe
+                                s3_cache_newer = True
+                                logger.debug(
+                                    " Could not compare timestamps, assuming S3 is newer"
+                                )
+                                comparison_done = True
+
+                    # Compare directly if we haven't already done the comparison
+                    if not comparison_done and s3_dt > local_dt:
+                        s3_cache_newer = True
+                        logger.debug(
+                            f" S3 cache is newer ({s3_dt}) than local ({local_dt}) - clearing stale cache"
+                        )
+                except Exception as compare_error:
+                    logger.debug(
+                        f" Could not compare timestamps: {compare_error}, assuming S3 is newer"
+                    )
+                    s3_cache_newer = True
+            elif not local_timestamp:
+                # No local timestamp, assume S3 might be newer (first load or cache cleared)
+                s3_cache_newer = True
+                logger.debug(" No local timestamp found - will check S3 cache")
+        except ClientError as s3_error:
+            error_code = s3_error.response.get("Error", {}).get("Code", "")
+            if error_code == "NoSuchKey":
+                # S3 cache doesn't exist, use local cache
+                logger.debug(" S3 cache does not exist, using local cache")
+            else:
+                logger.debug(
+                    f" Could not check S3 cache timestamp: {s3_error}, will use existing cache"
+                )
+        except Exception as s3_check_error:
+            logger.debug(
+                f" Could not check S3 cache timestamp: {s3_check_error}, will use existing cache"
+            )
+
+        # Clear session state cache only if S3 is newer
+        if s3_cache_newer:
+            if "_s3_cache_result" in st.session_state:
+                logger.debug(" Clearing stale session cache to force fresh S3 load")
+                del st.session_state["_s3_cache_result"]
+            if "_s3_cache_timestamp" in st.session_state:
+                del st.session_state["_s3_cache_timestamp"]
+
+        # Load from cache (will use S3 if session state was cleared, otherwise uses existing cache)
         disk_result = load_cached_data_from_disk()
         # CRITICAL FIX: Check if disk_result is None before accessing its elements
         existing_calls = (
@@ -3892,12 +4171,40 @@ def load_new_calls_only():
             )
 
         # Get last_save_time from cache metadata (if available)
+        # CRITICAL FIX: Read from S3 cache (shared source of truth) first, then fall back to local
         last_save_time = 0
-        if existing_calls and CACHE_FILE.exists():
+
+        # First, try to get last_save_time from S3 cache (shared across all app instances)
+        try:
+            s3_bucket_name = st.secrets["s3"]["bucket_name"]
+            s3_cache_client = boto3.client(
+                "s3",
+                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            )
+            response = s3_cache_client.get_object(
+                Bucket=s3_bucket_name, Key=S3_CACHE_KEY
+            )
+            cached_data = json.loads(response["Body"].read().decode("utf-8"))
+            if isinstance(cached_data, dict):
+                last_save_time = cached_data.get("last_save_time", 0)
+                logger.debug(f" Read last_save_time from S3 cache: {last_save_time}")
+        except Exception as s3_error:
+            logger.debug(f" Could not read last_save_time from S3 cache: {s3_error}")
+            # Fall back to local cache below
+            pass
+
+        # Fallback: Read from local disk cache if S3 read failed
+        if not last_save_time and existing_calls and CACHE_FILE.exists():
             try:
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     cached_data = json.load(f)
-                last_save_time = cached_data.get("last_save_time", 0)
+                if isinstance(cached_data, dict):
+                    last_save_time = cached_data.get("last_save_time", 0)
+                    logger.debug(
+                        f" Read last_save_time from local cache: {last_save_time}"
+                    )
             except Exception:
                 pass
 
@@ -4422,8 +4729,8 @@ def load_new_calls_only():
                                 continue
 
                             # Not in cache - add to new calls
-                        new_calls.append(parsed_data)
-                        batch_calls.append(parsed_data)  # Track for this batch
+                            new_calls.append(parsed_data)
+                            batch_calls.append(parsed_data)  # Track for this batch
 
                         if duplicate_count > 0:
                             logger.debug(
@@ -4678,6 +4985,8 @@ else:
                 or "frontend assets" in error_msg
                 or "network latency" in error_msg
                 or "proxy settings" in error_msg
+                or "importing a module script failed" in error_msg
+                or "module script failed" in error_msg
             )
 
             if is_component_error and attempt < max_retries - 1:
@@ -4782,6 +5091,11 @@ if auth_status is None:
             or "cookie_manager" in error_msg
             or "cannot assemble" in error_msg
             or "cookie manager" in error_msg
+            or "frontend assets" in error_msg
+            or "network latency" in error_msg
+            or "proxy settings" in error_msg
+            or "importing a module script failed" in error_msg
+            or "module script failed" in error_msg
         )
 
         if is_component_error:
@@ -4884,8 +5198,8 @@ time_remaining = SESSION_TIMEOUT_MINUTES - (
 if 0 < time_remaining <= 5:
     st.sidebar.warning(f"Session expires in {int(time_remaining)} minute(s)")
 
-# Audit logging (admin only - Shannon and Chloe)
-if current_username and current_username.lower() in ["chloe", "shannon"]:
+# Audit logging (all users)
+if current_username:
     log_audit_event(
         current_username,
         "page_access",
@@ -6061,11 +6375,19 @@ try:
                     "Data already loaded in session state, checking cached result"
                 )
                 cached_result = st.session_state["_s3_cache_result"]
+                # CRITICAL FIX: Unpack tuple before checking length
+                # Handle both tuple (data, errors) and just data formats for backward compatibility
+                if isinstance(cached_result, tuple):
+                    cached_data, cached_errors = cached_result
+                else:
+                    cached_data = cached_result
+                    cached_errors = st.session_state.get("_last_load_errors", [])
+                
                 # Only use cached data if it's substantial (at least 100 calls)
                 # This prevents using stale/partial data from previous sessions
-                if cached_result and len(cached_result) >= 100:
-                    call_data = cached_result
-                    errors = st.session_state.get("_last_load_errors", [])
+                if cached_data and len(cached_data) >= 100:
+                    call_data = cached_data
+                    errors = cached_errors
                     elapsed = time.time() - t0
                     status_text.empty()
                     logger.info(
@@ -6074,7 +6396,7 @@ try:
                 else:
                     # Cached result is too small or empty, proceed with normal load
                     logger.debug(
-                        f"Cached result is too small ({len(cached_result) if cached_result else 0} calls), proceeding with normal load"
+                        f"Cached result is too small ({len(cached_data) if cached_data else 0} calls), proceeding with normal load"
                     )
                     # Clear the invalid cache and proceed to normal load
                     if "_s3_cache_result" in st.session_state:
@@ -6139,8 +6461,9 @@ try:
                     call_data, errors = load_all_calls_cached(
                         cache_version=cache_version
                     )
+                    # CRITICAL FIX: Store tuple (data, errors) instead of just data
                     # Store data and errors in session state for reuse
-                    st.session_state["_s3_cache_result"] = call_data
+                    st.session_state["_s3_cache_result"] = (call_data, errors)
                     st.session_state["_last_load_errors"] = errors
                     if call_data:
                         st.session_state["_s3_cache_timestamp"] = time.time()
@@ -6254,7 +6577,8 @@ try:
     logger.debug(
         f"Before final check: call_data type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}"
     )
-    if call_data:
+    # CRITICAL FIX: Add type checking to ensure call_data is a list before operations
+    if call_data and isinstance(call_data, list) and len(call_data) > 0:
         # Only show cache messages if we actually processed files or refresh was triggered
         refresh_in_progress = st.session_state.get("refresh_in_progress", False)
         if was_processing and "last_actual_processing_time" in st.session_state:
@@ -6305,7 +6629,8 @@ except Exception as e:
 # CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
 # This ensures cached data with old agent IDs gets normalized consistently
 # This fixes the issue where cached DataFrames have wrong agent IDs
-if call_data:
+# CRITICAL FIX: Add type checking to ensure call_data is a list before operations
+if call_data and isinstance(call_data, list) and len(call_data) > 0:
     agent_normalized_count = 0
     for call in call_data:
         if isinstance(call, dict) and "agent" in call:
@@ -6327,7 +6652,14 @@ if call_data:
             f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
         )
 
-meta_df = pd.DataFrame(call_data)
+# CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
+# Handle None, empty list, or invalid types safely
+if call_data and isinstance(call_data, list) and len(call_data) > 0:
+    meta_df = pd.DataFrame(call_data)
+else:
+    # Create empty DataFrame with expected structure if no data
+    logger.warning("No valid call_data available, creating empty DataFrame")
+    meta_df = pd.DataFrame()
 
 # --- ANONYMIZATION FUNCTIONS ---
 # Note: is_anonymous_user is already defined earlier in the code
@@ -7473,8 +7805,12 @@ if is_super_admin():
         if st.button("Refresh Metrics"):
             st.rerun()
 
-        # Audit Log Viewer (Shannon and Chloe only)
-        if current_username and current_username.lower() in ["chloe", "shannon"]:
+        # Audit Log Viewer (Chloe, Shannon, and Jerson only)
+        if current_username and current_username.lower() in [
+            "chloe",
+            "shannon",
+            "jerson",
+        ]:
             st.markdown("---")
             st.markdown("###  Audit Log")
             audit_file = Path("logs/audit_log.json")
@@ -7663,7 +7999,11 @@ if show_comparison and user_agent_id:
         delta_value = f"{delta_aht:+.1f} min" if delta_aht is not None else None
         delta_color_value = None
         if delta_aht is not None:
-            delta_color_value = "normal" if delta_aht < 0 else "inverse"
+            # For AHT: lower is better (inverse polarity)
+            # Always use "inverse" so that:
+            # - Negative delta (AHT decreased, good) → green
+            # - Positive delta (AHT increased, bad) → red
+            delta_color_value = "inverse"
 
         st.metric(
             "My Avg AHT",
@@ -11177,7 +11517,7 @@ with export_col1:
     # Track export generation for audit (download buttons don't have callbacks)
     export_key = f"export_excel_{start_date}_{end_date}_{len(export_df)}"
     if export_key not in st.session_state:
-        if current_username and current_username.lower() in ["chloe", "shannon"]:
+        if current_username:
             log_audit_event(
                 current_username,
                 "export_data",
@@ -11216,7 +11556,7 @@ with export_col2:
     # Track export generation for audit
     export_csv_key = f"export_csv_{start_date}_{end_date}_{len(export_df_csv)}"
     if export_csv_key not in st.session_state:
-        if current_username and current_username.lower() in ["chloe", "shannon"]:
+        if current_username:
             log_audit_event(
                 current_username,
                 "export_data",

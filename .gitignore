@@ -21,3 +21,29 @@ bpo_review_report.pdf
 # Generated Excel reports
 *_report.xlsx
 *_export.xlsx
+# Colab notebooks with API keys
+TranscriptParser_BPOCenters_MASTER.ipynb
+valence_QA_bpocenters.ipynb
+
+# Lambda functions and related files
+audio_processor_lambda/
+qa_insights_lambda/
+json_aggregator_lambda/
+qa_calculations_handler.py
+qa_calculations_requirements.txt
+QA_CALCULATIONS_LAMBDA_README.md
+lambda_calculations.py
+
+# Documentation files (keep only README.md and USER_GUIDE.md in git)
+AGENT_MAPPING_GUIDE.md
+AGENT_SETUP_INSTRUCTIONS.md
+ANONYMOUS_MODE.md
+AWS_CLI_SETUP.md
+AWS_CREDENTIALS_GUIDE.md
+QUICK_START.md
+S3_SETUP.md
+SECURITY.md
+TROUBLESHOOTING.md
+
+# Template files
+USER_MAPPING_TEMPLATE.txt
