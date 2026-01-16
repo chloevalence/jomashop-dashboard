@@ -4322,10 +4322,14 @@ def load_new_calls_only():
             # CRITICAL FIX: Protect st.session_state access - could fail if Streamlit not ready
             try:
                 if "_s3_cache_result" in st.session_state:
-                    logger.info(" DIAGNOSTIC: Clearing _s3_cache_result from session state")
+                    logger.info(
+                        " DIAGNOSTIC: Clearing _s3_cache_result from session state"
+                    )
                     del st.session_state["_s3_cache_result"]
                 if "_s3_cache_timestamp" in st.session_state:
-                    logger.info(" DIAGNOSTIC: Clearing _s3_cache_timestamp from session state")
+                    logger.info(
+                        " DIAGNOSTIC: Clearing _s3_cache_timestamp from session state"
+                    )
                     del st.session_state["_s3_cache_timestamp"]
             except (RuntimeError, AttributeError) as session_error:
                 logger.warning(
@@ -5783,6 +5787,8 @@ if is_super_admin():
 
         # Set flag to prevent main data loading during refresh (prevents conflicts and crashes)
         st.session_state["refresh_in_progress"] = True
+        # CRITICAL FIX: Track when refresh started to detect stuck refreshes
+        st.session_state["_refresh_start_time"] = datetime.now().isoformat()
 
         # IMPORTANT: Preserve Streamlit cache BEFORE refresh to avoid calling load_all_calls_cached() during refresh
         # This prevents crashes from triggering a full S3 reload during the refresh operation
@@ -5816,6 +5822,8 @@ if is_super_admin():
             # If load_new_calls_only() crashes, clear flag and show error
             refresh_failed = True
             st.session_state["refresh_in_progress"] = False
+            if "_refresh_start_time" in st.session_state:
+                del st.session_state["_refresh_start_time"]
             logger.exception(f" CRITICAL: load_new_calls_only() crashed: {e}")
             st.error(f" Refresh failed with unexpected error: {e}")
             st.info(
@@ -5829,6 +5837,8 @@ if is_super_admin():
             # Overall error occurred (e.g., network timeout, S3 access issue)
             refresh_failed = True
             st.session_state["refresh_in_progress"] = False  # Clear flag on error
+            if "_refresh_start_time" in st.session_state:
+                del st.session_state["_refresh_start_time"]
             st.error(f" Error refreshing data: {new_errors}")
             st.info(" Try using 'Reload ALL Data' button if the issue persists")
             # Rerun to update UI and prevent further processing
@@ -6307,11 +6317,15 @@ if is_super_admin():
 
             # Clear refresh flag before rerun
             st.session_state["refresh_in_progress"] = False
+            if "_refresh_start_time" in st.session_state:
+                del st.session_state["_refresh_start_time"]
             # Rerun to show updated data (Streamlit cache will reload from _merged_cache_data)
             st.rerun()
         else:
             # No new files found and no errors
             st.session_state["refresh_in_progress"] = False  # Clear flag
+            if "_refresh_start_time" in st.session_state:
+                del st.session_state["_refresh_start_time"]
             st.info(" No new CSV files found. All data is up to date!")
 # Admin-only: Full reload button (Super admins only)
 if is_super_admin():
@@ -6588,37 +6602,84 @@ try:
         logger.info(f"Merged data loaded in {elapsed:.2f} seconds")
     else:
         # Check if refresh is in progress - skip main data loading to prevent conflicts
-        if st.session_state.get("refresh_in_progress", False):
-            logger.info(
-                " Refresh in progress - skipping main data load to prevent conflicts"
-            )
-            # Use disk cache if available, but don't trigger a new load
-            try:
-                disk_result = load_cached_data_from_disk()
-                # CRITICAL FIX: Check if disk_result is None before accessing its elements
-                if disk_result and disk_result[0] and len(disk_result[0]) > 0:
-                    call_data = disk_result[0]
-                    # CRITICAL FIX: Check if disk_result is None before accessing disk_result[1]
-                    errors = (
-                        disk_result[1]
-                        if (disk_result and disk_result[1] is not None)
-                        else []
+        refresh_in_progress = st.session_state.get("refresh_in_progress", False)
+        if refresh_in_progress:
+            # CRITICAL FIX: Check if refresh is stuck (no progress for >30 minutes)
+            refresh_start_time = st.session_state.get("_refresh_start_time", None)
+            refresh_is_stuck = False
+            
+            if refresh_start_time:
+                try:
+                    # Parse timestamp if it's a string
+                    if isinstance(refresh_start_time, str):
+                        refresh_start_dt = datetime.fromisoformat(refresh_start_time)
+                    else:
+                        refresh_start_dt = refresh_start_time
+                    
+                    # Check if refresh has been stuck for more than 30 minutes
+                    elapsed_minutes = (datetime.now() - refresh_start_dt).total_seconds() / 60
+                    if elapsed_minutes > 30:
+                        refresh_is_stuck = True
+                        logger.warning(
+                            f" Refresh has been stuck for {elapsed_minutes:.1f} minutes - clearing stuck flag"
+                        )
+                        st.session_state["refresh_in_progress"] = False
+                        if "_refresh_start_time" in st.session_state:
+                            del st.session_state["_refresh_start_time"]
+                except Exception as timeout_check_error:
+                    logger.warning(
+                        f" Could not check refresh timeout: {timeout_check_error}, clearing flag to be safe"
                     )
-                    logger.info(
-                        f" Using disk cache during refresh: {len(call_data)} calls"
-                    )
-                else:
+                    refresh_is_stuck = True
+                    st.session_state["refresh_in_progress"] = False
+                    if "_refresh_start_time" in st.session_state:
+                        del st.session_state["_refresh_start_time"]
+            else:
+                # No timestamp - refresh might be stuck (from old session or interrupted)
+                # Clear flag if it's been more than 5 minutes since app start (conservative)
+                logger.warning(
+                    " Refresh flag is set but no start timestamp - clearing to prevent stuck state"
+                )
+                refresh_is_stuck = True
+                st.session_state["refresh_in_progress"] = False
+            
+            if not refresh_is_stuck:
+                logger.info(
+                    " Refresh in progress - skipping main data load to prevent conflicts"
+                )
+                # Use disk cache if available, but don't trigger a new load
+                try:
+                    disk_result = load_cached_data_from_disk()
+                    # CRITICAL FIX: Check if disk_result is None before accessing its elements
+                    if disk_result and disk_result[0] and len(disk_result[0]) > 0:
+                        call_data = disk_result[0]
+                        # CRITICAL FIX: Check if disk_result is None before accessing disk_result[1]
+                        errors = (
+                            disk_result[1]
+                            if (disk_result and disk_result[1] is not None)
+                            else []
+                        )
+                        logger.info(
+                            f" Using disk cache during refresh: {len(call_data)} calls"
+                        )
+                    else:
+                        call_data = []
+                        errors = []
+                        logger.info(
+                            " No disk cache available during refresh - will load after refresh completes"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not load disk cache during refresh: {e}")
                     call_data = []
                     errors = []
-                    logger.info(
-                        " No disk cache available during refresh - will load after refresh completes"
-                    )
-            except Exception as e:
-                logger.warning(f"Could not load disk cache during refresh: {e}")
-                call_data = []
-                errors = []
-            elapsed = time.time() - t0
-            status_text.empty()
+                elapsed = time.time() - t0
+                status_text.empty()
+            else:
+                # Refresh was stuck - cleared flag, continue with normal load below
+                logger.info(
+                    " Stuck refresh flag cleared - proceeding with normal data load"
+                )
+                # Fall through to normal load path below
         else:
             logger.debug(
                 "No merged calls found, proceeding with normal load from cache or S3"
