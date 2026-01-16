@@ -5082,7 +5082,9 @@ def load_new_calls_only():
                 # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
                 # Progress updates will be visible when refresh completes or user interacts
 
-        logger.info(f" Batch loop completed. Processed {processed_count} files. Starting final processing...")
+        logger.info(
+            f" Batch loop completed. Processed {processed_count} files. Starting final processing..."
+        )
         elapsed_total = time.time() - processing_start_time
         logger.info(
             f" Refresh completed: Processed {total_new} new files in {elapsed_total / 60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}. Cache updated with {len(new_calls)} new calls."
