@@ -4189,6 +4189,7 @@ def load_new_calls_only():
     Smart refresh: Only loads CSV files that haven't been processed yet (PDFs are ignored).
     Returns tuple: (new_call_data_list, error_message, count_of_new_files)
     """
+    logger.info(" Starting refresh: Checking for new CSV files...")
     try:
         # OPTIMIZATION: Load cache ONCE at start and reuse throughout refresh
         # CRITICAL FIX: Check if S3 cache is newer than local cache before using stale data
@@ -5083,6 +5084,9 @@ def load_new_calls_only():
         return new_calls, errors if errors else None, len(new_calls)
 
     except Exception as e:
+        logger.error(f" Error in load_new_calls_only(): {e}")
+        import traceback
+        logger.error(f" Traceback: {traceback.format_exc()}")
         return [], f"Error loading new calls: {e}", 0
 
 
@@ -5667,6 +5671,7 @@ if is_super_admin():
         help="Only processes new CSV files added since last refresh. Fast and efficient!",
         type="primary",
     ):
+        logger.info(" Refresh New Data button clicked")
         log_audit_event(current_username, "refresh_data", "Refreshed new data from S3")
 
         # Set flag to prevent main data loading during refresh (prevents conflicts and crashes)
