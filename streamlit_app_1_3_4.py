@@ -5086,6 +5086,7 @@ def load_new_calls_only():
     except Exception as e:
         logger.error(f" Error in load_new_calls_only(): {e}")
         import traceback
+
         logger.error(f" Traceback: {traceback.format_exc()}")
         return [], f"Error loading new calls: {e}", 0
 
