@@ -18,10 +18,25 @@ import logging
 import shutil
 from pathlib import Path
 from contextlib import contextmanager
-from utils import (
-    log_audit_event,
-    check_session_timeout,
-)
+
+# CRITICAL FIX: Protect utils import - provide fallback if module is missing
+try:
+    from utils import (
+        log_audit_event,
+        check_session_timeout,
+    )
+except ImportError as e:
+    # Logger not yet initialized, use print for now
+    print(f"WARNING: Could not import utils module: {e}. Some features may not work.")
+
+    # Provide fallback functions
+    def log_audit_event(*args, **kwargs):
+        pass  # No-op if utils not available
+
+    def check_session_timeout(*args, **kwargs):
+        return False  # Never timeout if utils not available
+
+
 import warnings
 
 # File locking imports (platform-specific)
@@ -61,10 +76,17 @@ except Exception as e:
     log_dir = Path(".")
 log_file = log_dir / f"app_{datetime.now().strftime('%Y%m%d')}.log"
 
+# CRITICAL FIX: Protect FileHandler creation - could fail if log directory has permission issues
+handlers = [logging.StreamHandler()]  # Always include console handler
+try:
+    handlers.append(logging.FileHandler(log_file))
+except (OSError, PermissionError) as e:
+    print(f"WARNING: Could not create log file handler: {e}. Logging to console only.")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
+    handlers=handlers,
 )
 logger = logging.getLogger(__name__)
 logger.debug(f"Logging initialized. Log file: {log_file}")
@@ -367,8 +389,13 @@ except (RuntimeError, AttributeError):
     # Streamlit not initialized yet, skip - this is normal during module import
     pass
 
-st.set_page_config(page_title="Emotion Dashboard", layout="wide")
-logger.debug("Page config set, starting app initialization...")
+# CRITICAL FIX: Protect st.set_page_config() - must be called early but could fail if Streamlit not ready
+try:
+    st.set_page_config(page_title="Emotion Dashboard", layout="wide")
+    logger.debug("Page config set, starting app initialization...")
+except (RuntimeError, AttributeError) as e:
+    logger.warning(f"Could not set page config (Streamlit may not be ready): {e}")
+    # Continue anyway - page config is best-effort
 
 
 def st_pyplot_safe(fig, **kwargs):
@@ -406,50 +433,60 @@ def st_pyplot_safe(fig, **kwargs):
         gc.collect()
 
 
-# Show immediate feedback - app is loading
-initial_status = st.empty()
-initial_status.info(" **Initializing dashboard...** Please wait.")
-
-# Initialize S3 client from secrets (but don't test connection yet - do that after login)
-logger.debug("Initializing S3 client from secrets...")
+# CRITICAL FIX: Protect module-level Streamlit access
 try:
-    # Check if secrets are available
-    if "s3" not in st.secrets:
-        raise KeyError("s3 section not found in secrets")
+    _ = st.empty  # Test if Streamlit is available
+    # Show immediate feedback - app is loading
+    initial_status = st.empty()
+    initial_status.info(" **Initializing dashboard...** Please wait.")
 
-    s3_client = boto3.client(
-        "s3",
-        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-        region_name=st.secrets["s3"].get("region_name", "us-east-1"),
-    )
-    s3_bucket_name = st.secrets["s3"]["bucket_name"]
-    s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
-    logger.debug(
-        f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}"
-    )
-    initial_status.empty()  # Clear initial status once S3 client is ready
-except KeyError as e:
-    logger.error(f"Missing S3 configuration in secrets: {e}")
-    initial_status.empty()
-    st.error(f" Missing S3 configuration in secrets: {e}")
-    st.error(
-        "Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set."
-    )
-    st.error(f"**Current working directory:** `{os.getcwd()}`")
-    st.error(
-        "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
-    )
-    st.error(
-        f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
-    )
-    st.stop()
-except Exception as e:
-    logger.exception(f"Error initializing S3 client: {e}")
-    initial_status.empty()
-    st.error(f" Error initializing S3 client: {e}")
-    st.error("Please check your AWS credentials and try again.")
-    st.stop()
+    # Initialize S3 client from secrets (but don't test connection yet - do that after login)
+    logger.debug("Initializing S3 client from secrets...")
+    try:
+        # Check if secrets are available
+        if "s3" not in st.secrets:
+            raise KeyError("s3 section not found in secrets")
+
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+            region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+        )
+        s3_bucket_name = st.secrets["s3"]["bucket_name"]
+        s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
+        logger.debug(
+            f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}"
+        )
+        initial_status.empty()  # Clear initial status once S3 client is ready
+    except KeyError as e:
+        logger.error(f"Missing S3 configuration in secrets: {e}")
+        initial_status.empty()
+        st.error(f" Missing S3 configuration in secrets: {e}")
+        st.error(
+            "Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set."
+        )
+        st.error(f"**Current working directory:** `{os.getcwd()}`")
+        st.error(
+            "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
+        )
+        st.error(
+            f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
+        )
+        st.stop()
+    except Exception as e:
+        logger.exception(f"Error initializing S3 client: {e}")
+        initial_status.empty()
+        st.error(f" Error initializing S3 client: {e}")
+        st.error("Please check your AWS credentials and try again.")
+        st.stop()
+except (RuntimeError, AttributeError):
+    # Streamlit not initialized yet - skip S3 initialization
+    logger.debug("Streamlit not ready, skipping S3 initialization (will retry later)")
+    initial_status = None
+    s3_client = None
+    s3_bucket_name = None
+    s3_prefix = None
 
 
 # --- Agent ID Mapping System ---
@@ -1658,15 +1695,65 @@ def cleanup_pdf_sourced_calls():
             s3_client, s3_bucket = get_s3_client_and_bucket()
             if s3_client and s3_bucket:
                 try:
-                    response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                    body = response["Body"]
-                    chunks = []
-                    for chunk in body.iter_chunks(chunk_size=8192):
-                        chunks.append(chunk)
-                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
-                    call_data = cached_data.get("call_data", [])
-                    errors = cached_data.get("errors", [])
-                    cache_timestamp = cached_data.get("timestamp")
+                    # CRITICAL FIX: Add timeout protection to prevent hangs
+                    # Use threading timeout to prevent S3 operations from hanging indefinitely
+                    import threading
+                    import queue
+
+                    result_queue = queue.Queue()
+                    exception_queue = queue.Queue()
+
+                    def s3_operation():
+                        """Perform S3 get_object operation in a separate thread"""
+                        try:
+                            response = s3_client.get_object(
+                                Bucket=s3_bucket, Key=S3_CACHE_KEY
+                            )
+                            body = response["Body"]
+                            chunks = []
+                            max_size = (
+                                10 * 1024 * 1024
+                            )  # Limit to 10MB to prevent memory issues
+                            total_size = 0
+                            for chunk in body.iter_chunks(chunk_size=8192):
+                                total_size += len(chunk)
+                                if total_size > max_size:
+                                    logger.warning(
+                                        "S3 cache file too large during cleanup, truncating"
+                                    )
+                                    break
+                                chunks.append(chunk)
+                            cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                            result_queue.put(cached_data)
+                        except Exception as e:
+                            exception_queue.put(e)
+
+                    # Start S3 operation in a thread with 5 second timeout
+                    s3_thread = threading.Thread(target=s3_operation, daemon=True)
+                    s3_thread.start()
+                    s3_thread.join(timeout=5)  # 5 second timeout
+
+                    if s3_thread.is_alive():
+                        logger.warning(
+                            "S3 get_object timed out during cleanup, skipping S3 cache"
+                        )
+                    elif not exception_queue.empty():
+                        # Check if it's a ClientError we should handle
+                        e = exception_queue.get()
+                        if isinstance(e, ClientError):
+                            error_code = e.response.get("Error", {}).get("Code", "")
+                            if error_code != "NoSuchKey":
+                                logger.warning(
+                                    f"Could not load S3 cache for cleanup: {e}"
+                                )
+                        else:
+                            logger.warning(f"Error loading S3 cache for cleanup: {e}")
+                    elif not result_queue.empty():
+                        # Successfully loaded data
+                        cached_data = result_queue.get()
+                        call_data = cached_data.get("call_data", [])
+                        errors = cached_data.get("errors", [])
+                        cache_timestamp = cached_data.get("timestamp")
                 except ClientError as e:
                     error_code = e.response.get("Error", {}).get("Code", "")
                     if error_code != "NoSuchKey":
