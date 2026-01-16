@@ -4199,16 +4199,30 @@ def load_new_calls_only():
         s3_cache_newer = False
         try:
             logger.debug(" Checking S3 cache timestamp...")
-            s3_bucket_name = st.secrets["s3"]["bucket_name"]
+            # CRITICAL FIX: Protect st.secrets access - could fail if Streamlit not ready
+            try:
+                s3_bucket_name = st.secrets["s3"]["bucket_name"]
+                s3_access_key = st.secrets["s3"]["aws_access_key_id"]
+                s3_secret_key = st.secrets["s3"]["aws_secret_access_key"]
+                s3_region = st.secrets["s3"].get("region_name", "us-east-1")
+            except (RuntimeError, AttributeError, KeyError) as secrets_error:
+                logger.debug(
+                    f" Could not access st.secrets for S3 timestamp check: {secrets_error}, will use existing cache"
+                )
+                raise  # Re-raise to be caught by outer except block
+
             # CRITICAL FIX: Add timeout to S3 client config to prevent hangs
-            config = botocore.config.Config(
+            # Import botocore.config.Config - already imported at module level
+            from botocore.config import Config as BotocoreConfig
+
+            config = BotocoreConfig(
                 connect_timeout=10, read_timeout=10, retries={"max_attempts": 2}
             )
             s3_cache_client = boto3.client(
                 "s3",
-                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+                aws_access_key_id=s3_access_key,
+                aws_secret_access_key=s3_secret_key,
+                region_name=s3_region,
                 config=config,
             )
             # Use head_object for faster check (just metadata, no body download)
@@ -4220,7 +4234,14 @@ def load_new_calls_only():
             s3_last_modified = response.get("LastModified")
 
             # Compare with session state timestamp
-            local_timestamp = st.session_state.get("_s3_cache_timestamp")
+            # CRITICAL FIX: Protect st.session_state access - could fail if Streamlit not ready
+            try:
+                local_timestamp = st.session_state.get("_s3_cache_timestamp")
+            except (RuntimeError, AttributeError) as session_error:
+                logger.debug(
+                    f" Could not access st.session_state for timestamp check: {session_error}, will use existing cache"
+                )
+                local_timestamp = None  # Treat as no local timestamp
             if local_timestamp and s3_last_modified:
                 # Convert local timestamp to datetime for comparison
                 try:
@@ -4295,11 +4316,17 @@ def load_new_calls_only():
 
         # Clear session state cache only if S3 is newer
         if s3_cache_newer:
-            if "_s3_cache_result" in st.session_state:
-                logger.debug(" Clearing stale session cache to force fresh S3 load")
-                del st.session_state["_s3_cache_result"]
-            if "_s3_cache_timestamp" in st.session_state:
-                del st.session_state["_s3_cache_timestamp"]
+            # CRITICAL FIX: Protect st.session_state access - could fail if Streamlit not ready
+            try:
+                if "_s3_cache_result" in st.session_state:
+                    logger.debug(" Clearing stale session cache to force fresh S3 load")
+                    del st.session_state["_s3_cache_result"]
+                if "_s3_cache_timestamp" in st.session_state:
+                    del st.session_state["_s3_cache_timestamp"]
+            except (RuntimeError, AttributeError) as session_error:
+                logger.debug(
+                    f" Could not clear session state cache: {session_error}, continuing anyway"
+                )
 
         # Load from cache (will use S3 if session state was cleared, otherwise uses existing cache)
         disk_result = load_cached_data_from_disk()
