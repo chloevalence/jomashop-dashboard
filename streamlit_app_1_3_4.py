@@ -1109,7 +1109,9 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                         logger.warning(error_msg)
                         continue
 
-                logger.info(f"Processed {rows_processed} rows from {filename}, added {rows_added} calls to all_calls (total rows in CSV: {len(df)})")
+                logger.info(
+                    f"Processed {rows_processed} rows from {filename}, added {rows_added} calls to all_calls (total rows in CSV: {len(df)})"
+                )
 
             except Exception as e:
                 error_msg = f"Error processing CSV file {csv_key}: {str(e)}"
@@ -1828,7 +1830,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
         else:
             # Convert single value to tuple format
             result = (cached_result, st.session_state.get("_last_load_errors", []))
-        
+
         # Cache result in session state during refresh
         if refresh_in_progress:
             cache_key = "_disk_cache_during_refresh"
@@ -2566,12 +2568,12 @@ def load_all_calls_cached(cache_version=0):
                         and isinstance(s3_cached_data[0], list)
                         and len(s3_cached_data[0]) > 0
                     ):
-                            migrated = migrate_old_cache_format(s3_cached_data[0])
-                            logger.info(
-                                f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
-                            )
-                            return migrated, s3_cached_data[1] if len(
-                                s3_cached_data
+                        migrated = migrate_old_cache_format(s3_cached_data[0])
+                        logger.info(
+                            f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
+                        )
+                        return migrated, s3_cached_data[1] if len(
+                            s3_cached_data
                         ) > 1 and s3_cached_data[1] is not None else []
             except Exception as e:
                 logger.debug(
@@ -2833,7 +2835,9 @@ def load_all_calls_cached(cache_version=0):
                     s3_cache_timestamp = cached_timestamp
                     # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
                     cache_data = s3_cache_result[0] if len(s3_cache_result) > 0 else []
-                    cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
+                    cache_data_len = (
+                        len(cache_data) if isinstance(cache_data, list) else 0
+                    )
                     logger.debug(
                         f" Using session-cached S3 result: {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                     )
@@ -2867,8 +2871,15 @@ def load_all_calls_cached(cache_version=0):
                             )
                             s3_cache_timestamp = s3_cached_data.get("timestamp", None)
                             # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
-                            cache_data = s3_cache_result[0] if len(s3_cache_result) > 0 and s3_cache_result[0] is not None else []
-                            cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
+                            cache_data = (
+                                s3_cache_result[0]
+                                if len(s3_cache_result) > 0
+                                and s3_cache_result[0] is not None
+                                else []
+                            )
+                            cache_data_len = (
+                                len(cache_data) if isinstance(cache_data, list) else 0
+                            )
                             logger.info(
                                 f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                             )
@@ -4205,7 +4216,7 @@ def load_new_calls_only():
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     cached_data = json.load(f)
                 if isinstance(cached_data, dict):
-                last_save_time = cached_data.get("last_save_time", 0)
+                    last_save_time = cached_data.get("last_save_time", 0)
                     logger.debug(
                         f" Read last_save_time from local cache: {last_save_time}"
                     )
@@ -4733,8 +4744,8 @@ def load_new_calls_only():
                                 continue
 
                             # Not in cache - add to new calls
-                        new_calls.append(parsed_data)
-                        batch_calls.append(parsed_data)  # Track for this batch
+                            new_calls.append(parsed_data)
+                            batch_calls.append(parsed_data)  # Track for this batch
 
                         if duplicate_count > 0:
                             logger.debug(
@@ -6386,7 +6397,7 @@ try:
                 else:
                     cached_data = cached_result
                     cached_errors = st.session_state.get("_last_load_errors", [])
-                
+
                 # Only use cached data if it's substantial (at least 100 calls)
                 # This prevents using stale/partial data from previous sessions
                 if cached_data and len(cached_data) >= 100:
@@ -6659,7 +6670,7 @@ if call_data and isinstance(call_data, list) and len(call_data) > 0:
 # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
 # Handle None, empty list, or invalid types safely
 if call_data and isinstance(call_data, list) and len(call_data) > 0:
-meta_df = pd.DataFrame(call_data)
+    meta_df = pd.DataFrame(call_data)
 else:
     # Create empty DataFrame with expected structure if no data
     logger.warning("No valid call_data available, creating empty DataFrame")
@@ -10588,7 +10599,8 @@ with st.expander("Coaching Insights", expanded=False):
                 )
                 category_df["Percentage"] = (
                     (category_df["Frequency"] / len(all_coaching) * 100)
-                    if all_coaching else 0
+                    if all_coaching
+                    else 0
                 ).round(1)
 
                 col_cat1, col_cat2 = st.columns(2)
@@ -10635,7 +10647,8 @@ with st.expander("Coaching Insights", expanded=False):
                 )
                 all_coaching_df["Percentage"] = (
                     (all_coaching_df["Frequency"] / len(all_coaching) * 100)
-                    if all_coaching else 0
+                    if all_coaching
+                    else 0
                 ).round(1)
                 st.write(
                     f"**All Coaching Suggestions ({len(all_coaching_df)} unique suggestions)**"
