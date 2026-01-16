@@ -355,12 +355,17 @@ def track_error(error_type, error_message):
 
 
 # Initialize session metrics
-if "session_started" not in st.session_state:
-    metrics = load_metrics()
-    metrics["sessions"] = metrics.get("sessions", 0) + 1
-    save_metrics(metrics)
-    st.session_state.session_started = True
-    logger.info(f"New session started. Total sessions: {metrics['sessions']}")
+# CRITICAL FIX: Wrap in try/except to prevent crashes during module import
+try:
+    if "session_started" not in st.session_state:
+        metrics = load_metrics()
+        metrics["sessions"] = metrics.get("sessions", 0) + 1
+        save_metrics(metrics)
+        st.session_state.session_started = True
+        logger.info(f"New session started. Total sessions: {metrics['sessions']}")
+except (RuntimeError, AttributeError):
+    # Streamlit not initialized yet, skip - this is normal during module import
+    pass
 
 st.set_page_config(page_title="Emotion Dashboard", layout="wide")
 logger.debug("Page config set, starting app initialization...")
@@ -1258,6 +1263,14 @@ S3_CACHE_KEY = "cache/cached_calls_data.json"
 def get_s3_client_and_bucket():
     """Get S3 client and bucket name. Returns (client, bucket_name) or (None, None) if unavailable."""
     try:
+        # CRITICAL FIX: Check if Streamlit is initialized before accessing st.secrets
+        try:
+            # Test if st.secrets is available
+            _ = st.secrets
+        except (RuntimeError, AttributeError):
+            logger.debug("Streamlit secrets not available yet")
+            return None, None
+
         if "s3" not in st.secrets:
             return None, None
         s3_client = boto3.client(
@@ -1541,8 +1554,17 @@ def cleanup_pdf_sourced_calls():
     """
     One-time cache cleanup to remove PDF-sourced calls from cache.
     This function checks if cleanup has already been performed and only runs once.
+    Safe to call even before Streamlit is fully initialized.
     """
     try:
+        # CRITICAL FIX: Check if Streamlit is initialized before accessing st.session_state or st.secrets
+        try:
+            # Test if st.session_state is available
+            _ = st.session_state
+        except (RuntimeError, AttributeError):
+            logger.debug("Streamlit not initialized yet, skipping cleanup")
+            return
+
         logger.debug("cleanup_pdf_sourced_calls: Starting cleanup check")
         # Check if cleanup has already been performed
         cleanup_flag_key = "cache_cleaned_pdf_calls"
@@ -2454,8 +2476,16 @@ def load_all_calls_cached(cache_version=0):
 
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
-    # Perform one-time cache cleanup to remove PDF-sourced calls
-    cleanup_pdf_sourced_calls()
+    # CRITICAL FIX: Only perform cleanup if Streamlit is initialized
+    # This prevents crashes if cleanup is called during module import
+    try:
+        _ = st.session_state
+        cleanup_pdf_sourced_calls()
+    except (RuntimeError, AttributeError):
+        logger.debug("Streamlit not ready, skipping cleanup")
+    except Exception as cleanup_error:
+        logger.warning(f"Cleanup failed (non-critical): {cleanup_error}")
+
     import time
 
     start_time = time.time()
