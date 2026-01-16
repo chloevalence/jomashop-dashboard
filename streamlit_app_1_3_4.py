@@ -1543,6 +1543,7 @@ def cleanup_pdf_sourced_calls():
     This function checks if cleanup has already been performed and only runs once.
     """
     try:
+        logger.debug("cleanup_pdf_sourced_calls: Starting cleanup check")
         # Check if cleanup has already been performed
         cleanup_flag_key = "cache_cleaned_pdf_calls"
 
@@ -1611,12 +1612,22 @@ def cleanup_pdf_sourced_calls():
         # Try disk cache first
         if CACHE_FILE.exists():
             try:
-                with cache_file_lock(CACHE_FILE, timeout=5):
-                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                        cached_data = json.load(f)
-                    call_data = cached_data.get("call_data", [])
-                    errors = cached_data.get("errors", [])
-                    cache_timestamp = cached_data.get("timestamp")
+                logger.debug("cleanup_pdf_sourced_calls: Attempting to load disk cache")
+                try:
+                    with cache_file_lock(CACHE_FILE, timeout=5):
+                        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                            cached_data = json.load(f)
+                        call_data = cached_data.get("call_data", [])
+                        errors = cached_data.get("errors", [])
+                        cache_timestamp = cached_data.get("timestamp")
+                except LockTimeoutError:
+                    logger.warning(
+                        "Could not acquire lock for disk cache during cleanup, skipping disk cache"
+                    )
+                except Exception as lock_error:
+                    logger.warning(
+                        f"Error loading disk cache for cleanup: {lock_error}"
+                    )
             except Exception as e:
                 logger.warning(f"Could not load disk cache for cleanup: {e}")
 
@@ -1651,8 +1662,19 @@ def cleanup_pdf_sourced_calls():
                 cleanup_flag_key: True,
             }
             try:
-                with cache_file_lock(CACHE_FILE, timeout=5):
-                    atomic_write_json(CACHE_FILE, cleanup_metadata)
+                logger.debug(
+                    "cleanup_pdf_sourced_calls: Marking cleanup as complete (no cache found)"
+                )
+                try:
+                    with cache_file_lock(CACHE_FILE, timeout=5):
+                        atomic_write_json(CACHE_FILE, cleanup_metadata)
+                except LockTimeoutError:
+                    logger.warning(
+                        "Could not acquire lock to mark cleanup complete, will retry next time"
+                    )
+                    return
+                except Exception as lock_error:
+                    logger.warning(f"Error saving cleanup flag: {lock_error}")
                 # Also save to S3
                 s3_client, s3_bucket = get_s3_client_and_bucket()
                 if s3_client and s3_bucket:
@@ -1671,6 +1693,13 @@ def cleanup_pdf_sourced_calls():
             return
 
         # Identify PDF-sourced calls
+        # CRITICAL FIX: Ensure call_data is a list to prevent iteration errors
+        if not isinstance(call_data, list):
+            logger.warning(
+                f"call_data is not a list (type: {type(call_data)}), converting to list"
+            )
+            call_data = list(call_data) if call_data else []
+
         original_count = len(call_data)
         pdf_sourced_count = 0
 
@@ -2030,7 +2059,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
 
     # Fall back to local disk if S3 unavailable or not found
     if not CACHE_FILE.exists():
-        return None, None
+        return ([], [])  # Return empty tuple instead of None, None
 
     # Retry logic for transient errors
     for attempt in range(max_retries):
@@ -2625,49 +2654,13 @@ def load_all_calls_cached(cache_version=0):
             except Exception as e:
                 logger.warning(f" Could not delete disk cache: {e}")
 
-            # Delete S3 cache with retry logic
+            # CRITICAL: Do NOT delete S3 cache - always preserve and append to it
+            # The S3 cache is the source of truth and should never be cleared
+            # New data will be merged with existing cache data
             s3_cache_deleted = False
-            max_s3_retries = 3
-            for retry in range(max_s3_retries):
-                try:
-                    s3_client, s3_bucket = get_s3_client_and_bucket()
-                    if s3_client and s3_bucket:
-                        try:
-                            s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                            s3_cache_deleted = True
-                            logger.info(
-                                f" Deleted S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}"
-                            )
-                            break
-                        except ClientError as e:
-                            if e.response.get("Error", {}).get("Code") != "NoSuchKey":
-                                if retry < max_s3_retries - 1:
-                                    logger.warning(
-                                        f" S3 cache deletion failed (attempt {retry + 1}/{max_s3_retries}), retrying..."
-                                    )
-                                    time.sleep(0.5)
-                                    continue
-                                else:
-                                    logger.warning(
-                                        f" Could not delete S3 cache after {max_s3_retries} attempts: {e}"
-                                    )
-                            else:
-                                s3_cache_deleted = True
-                                logger.info(
-                                    " S3 cache does not exist (already deleted)"
-                                )
-                                break
-                except Exception as e:
-                    if retry < max_s3_retries - 1:
-                        logger.warning(
-                            f" S3 cache deletion error (attempt {retry + 1}/{max_s3_retries}), retrying..."
-                        )
-                        time.sleep(0.5)
-                        continue
-                    else:
-                        logger.warning(
-                            f" Could not delete S3 cache after {max_s3_retries} attempts: {e}"
-                        )
+            logger.info(
+                " S3 cache preserved (not deleted) - new data will be merged with existing cache"
+            )
 
             # Clear Streamlit cache
             streamlit_cache_cleared = False
@@ -2708,11 +2701,11 @@ def load_all_calls_cached(cache_version=0):
 
             # DON'T clear the flag here - keep it set so the load knows to load ALL files
             # The flag will be cleared after the load completes successfully
-            # Skip S3 cache check - we just deleted it, need fresh load
+            # Skip S3 cache check - will load fresh from S3 and merge with existing cache
             s3_cache_result = None
             s3_cache_timestamp = None
             logger.info(
-                " Skipping S3 cache check - caches deleted, will load fresh from S3"
+                " Skipping S3 cache check - will load fresh from S3 and merge with existing cache"
             )
         else:
             # CRITICAL: Always check S3 cache first (source of truth, shared across all users)
@@ -2890,7 +2883,13 @@ def load_all_calls_cached(cache_version=0):
                                 st.session_state[s3_timestamp_key] = s3_cache_timestamp
                     except ClientError as s3_error:
                         error_code = s3_error.response.get("Error", {}).get("Code", "")
-                        if error_code != "NoSuchKey":
+                        if error_code == "NoSuchKey":
+                            logger.info(
+                                " S3 cache does not exist - will load from CSV files"
+                            )
+                            s3_cache_result = ([], [])  # Explicitly set to empty tuple
+                            s3_cache_timestamp = None
+                        else:
                             logger.warning(f" Failed to load from S3 cache: {s3_error}")
                     except Exception as s3_error:
                         logger.warning(f" Failed to load from S3 cache: {s3_error}")
@@ -3046,6 +3045,9 @@ def load_all_calls_cached(cache_version=0):
 
         # Load disk cache regardless of reload_all_triggered - we'll check that flag later
         disk_result = load_cached_data_from_disk()
+        # CRITICAL FIX: Handle None return from load_cached_data_from_disk
+        if disk_result is None:
+            disk_result = ([], [])  # Default to empty tuple
         # CRITICAL FIX: Check if disk_result is None before accessing its elements
         if disk_result and disk_result[0] is not None and len(disk_result[0]) > 0:
             disk_call_data, disk_errors = disk_result
@@ -3203,11 +3205,19 @@ def load_all_calls_cached(cache_version=0):
         else:
             # No substantial cache - load ALL files from S3
             logger.info("No substantial cache found - loading ALL files from S3")
+            st.info(
+                "⏳ Loading all data from S3 (this may take several minutes on first load)..."
+            )
             max_files = None  # Load all files
 
         try:
             load_start = time.time()
-            result = load_all_calls_internal(max_files=max_files)
+            try:
+                result = load_all_calls_internal(max_files=max_files)
+            except Exception as load_error:
+                logger.exception(f"Error loading calls from S3: {load_error}")
+                # Return empty data with error instead of crashing
+                return ([], [f"Failed to load data from S3: {load_error}"])
             load_duration = time.time() - load_start
             elapsed = time.time() - start_time
 
@@ -6105,24 +6115,12 @@ if is_super_admin():
                     except Exception as e:
                         logger.warning(f"Failed to clear disk cache: {e}")
 
-                # Clear S3 cache with retry logic
-                try:
-                    s3_client, s3_bucket = get_s3_client_and_bucket()
-                    if s3_client and s3_bucket:
-                        try:
-                            s3_client.delete_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                            logger.info(
-                                f" Cleared S3 cache: s3://{s3_bucket}/{S3_CACHE_KEY}"
-                            )
-                        except ClientError as e:
-                            if e.response.get("Error", {}).get("Code") != "NoSuchKey":
-                                logger.warning(f" Could not delete S3 cache: {e}")
-                            else:
-                                logger.info(
-                                    " S3 cache does not exist (already deleted)"
-                                )
-                except Exception as e:
-                    logger.warning(f"Failed to clear S3 cache: {e}")
+                # CRITICAL: Do NOT clear S3 cache - always preserve and append to it
+                # The S3 cache is the source of truth and should never be cleared
+                # New data will be merged with existing cache data
+                logger.info(
+                    " S3 cache preserved (not cleared) - new data will be merged with existing cache"
+                )
 
                 # Clear session state cache keys safely
                 cache_keys_to_clear = [
@@ -6466,16 +6464,36 @@ try:
 
                     # Try to load with better error visibility
                     loading_placeholder = st.empty()
-                    with loading_placeholder.container():
-                        st.spinner(
-                            "Loading PDFs from S3... This may take a few minutes for large datasets."
-                        )
 
                     # Use cache_version to force cache refresh when refresh completes
                     cache_version = st.session_state.get("_cache_version", 0)
-                    call_data, errors = load_all_calls_cached(
-                        cache_version=cache_version
-                    )
+                    try:
+                        with st.spinner(
+                            "Loading PDFs from S3... This may take a few minutes for large datasets."
+                        ):
+                            result = load_all_calls_cached(cache_version=cache_version)
+                            # CRITICAL FIX: Ensure result is always a tuple to prevent unpacking errors
+                            if not isinstance(result, tuple) or len(result) != 2:
+                                logger.error(
+                                    f"load_all_calls_cached returned invalid result: {result}"
+                                )
+                                call_data, errors = (
+                                    [],
+                                    [
+                                        f"Invalid return from load_all_calls_cached: {type(result)}"
+                                    ],
+                                )
+                            else:
+                                call_data, errors = result
+                    except Exception as load_exception:
+                        # CRITICAL FIX: Catch any exception during load and provide safe fallback
+                        logger.exception(
+                            f"Exception during load_all_calls_cached: {load_exception}"
+                        )
+                        call_data, errors = (
+                            [],
+                            [f"Failed to load data: {str(load_exception)}"],
+                        )
                     # CRITICAL FIX: Store tuple (data, errors) instead of just data
                     # Store data and errors in session state for reuse
                     st.session_state["_s3_cache_result"] = (call_data, errors)
