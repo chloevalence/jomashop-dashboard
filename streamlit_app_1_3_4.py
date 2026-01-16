@@ -1824,7 +1824,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
         # CRITICAL FIX: Ensure consistent tuple format (data, errors)
         # Handle both tuple (data, errors) and just data formats for backward compatibility
         if isinstance(cached_result, tuple):
-            result = cached_result
+        result = cached_result
         else:
             # Convert single value to tuple format
             result = (cached_result, st.session_state.get("_last_load_errors", []))
@@ -2290,6 +2290,8 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
         s3_client, s3_bucket = get_s3_client_and_bucket()
         if s3_client and s3_bucket:
             # PROTECTION: Check existing cache before overwriting with PARTIAL cache
+            # CRITICAL: COMPLETE caches (partial=False) ALWAYS save to S3 - they represent fresh full reloads
+            # Only PARTIAL caches need protection to avoid overwriting more complete data
             if partial:  # Only check if saving PARTIAL cache
                 try:
                     # Create S3 client with timeout for checking existing cache
@@ -2370,7 +2372,7 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                     )
                     # Proceed with save if check fails
 
-            # Proceed with save (protected by checks above)
+            # Proceed with save (protected by checks above if PARTIAL, or directly if COMPLETE)
             try:
                 cache_json = json.dumps(cache_data, default=str, ensure_ascii=False)
                 s3_client.put_object(
@@ -2382,6 +2384,8 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                 logger.info(
                     f" Successfully saved {len(call_data)} calls to S3 cache ({status}): s3://{s3_bucket}/{S3_CACHE_KEY}"
                 )
+                # Store S3 cache timestamp after saving (so we can detect when it's updated)
+                st.session_state["_s3_cache_timestamp"] = cache_data["timestamp"]
             except Exception as s3_error:
                 # Don't fail the entire save if S3 upload fails - local cache is still saved
                 logger.warning(
@@ -2562,12 +2566,12 @@ def load_all_calls_cached(cache_version=0):
                         and isinstance(s3_cached_data[0], list)
                         and len(s3_cached_data[0]) > 0
                     ):
-                        migrated = migrate_old_cache_format(s3_cached_data[0])
-                        logger.info(
-                            f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
-                        )
-                        return migrated, s3_cached_data[1] if len(
-                            s3_cached_data
+                            migrated = migrate_old_cache_format(s3_cached_data[0])
+                            logger.info(
+                                f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
+                            )
+                            return migrated, s3_cached_data[1] if len(
+                                s3_cached_data
                         ) > 1 and s3_cached_data[1] is not None else []
             except Exception as e:
                 logger.debug(
@@ -4201,7 +4205,7 @@ def load_new_calls_only():
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     cached_data = json.load(f)
                 if isinstance(cached_data, dict):
-                    last_save_time = cached_data.get("last_save_time", 0)
+                last_save_time = cached_data.get("last_save_time", 0)
                     logger.debug(
                         f" Read last_save_time from local cache: {last_save_time}"
                     )
@@ -4729,8 +4733,8 @@ def load_new_calls_only():
                                 continue
 
                             # Not in cache - add to new calls
-                            new_calls.append(parsed_data)
-                            batch_calls.append(parsed_data)  # Track for this batch
+                        new_calls.append(parsed_data)
+                        batch_calls.append(parsed_data)  # Track for this batch
 
                         if duplicate_count > 0:
                             logger.debug(
@@ -6655,7 +6659,7 @@ if call_data and isinstance(call_data, list) and len(call_data) > 0:
 # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
 # Handle None, empty list, or invalid types safely
 if call_data and isinstance(call_data, list) and len(call_data) > 0:
-    meta_df = pd.DataFrame(call_data)
+meta_df = pd.DataFrame(call_data)
 else:
     # Create empty DataFrame with expected structure if no data
     logger.warning("No valid call_data available, creating empty DataFrame")
