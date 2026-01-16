@@ -5081,15 +5081,26 @@ def load_new_calls_only():
 
                 # Update session state with progress (no rerun to prevent cache corruption)
                 # Progress will be visible on next natural rerun (user interaction or completion)
-                st.session_state["last_refresh_progress_update"] = {
-                    "processed": processed_count,
-                    "total": total_new,
-                    "timestamp": time.time(),
-                }
+                # CRITICAL FIX: Protect session state access during long-running operations
+                try:
+                    st.session_state["last_refresh_progress_update"] = {
+                        "processed": processed_count,
+                        "total": total_new,
+                        "timestamp": time.time(),
+                    }
+                except (RuntimeError, AttributeError) as session_error:
+                    logger.warning(
+                        f" Could not update session state during refresh: {session_error} - continuing anyway"
+                    )
+                except Exception as session_error:
+                    logger.warning(
+                        f" Unexpected error updating session state: {session_error} - continuing anyway"
+                    )
 
                 # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
                 # Progress updates will be visible when refresh completes or user interacts
 
+        logger.debug(" Exiting batch loop, starting final processing...")
         try:
             logger.info(
                 f" Batch loop completed. Processed {processed_count} files. Starting final processing..."
@@ -5112,6 +5123,7 @@ def load_new_calls_only():
         except Exception as return_error:
             logger.error(f" Error preparing return value: {return_error}")
             import traceback
+
             logger.error(f" Return error traceback: {traceback.format_exc()}")
             # Return safe default values
             return ([], None, 0)
