@@ -5042,11 +5042,11 @@ def load_new_calls_only():
                             logger.error(
                                 "Processing will continue, but data may be lost if app crashes"
                             )
-                except Exception as e:
-                    logger.error(f" Unexpected error during incremental save: {e}")
-                    import traceback
+                    except Exception as e:
+                        logger.error(f" Unexpected error during incremental save: {e}")
+                        import traceback
 
-                    logger.error(traceback.format_exc())
+                        logger.error(traceback.format_exc())
                 
                 # Log batch completion
                 logger.debug(f" Completed batch {batch_num}/{total_batches}: processed {len(batch_calls)} calls from this batch")
