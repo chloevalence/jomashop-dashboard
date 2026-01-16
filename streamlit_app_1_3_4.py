@@ -4198,17 +4198,25 @@ def load_new_calls_only():
         # Check S3 cache timestamp to see if it's newer than local/session cache
         s3_cache_newer = False
         try:
+            logger.debug(" Checking S3 cache timestamp...")
             s3_bucket_name = st.secrets["s3"]["bucket_name"]
+            # CRITICAL FIX: Add timeout to S3 client config to prevent hangs
+            config = botocore.config.Config(
+                connect_timeout=10, read_timeout=10, retries={"max_attempts": 2}
+            )
             s3_cache_client = boto3.client(
                 "s3",
                 aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
                 aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
                 region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+                config=config,
             )
             # Use head_object for faster check (just metadata, no body download)
+            logger.debug(f" Calling head_object for S3 cache: {S3_CACHE_KEY}")
             response = s3_cache_client.head_object(
                 Bucket=s3_bucket_name, Key=S3_CACHE_KEY
             )
+            logger.debug(" S3 head_object call completed successfully")
             s3_last_modified = response.get("LastModified")
 
             # Compare with session state timestamp
