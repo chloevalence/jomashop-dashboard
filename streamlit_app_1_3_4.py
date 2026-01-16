@@ -4813,15 +4813,10 @@ def load_new_calls_only():
             batch_num = batch_start // BATCH_SIZE + 1
             total_batches = (total_new + BATCH_SIZE - 1) // BATCH_SIZE
 
-            if batch_num % 5 == 0 or batch_num == 1 or batch_num == total_batches:
-                logger.info(
-                    f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
-                )
-            else:
-                # Log all batches at DEBUG level to track progress
-                logger.debug(
-                    f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
-                )
+            # CRITICAL FIX: Log ALL batches at INFO level to diagnose missing batches
+            logger.info(
+                f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
+            )
 
             # CRITICAL FIX: Wrap entire batch processing in try/except to prevent crashes
             logger.debug(f" Starting batch {batch_num}/{total_batches} processing...")
@@ -5087,6 +5082,7 @@ def load_new_calls_only():
                 # Note: Removed st.rerun() to prevent cache corruption from concurrent reads/writes
                 # Progress updates will be visible when refresh completes or user interacts
 
+        logger.info(f" Batch loop completed. Processed {processed_count} files. Starting final processing...")
         elapsed_total = time.time() - processing_start_time
         logger.info(
             f" Refresh completed: Processed {total_new} new files in {elapsed_total / 60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}. Cache updated with {len(new_calls)} new calls."
