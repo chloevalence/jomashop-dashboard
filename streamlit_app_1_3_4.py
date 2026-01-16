@@ -6607,7 +6607,7 @@ try:
             # CRITICAL FIX: Check if refresh is stuck (no progress for >30 minutes)
             refresh_start_time = st.session_state.get("_refresh_start_time", None)
             refresh_is_stuck = False
-            
+
             if refresh_start_time:
                 try:
                     # Parse timestamp if it's a string
@@ -6615,9 +6615,11 @@ try:
                         refresh_start_dt = datetime.fromisoformat(refresh_start_time)
                     else:
                         refresh_start_dt = refresh_start_time
-                    
+
                     # Check if refresh has been stuck for more than 30 minutes
-                    elapsed_minutes = (datetime.now() - refresh_start_dt).total_seconds() / 60
+                    elapsed_minutes = (
+                        datetime.now() - refresh_start_dt
+                    ).total_seconds() / 60
                     if elapsed_minutes > 30:
                         refresh_is_stuck = True
                         logger.warning(
@@ -6642,7 +6644,7 @@ try:
                 )
                 refresh_is_stuck = True
                 st.session_state["refresh_in_progress"] = False
-            
+
             if not refresh_is_stuck:
                 logger.info(
                     " Refresh in progress - skipping main data load to prevent conflicts"
