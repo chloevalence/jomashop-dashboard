@@ -4996,89 +4996,113 @@ def load_new_calls_only():
                 # OPTIMIZATION: Reuse existing_cache_keys loaded at start (no need to reload from disk)
                 # existing_cache_keys already loaded at function start
 
-                with ThreadPoolExecutor(
-                    max_workers=5
-                ) as executor:  # Reduced from 10 to lower memory pressure
-                    future_to_key = {
-                        executor.submit(process_csv, item): item["key"]
-                        for item in batch_keys
-                    }
-
-                for future in as_completed(future_to_key):
-                    try:
-                        csv_calls_list, error = future.result(
-                            timeout=120
-                        )  # 120 second timeout per CSV file (may contain many rows)
-                    except Exception as e:
-                        # Handle both TimeoutError and concurrent.futures.TimeoutError
-                        from concurrent.futures import (
-                            TimeoutError as FuturesTimeoutError,
-                        )
-
-                        if isinstance(e, (TimeoutError, FuturesTimeoutError)):
-                            key = future_to_key.get(future, "Unknown")
-                            logger.error(f" Timeout processing CSV {key}: {e}")
-                            errors.append(f"{key}: Processing timeout (120s)")
-                            processed_count += 1
-                            continue
-                        else:
-                            # Unexpected error in future execution
-                            logger.error(f" Unexpected error in future: {e}")
-                            errors.append(f"Unknown: {str(e)}")
-                            processed_count += 1
-                            continue
-
-                    processed_count += 1
-
-                    if csv_calls_list:
-                        # Extend with list of calls from CSV
-                        duplicate_count = 0
-                        for parsed_data in csv_calls_list:
-                            # Check if this call is already in cache BEFORE adding
-                            # Use consistent key extraction logic
-                            call_key = extract_cache_key(parsed_data)
-
-                            if call_key and call_key in existing_cache_keys:
-                                # Already in cache - skip this call
-                                duplicate_count += 1
-                                continue
-
-                            # Not in cache - add to new calls
-                            new_calls.append(parsed_data)
-                            batch_calls.append(parsed_data)  # Track for this batch
-
-                        if duplicate_count > 0:
-                            logger.debug(
-                                f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
-                            )
-                    elif error:
-                        errors.append(error)
-
-                    # Log progress every 100 files (unconditionally for each processed file)
-                    if processed_count % 100 == 0:
-                        elapsed = time.time() - processing_start_time
-                        rate = processed_count / elapsed if elapsed > 0 else 0
-                        remaining = (
-                            (total_new - processed_count) / rate if rate > 0 else 0
-                        )
-                        logger.info(
-                            f" Refresh Progress: {processed_count}/{total_new} files processed ({processed_count * 100 // total_new if total_new > 0 else 0}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining / 60:.1f} min"
-                        )
-
-                        # Periodic memory check every 100 files
+                # CRITICAL FIX: Protect ThreadPoolExecutor creation and execution
+                try:
+                    with ThreadPoolExecutor(
+                        max_workers=5
+                    ) as executor:  # Reduced from 10 to lower memory pressure
                         try:
-                            import psutil
-                            import os
+                            future_to_key = {
+                                executor.submit(process_csv, item): item["key"]
+                                for item in batch_keys
+                            }
+                            logger.debug(f" Submitted {len(future_to_key)} CSV files to ThreadPoolExecutor")
+                        except Exception as submit_error:
+                            logger.error(f" CRITICAL: Failed to submit tasks to ThreadPoolExecutor: {submit_error}")
+                            # Continue with empty future_to_key - will skip processing this batch
+                            future_to_key = {}
 
-                            process = psutil.Process(os.getpid())
-                            memory_percent = process.memory_percent()
-                            memory_mb = process.memory_info().rss / 1024 / 1024
-                            if memory_percent > 85:
-                                logger.warning(
-                                    f" High memory usage: {memory_percent:.1f}% ({memory_mb:.0f} MB) - consider reducing batch size if issues occur"
-                                )
-                        except Exception:
-                            pass  # Ignore memory check errors
+                        # Process completed futures with timeout protection
+                        completed_count = 0
+                        try:
+                            for future in as_completed(future_to_key):
+                                try:
+                                    csv_calls_list, error = future.result(
+                                        timeout=120
+                                    )  # 120 second timeout per CSV file (may contain many rows)
+                                except Exception as e:
+                                    # Handle both TimeoutError and concurrent.futures.TimeoutError
+                                    from concurrent.futures import (
+                                        TimeoutError as FuturesTimeoutError,
+                                    )
+
+                                    if isinstance(e, (TimeoutError, FuturesTimeoutError)):
+                                        key = future_to_key.get(future, "Unknown")
+                                        logger.error(f" Timeout processing CSV {key}: {e}")
+                                        errors.append(f"{key}: Processing timeout (120s)")
+                                        processed_count += 1
+                                        continue
+                                    else:
+                                        # Unexpected error in future execution
+                                        logger.error(f" Unexpected error in future: {e}")
+                                        errors.append(f"Unknown: {str(e)}")
+                                        processed_count += 1
+                                        continue
+
+                                processed_count += 1
+
+                                if csv_calls_list:
+                                    # Extend with list of calls from CSV
+                                    duplicate_count = 0
+                                    for parsed_data in csv_calls_list:
+                                        # Check if this call is already in cache BEFORE adding
+                                        # Use consistent key extraction logic
+                                        call_key = extract_cache_key(parsed_data)
+
+                                        if call_key and call_key in existing_cache_keys:
+                                            # Already in cache - skip this call
+                                            duplicate_count += 1
+                                            continue
+
+                                        # Not in cache - add to new calls
+                                        new_calls.append(parsed_data)
+                                        batch_calls.append(parsed_data)  # Track for this batch
+
+                                    if duplicate_count > 0:
+                                        logger.debug(
+                                            f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
+                                        )
+                                elif error:
+                                    errors.append(error)
+
+                                # Log progress every 100 files (unconditionally for each processed file)
+                                if processed_count % 100 == 0:
+                                    elapsed = time.time() - processing_start_time
+                                    rate = processed_count / elapsed if elapsed > 0 else 0
+                                    remaining = (
+                                        (total_new - processed_count) / rate if rate > 0 else 0
+                                    )
+                                    logger.info(
+                                        f" Refresh Progress: {processed_count}/{total_new} files processed ({processed_count * 100 // total_new if total_new > 0 else 0}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining / 60:.1f} min"
+                                    )
+
+                                    # Periodic memory check every 100 files
+                                    try:
+                                        import psutil
+                                        import os
+
+                                        process = psutil.Process(os.getpid())
+                                        memory_percent = process.memory_percent()
+                                        memory_mb = process.memory_info().rss / 1024 / 1024
+                                        if memory_percent > 85:
+                                            logger.warning(
+                                                f" High memory usage: {memory_percent:.1f}% ({memory_mb:.0f} MB) - consider reducing batch size if issues occur"
+                                            )
+                                    except Exception:
+                                        pass  # Ignore memory check errors
+                        except Exception as executor_error:
+                            logger.error(f" CRITICAL: Error in ThreadPoolExecutor loop: {executor_error}")
+                            import traceback
+                            logger.error(f" Executor error traceback: {traceback.format_exc()}")
+                            # Continue processing - some files may have completed
+                except Exception as executor_setup_error:
+                    logger.error(f" CRITICAL: Failed to create ThreadPoolExecutor: {executor_setup_error}")
+                    import traceback
+                    logger.error(f" Executor setup error traceback: {traceback.format_exc()}")
+                    # Mark all files in batch as errors
+                    for item in batch_keys:
+                        errors.append(f"{item.get('key', 'Unknown')}: Executor setup failed")
+                    processed_count += len(batch_keys)
 
                 # Update existing_calls with batch data (for next batch)
                 # OPTIMIZATION: Use extend() instead of concatenation for better performance
