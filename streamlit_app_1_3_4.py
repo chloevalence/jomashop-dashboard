@@ -6047,12 +6047,16 @@ if is_super_admin():
             disk_cache_count = 0
             verification_failed = False
             try:
-                logger.debug(" Calling load_cached_data_from_disk() for verification...")
+                logger.debug(
+                    " Calling load_cached_data_from_disk() for verification..."
+                )
                 disk_result_verify = load_cached_data_from_disk()
                 logger.debug(f" Verification load returned: {type(disk_result_verify)}")
                 if disk_result_verify and disk_result_verify[0] is not None:
                     disk_cache_count = len(disk_result_verify[0])
-                    logger.info(f" Verification successful: {disk_cache_count} calls found in cache")
+                    logger.info(
+                        f" Verification successful: {disk_cache_count} calls found in cache"
+                    )
                 else:
                     logger.warning(
                         "Verification load returned None - checking previous disk_result as fallback"
@@ -6093,8 +6097,16 @@ if is_super_admin():
                 # IMPORTANT: Check disk_result_verify is not None BEFORE accessing [0] to prevent TypeError
                 if (
                     disk_result_verify is None
-                    or (disk_result_verify is not None and len(disk_result_verify) > 0 and disk_result_verify[0] is None)
-                    or (verification_failed and disk_result_verify is not None and disk_result_verify == ([], []))
+                    or (
+                        disk_result_verify is not None
+                        and len(disk_result_verify) > 0
+                        and disk_result_verify[0] is None
+                    )
+                    or (
+                        verification_failed
+                        and disk_result_verify is not None
+                        and disk_result_verify == ([], [])
+                    )
                 ):
                     logger.error(
                         "CRITICAL: disk_result_verify is None or has None data - cannot proceed with merge"
@@ -6314,7 +6326,9 @@ if is_super_admin():
                         and len(disk_result_verify) > 0
                         and disk_result_verify[0] is not None
                     ):
-                        logger.debug(f" Setting _merged_cache_data from disk_result_verify: {len(disk_result_verify[0])} calls")
+                        logger.debug(
+                            f" Setting _merged_cache_data from disk_result_verify: {len(disk_result_verify[0])} calls"
+                        )
                         st.session_state["_merged_cache_data"] = disk_result_verify[0]
                         # CRITICAL FIX: Check if disk_result_verify is None before calling len()
                         verify_errors = (
