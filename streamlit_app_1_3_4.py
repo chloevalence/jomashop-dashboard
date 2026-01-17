@@ -6148,79 +6148,17 @@ if is_super_admin():
                             merged_data = (
                                 previous_streamlit_cache + disk_result_verify[0]
                             )
-                        merged_data = deduplicate_calls(merged_data)
-                        merged_count = len(merged_data)
+                            merged_data = deduplicate_calls(merged_data)
+                            merged_count = len(merged_data)
 
-                        logger.info(
-                            f"Merged result: {merged_count} unique calls (removed {len(previous_streamlit_cache) + len(disk_result_verify[0]) - merged_count} duplicates)"
-                        )
-
-                        # Save merged result to disk
-                        merge_save_succeeded = False
-                        try:
-                            # CRITICAL FIX: Check if disk_result_verify[1] exists before using
-                            verify_errors = (
-                                disk_result_verify[1]
-                                if (
-                                    disk_result_verify
-                                    and len(disk_result_verify) > 1
-                                    and disk_result_verify[1] is not None
-                                )
-                                else []
-                            )
-                            save_cached_data_to_disk(
-                                merged_data,
-                                previous_streamlit_errors
-                                if previous_streamlit_errors
-                                else verify_errors,
-                            )
                             logger.info(
-                                f"Saved merged cache to disk: {merged_count} calls"
-                            )
-                            merge_save_succeeded = True
-                        except Exception as merge_save_error:
-                            logger.error(
-                                f"CRITICAL: Failed to save merged cache: {merge_save_error}"
-                            )
-                            logger.error(
-                                "Using disk cache without Streamlit cache merge - some data may be lost"
+                                f"Merged result: {merged_count} unique calls (removed {len(previous_streamlit_cache) + len(disk_result_verify[0]) - merged_count} duplicates)"
                             )
 
-                        # CRITICAL FIX: Only store merged_data in session state if save succeeded
-                        # If save failed, use disk cache (fallback) to prevent data loss
-                        if merge_save_succeeded:
-                            # Store merged data in session state so it's used after cache clear
-                            st.session_state["_merged_cache_data"] = merged_data
-                            verify_errors = (
-                                disk_result_verify[1]
-                                if (
-                                    disk_result_verify
-                                    and len(disk_result_verify) > 1
-                                    and disk_result_verify[1] is not None
-                                )
-                                else []
-                            )
-                            st.session_state["_merged_cache_errors"] = (
-                                previous_streamlit_errors
-                                if previous_streamlit_errors
-                                else verify_errors
-                            )
-                            # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
-                            st.session_state["_merged_cache_data_timestamp"] = (
-                                datetime.now().isoformat()
-                            )
-                        else:
-                            # Fallback: use disk cache without merge (save failed, merged_data not on disk)
-                            # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
-                            # Don't use potentially corrupted cache data when verification fails
-                            if (
-                                not verification_failed
-                                and disk_result_verify
-                                and disk_result_verify[0] is not None
-                            ):
-                                st.session_state["_merged_cache_data"] = (
-                                    disk_result_verify[0]
-                                )
+                            # Save merged result to disk
+                            merge_save_succeeded = False
+                            try:
+                                # CRITICAL FIX: Check if disk_result_verify[1] exists before using
                                 verify_errors = (
                                     disk_result_verify[1]
                                     if (
@@ -6230,25 +6168,89 @@ if is_super_admin():
                                     )
                                     else []
                                 )
-                                st.session_state["_merged_cache_errors"] = verify_errors
+                                save_cached_data_to_disk(
+                                    merged_data,
+                                    previous_streamlit_errors
+                                    if previous_streamlit_errors
+                                    else verify_errors,
+                                )
+                                logger.info(
+                                    f"Saved merged cache to disk: {merged_count} calls"
+                                )
+                                merge_save_succeeded = True
+                            except Exception as merge_save_error:
+                                logger.error(
+                                    f"CRITICAL: Failed to save merged cache: {merge_save_error}"
+                                )
+                                logger.error(
+                                    "Using disk cache without Streamlit cache merge - some data may be lost"
+                                )
+
+                            # CRITICAL FIX: Only store merged_data in session state if save succeeded
+                            # If save failed, use disk cache (fallback) to prevent data loss
+                            if merge_save_succeeded:
+                                # Store merged data in session state so it's used after cache clear
+                                st.session_state["_merged_cache_data"] = merged_data
+                                verify_errors = (
+                                    disk_result_verify[1]
+                                    if (
+                                        disk_result_verify
+                                        and len(disk_result_verify) > 1
+                                        and disk_result_verify[1] is not None
+                                    )
+                                    else []
+                                )
+                                st.session_state["_merged_cache_errors"] = (
+                                    previous_streamlit_errors
+                                    if previous_streamlit_errors
+                                    else verify_errors
+                                )
                                 # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
                                 st.session_state["_merged_cache_data_timestamp"] = (
                                     datetime.now().isoformat()
                                 )
                             else:
-                                logger.error(
-                                    "CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback"
-                                )
-                                st.session_state["_merged_cache_data"] = (
-                                    all_calls_merged
-                                )
-                                st.session_state["_merged_cache_errors"] = (
-                                    new_errors if new_errors else []
-                                )
-                                # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
-                                st.session_state["_merged_cache_data_timestamp"] = (
-                                    datetime.now().isoformat()
-                                )
+                                # Fallback: use disk cache without merge (save failed, merged_data not on disk)
+                                # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
+                                # Don't use potentially corrupted cache data when verification fails
+                                if (
+                                    not verification_failed
+                                    and disk_result_verify
+                                    and disk_result_verify[0] is not None
+                                ):
+                                    st.session_state["_merged_cache_data"] = (
+                                        disk_result_verify[0]
+                                    )
+                                    verify_errors = (
+                                        disk_result_verify[1]
+                                        if (
+                                            disk_result_verify
+                                            and len(disk_result_verify) > 1
+                                            and disk_result_verify[1] is not None
+                                        )
+                                        else []
+                                    )
+                                    st.session_state["_merged_cache_errors"] = (
+                                        verify_errors
+                                    )
+                                    # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                                    st.session_state["_merged_cache_data_timestamp"] = (
+                                        datetime.now().isoformat()
+                                    )
+                                else:
+                                    logger.error(
+                                        "CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback"
+                                    )
+                                    st.session_state["_merged_cache_data"] = (
+                                        all_calls_merged
+                                    )
+                                    st.session_state["_merged_cache_errors"] = (
+                                        new_errors if new_errors else []
+                                    )
+                                    # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                                    st.session_state["_merged_cache_data_timestamp"] = (
+                                        datetime.now().isoformat()
+                                    )
                     else:
                         # disk_result_verify[0] is None - use previous_streamlit_cache only
                         logger.warning(
