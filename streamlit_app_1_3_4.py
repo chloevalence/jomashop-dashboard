@@ -2168,7 +2168,10 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
 
     # Fall back to local disk if S3 unavailable or not found
     if not CACHE_FILE.exists():
-        return None, None  # Return None to indicate cache doesn't exist (consistent with error paths)
+        return (
+            None,
+            None,
+        )  # Return None to indicate cache doesn't exist (consistent with error paths)
 
     # Retry logic for transient errors
     for attempt in range(max_retries):
@@ -6388,10 +6391,14 @@ if is_super_admin():
                 # Update processed keys tracking
                 if "processed_s3_keys" not in st.session_state:
                     st.session_state["processed_s3_keys"] = set()
-                new_keys = {
-                    call.get("_s3_key") for call in new_calls if call.get("_s3_key")
-                }
-                st.session_state["processed_s3_keys"].update(new_keys)
+                # CRITICAL FIX: Protect against new_calls being None or not iterable
+                if new_calls and isinstance(new_calls, (list, tuple)):
+                    new_keys = {
+                        call.get("_s3_key") for call in new_calls if call and call.get("_s3_key")
+                    }
+                    st.session_state["processed_s3_keys"].update(new_keys)
+                else:
+                    logger.warning(f" Cannot update processed keys - new_calls is not iterable: {type(new_calls)}")
                 st.success(
                     f" Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls"
                 )
