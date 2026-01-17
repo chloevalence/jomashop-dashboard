@@ -5960,7 +5960,9 @@ if is_super_admin():
             refresh_start_time_str = st.session_state.get("_refresh_start_time")
             if refresh_start_time_str:
                 refresh_start_time = datetime.fromisoformat(refresh_start_time_str)
-                elapsed_minutes = (datetime.now() - refresh_start_time).total_seconds() / 60
+                elapsed_minutes = (
+                    datetime.now() - refresh_start_time
+                ).total_seconds() / 60
                 if elapsed_minutes > stuck_threshold_minutes:
                     logger.warning(
                         f" Refresh has been in progress for {elapsed_minutes:.1f} minutes - clearing stuck flag"
@@ -5990,9 +5992,13 @@ if is_super_admin():
         logger.info(" Refresh New Data button clicked")
         # CRITICAL FIX: Wrap log_audit_event in try/except to prevent crashes
         try:
-            log_audit_event(current_username, "refresh_data", "Refreshed new data from S3")
+            log_audit_event(
+                current_username, "refresh_data", "Refreshed new data from S3"
+            )
         except Exception as audit_error:
-            logger.warning(f" Could not log audit event: {audit_error} - continuing anyway")
+            logger.warning(
+                f" Could not log audit event: {audit_error} - continuing anyway"
+            )
 
         # Set flag to prevent main data loading during refresh (prevents conflicts and crashes)
         # CRITICAL FIX: Wrap session state access in try/except to prevent crashes during rerun
@@ -6003,7 +6009,9 @@ if is_super_admin():
         except (RuntimeError, AttributeError) as session_error:
             logger.error(f" CRITICAL: Could not set refresh flags: {session_error}")
             logger.error(" Refresh cannot proceed without setting flags - aborting")
-            st.error(" Refresh failed: could not initialize refresh state. Please try again.")
+            st.error(
+                " Refresh failed: could not initialize refresh state. Please try again."
+            )
             st.stop()
 
         # IMPORTANT: Preserve Streamlit cache BEFORE refresh to avoid calling load_all_calls_cached() during refresh
@@ -6014,14 +6022,22 @@ if is_super_admin():
             # Get Streamlit cache BEFORE refresh (safe to call here, won't trigger reload)
             # Use cache_version when preserving Streamlit cache
             cache_version = st.session_state.get("_cache_version", 0)
-            logger.debug(f" Calling load_all_calls_cached with cache_version={cache_version}")
+            logger.debug(
+                f" Calling load_all_calls_cached with cache_version={cache_version}"
+            )
             streamlit_result = load_all_calls_cached(cache_version=cache_version)
-            logger.debug(f" load_all_calls_cached returned: type={type(streamlit_result)}")
+            logger.debug(
+                f" load_all_calls_cached returned: type={type(streamlit_result)}"
+            )
             previous_streamlit_cache = (
                 streamlit_result[0] if streamlit_result and streamlit_result[0] else []
             )
             previous_streamlit_errors = (
-                streamlit_result[1] if streamlit_result and len(streamlit_result) > 1 and streamlit_result[1] else []
+                streamlit_result[1]
+                if streamlit_result
+                and len(streamlit_result) > 1
+                and streamlit_result[1]
+                else []
             )
             logger.info(
                 f" Preserved Streamlit cache: {len(previous_streamlit_cache)} calls before refresh"
