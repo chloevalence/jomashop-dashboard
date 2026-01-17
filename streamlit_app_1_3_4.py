@@ -6042,13 +6042,17 @@ if is_super_admin():
 
             # Verify disk cache was saved correctly (use single load for verification)
             # CRITICAL FIX: Add error handling for verification load to prevent crashes
+            logger.info(" Starting verification load of disk cache...")
             disk_result_verify = None
             disk_cache_count = 0
             verification_failed = False
             try:
+                logger.debug(" Calling load_cached_data_from_disk() for verification...")
                 disk_result_verify = load_cached_data_from_disk()
+                logger.debug(f" Verification load returned: {type(disk_result_verify)}")
                 if disk_result_verify and disk_result_verify[0] is not None:
                     disk_cache_count = len(disk_result_verify[0])
+                    logger.info(f" Verification successful: {disk_cache_count} calls found in cache")
                 else:
                     logger.warning(
                         "Verification load returned None - checking previous disk_result as fallback"
@@ -6086,10 +6090,11 @@ if is_super_admin():
                 # Disk cache was saved successfully
                 # CRITICAL FIX: Check if disk_result_verify and its elements are valid before using
                 # Also check if verification failed and we're using empty fallback lists
+                # IMPORTANT: Check disk_result_verify is not None BEFORE accessing [0] to prevent TypeError
                 if (
                     disk_result_verify is None
-                    or disk_result_verify[0] is None
-                    or (verification_failed and disk_result_verify == ([], []))
+                    or (disk_result_verify is not None and len(disk_result_verify) > 0 and disk_result_verify[0] is None)
+                    or (verification_failed and disk_result_verify is not None and disk_result_verify == ([], []))
                 ):
                     logger.error(
                         "CRITICAL: disk_result_verify is None or has None data - cannot proceed with merge"
@@ -6299,13 +6304,17 @@ if is_super_admin():
                     logger.info(
                         f"No previous Streamlit cache to merge - using disk cache ({disk_cache_count} calls)"
                     )
+                    logger.debug(" Entering else branch: no previous Streamlit cache")
                     # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
                     # Don't use potentially corrupted cache data when verification fails
+                    # IMPORTANT: Check disk_result_verify is not None and has elements BEFORE accessing [0]
                     if (
                         not verification_failed
-                        and disk_result_verify
+                        and disk_result_verify is not None
+                        and len(disk_result_verify) > 0
                         and disk_result_verify[0] is not None
                     ):
+                        logger.debug(f" Setting _merged_cache_data from disk_result_verify: {len(disk_result_verify[0])} calls")
                         st.session_state["_merged_cache_data"] = disk_result_verify[0]
                         # CRITICAL FIX: Check if disk_result_verify is None before calling len()
                         verify_errors = (
@@ -6394,11 +6403,15 @@ if is_super_admin():
                 # CRITICAL FIX: Protect against new_calls being None or not iterable
                 if new_calls and isinstance(new_calls, (list, tuple)):
                     new_keys = {
-                        call.get("_s3_key") for call in new_calls if call and call.get("_s3_key")
+                        call.get("_s3_key")
+                        for call in new_calls
+                        if call and call.get("_s3_key")
                     }
                     st.session_state["processed_s3_keys"].update(new_keys)
                 else:
-                    logger.warning(f" Cannot update processed keys - new_calls is not iterable: {type(new_calls)}")
+                    logger.warning(
+                        f" Cannot update processed keys - new_calls is not iterable: {type(new_calls)}"
+                    )
                 st.success(
                     f" Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls"
                 )
