@@ -6599,10 +6599,16 @@ if is_super_admin():
             except (RuntimeError, AttributeError) as session_error:
                 logger.warning(f" Could not clear refresh flags: {session_error}")
             # Rerun to show updated data (Streamlit cache will reload from _merged_cache_data)
+            logger.info("About to call st.rerun() after refresh completion")
             try:
                 st.rerun()
+                # CRITICAL: This line should never execute if rerun works correctly
+                # If it does, it means st.rerun() didn't stop script execution
+                logger.warning(
+                    "CRITICAL: Code executed after st.rerun() - this should not happen! st.rerun() may have failed silently."
+                )
             except Exception as rerun_error:
-                logger.error(f" CRITICAL: Could not rerun after refresh: {rerun_error}")
+                logger.exception(f" CRITICAL: st.rerun() failed: {rerun_error}")
                 logger.error(
                     " Refresh completed but page may not update - try manual refresh"
                 )
@@ -6934,6 +6940,26 @@ try:
             logger.info(
                 f"Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
             )
+            
+            # CRITICAL: Add validation logging after data load to diagnose crashes
+            if call_data is not None:
+                logger.info(
+                    f"VALIDATION: call_data type={type(call_data)}, len={len(call_data) if call_data else 0}"
+                )
+                if call_data and len(call_data) > 0:
+                    first_call_type = type(call_data[0])
+                    first_call_keys = (
+                        list(call_data[0].keys())[:5]
+                        if isinstance(call_data[0], dict)
+                        else "N/A"
+                    )
+                    logger.info(
+                        f"VALIDATION: First call type={first_call_type}, sample_keys={first_call_keys}"
+                    )
+                else:
+                    logger.warning("VALIDATION: call_data is empty list or falsy")
+            else:
+                logger.warning("VALIDATION: call_data is None after load")
         except Exception as merged_error:
             logger.exception(
                 f" CRITICAL: Error accessing merged_calls from session state: {merged_error}"
@@ -7325,36 +7351,99 @@ except Exception as e:
 # This ensures cached data with old agent IDs gets normalized consistently
 # This fixes the issue where cached DataFrames have wrong agent IDs
 # CRITICAL FIX: Add type checking to ensure call_data is a list before operations
-if call_data and isinstance(call_data, list) and len(call_data) > 0:
-    agent_normalized_count = 0
-    for call in call_data:
-        if isinstance(call, dict) and "agent" in call:
-            original_agent = call.get("agent")
-            normalized_agent = normalize_agent_id(original_agent)
-            if original_agent != normalized_agent:
-                call["agent"] = normalized_agent
-                agent_normalized_count += 1
-        # Also check for "Agent" key (capitalized)
-        if isinstance(call, dict) and "Agent" in call and "agent" not in call:
-            original_agent = call.get("Agent")
-            normalized_agent = normalize_agent_id(original_agent)
-            if original_agent != normalized_agent:
-                call["Agent"] = normalized_agent
-                agent_normalized_count += 1
+# Wrap in try/except to prevent crashes during normalization
+try:
+    if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        agent_normalized_count = 0
+        for call in call_data:
+            # CRITICAL: Defensive check for each call item
+            if isinstance(call, dict) and "agent" in call:
+                try:
+                    original_agent = call.get("agent")
+                    normalized_agent = normalize_agent_id(original_agent)
+                    if original_agent != normalized_agent:
+                        call["agent"] = normalized_agent
+                        agent_normalized_count += 1
+                except Exception as agent_error:
+                    logger.warning(
+                        f"Error normalizing agent ID in call: {agent_error} - skipping this call"
+                    )
+                    continue
+            # Also check for "Agent" key (capitalized)
+            if isinstance(call, dict) and "Agent" in call and "agent" not in call:
+                try:
+                    original_agent = call.get("Agent")
+                    normalized_agent = normalize_agent_id(original_agent)
+                    if original_agent != normalized_agent:
+                        call["Agent"] = normalized_agent
+                        agent_normalized_count += 1
+                except Exception as agent_error:
+                    logger.warning(
+                        f"Error normalizing Agent ID (capitalized) in call: {agent_error} - skipping this call"
+                    )
+                    continue
 
-    if agent_normalized_count > 0:
-        logger.info(
-            f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
-        )
+        if agent_normalized_count > 0:
+            logger.info(
+                f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
+            )
+except Exception as norm_error:
+    logger.exception(f" CRITICAL: Agent normalization failed: {norm_error}")
+    logger.warning(
+        "Continuing with unnormalized agent IDs - this may cause display issues"
+    )
+    logger.debug(
+        f"call_data type: {type(call_data)}, len: {len(call_data) if call_data else 0}"
+    )
 
 # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
 # Handle None, empty list, or invalid types safely
-if call_data and isinstance(call_data, list) and len(call_data) > 0:
-    meta_df = pd.DataFrame(call_data)
-else:
-    # Create empty DataFrame with expected structure if no data
-    logger.warning("No valid call_data available, creating empty DataFrame")
+# Wrap in try/except to prevent crashes during DataFrame creation
+try:
+    if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        # CRITICAL: Validate that call_data contains dicts before creating DataFrame
+        # Sample first few items to ensure they're dicts
+        sample_size = min(5, len(call_data))
+        non_dict_count = sum(
+            1 for call in call_data[:sample_size] if not isinstance(call, dict)
+        )
+        if non_dict_count > 0:
+            logger.warning(
+                f"WARNING: Found {non_dict_count} non-dict items in call_data sample - DataFrame creation may fail"
+            )
+            # Filter to only dict items to prevent DataFrame creation failure
+            call_data = [call for call in call_data if isinstance(call, dict)]
+            logger.info(
+                f"Filtered call_data to {len(call_data)} dict items before DataFrame creation"
+            )
+        
+        meta_df = pd.DataFrame(call_data)
+        logger.info(
+            f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
+        )
+    else:
+        # Create empty DataFrame with expected structure if no data
+        logger.warning("No valid call_data available, creating empty DataFrame")
+        meta_df = pd.DataFrame()
+except Exception as df_error:
+    logger.exception(f" CRITICAL: DataFrame creation failed: {df_error}")
+    logger.error(
+        f"call_data type: {type(call_data)}, len: {len(call_data) if call_data else 0}"
+    )
+    if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        # Try to log sample of first call structure to diagnose issue
+        try:
+            sample_call = call_data[0]
+            logger.error(
+                f"Sample call type: {type(sample_call)}, is_dict: {isinstance(sample_call, dict)}"
+            )
+            if isinstance(sample_call, dict):
+                logger.error(f"Sample call keys: {list(sample_call.keys())[:10]}")
+        except Exception:
+            logger.error("Could not inspect sample call structure")
+    # Fallback to empty DataFrame to prevent complete app crash
     meta_df = pd.DataFrame()
+    logger.warning("Using empty DataFrame as fallback - app will continue but no data will be displayed")
 
 # --- ANONYMIZATION FUNCTIONS ---
 # Note: is_anonymous_user is already defined earlier in the code
