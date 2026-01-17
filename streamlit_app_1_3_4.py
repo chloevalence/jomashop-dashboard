@@ -4845,7 +4845,10 @@ def load_new_calls_only():
             )
 
         # Sort by modification date (most recent first)
-        new_csv_keys.sort(key=lambda x: x["last_modified"], reverse=True)
+        # CRITICAL FIX: Handle None last_modified values (from cached keys) by using datetime.min as default
+        new_csv_keys.sort(
+            key=lambda x: x.get("last_modified") or datetime.min, reverse=True
+        )
 
         # Process new CSV files
         new_calls = []
