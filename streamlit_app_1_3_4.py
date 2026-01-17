@@ -5006,9 +5006,13 @@ def load_new_calls_only():
                                 executor.submit(process_csv, item): item["key"]
                                 for item in batch_keys
                             }
-                            logger.debug(f" Submitted {len(future_to_key)} CSV files to ThreadPoolExecutor")
+                            logger.debug(
+                                f" Submitted {len(future_to_key)} CSV files to ThreadPoolExecutor"
+                            )
                         except Exception as submit_error:
-                            logger.error(f" CRITICAL: Failed to submit tasks to ThreadPoolExecutor: {submit_error}")
+                            logger.error(
+                                f" CRITICAL: Failed to submit tasks to ThreadPoolExecutor: {submit_error}"
+                            )
                             # Continue with empty future_to_key - will skip processing this batch
                             future_to_key = {}
 
@@ -5026,15 +5030,23 @@ def load_new_calls_only():
                                         TimeoutError as FuturesTimeoutError,
                                     )
 
-                                    if isinstance(e, (TimeoutError, FuturesTimeoutError)):
+                                    if isinstance(
+                                        e, (TimeoutError, FuturesTimeoutError)
+                                    ):
                                         key = future_to_key.get(future, "Unknown")
-                                        logger.error(f" Timeout processing CSV {key}: {e}")
-                                        errors.append(f"{key}: Processing timeout (120s)")
+                                        logger.error(
+                                            f" Timeout processing CSV {key}: {e}"
+                                        )
+                                        errors.append(
+                                            f"{key}: Processing timeout (120s)"
+                                        )
                                         processed_count += 1
                                         continue
                                     else:
                                         # Unexpected error in future execution
-                                        logger.error(f" Unexpected error in future: {e}")
+                                        logger.error(
+                                            f" Unexpected error in future: {e}"
+                                        )
                                         errors.append(f"Unknown: {str(e)}")
                                         processed_count += 1
                                         continue
@@ -5056,7 +5068,9 @@ def load_new_calls_only():
 
                                         # Not in cache - add to new calls
                                         new_calls.append(parsed_data)
-                                        batch_calls.append(parsed_data)  # Track for this batch
+                                        batch_calls.append(
+                                            parsed_data
+                                        )  # Track for this batch
 
                                     if duplicate_count > 0:
                                         logger.debug(
@@ -5068,9 +5082,13 @@ def load_new_calls_only():
                                 # Log progress every 100 files (unconditionally for each processed file)
                                 if processed_count % 100 == 0:
                                     elapsed = time.time() - processing_start_time
-                                    rate = processed_count / elapsed if elapsed > 0 else 0
+                                    rate = (
+                                        processed_count / elapsed if elapsed > 0 else 0
+                                    )
                                     remaining = (
-                                        (total_new - processed_count) / rate if rate > 0 else 0
+                                        (total_new - processed_count) / rate
+                                        if rate > 0
+                                        else 0
                                     )
                                     logger.info(
                                         f" Refresh Progress: {processed_count}/{total_new} files processed ({processed_count * 100 // total_new if total_new > 0 else 0}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining / 60:.1f} min"
@@ -5083,7 +5101,9 @@ def load_new_calls_only():
 
                                         process = psutil.Process(os.getpid())
                                         memory_percent = process.memory_percent()
-                                        memory_mb = process.memory_info().rss / 1024 / 1024
+                                        memory_mb = (
+                                            process.memory_info().rss / 1024 / 1024
+                                        )
                                         if memory_percent > 85:
                                             logger.warning(
                                                 f" High memory usage: {memory_percent:.1f}% ({memory_mb:.0f} MB) - consider reducing batch size if issues occur"
@@ -5091,17 +5111,29 @@ def load_new_calls_only():
                                     except Exception:
                                         pass  # Ignore memory check errors
                         except Exception as executor_error:
-                            logger.error(f" CRITICAL: Error in ThreadPoolExecutor loop: {executor_error}")
+                            logger.error(
+                                f" CRITICAL: Error in ThreadPoolExecutor loop: {executor_error}"
+                            )
                             import traceback
-                            logger.error(f" Executor error traceback: {traceback.format_exc()}")
+
+                            logger.error(
+                                f" Executor error traceback: {traceback.format_exc()}"
+                            )
                             # Continue processing - some files may have completed
                 except Exception as executor_setup_error:
-                    logger.error(f" CRITICAL: Failed to create ThreadPoolExecutor: {executor_setup_error}")
+                    logger.error(
+                        f" CRITICAL: Failed to create ThreadPoolExecutor: {executor_setup_error}"
+                    )
                     import traceback
-                    logger.error(f" Executor setup error traceback: {traceback.format_exc()}")
+
+                    logger.error(
+                        f" Executor setup error traceback: {traceback.format_exc()}"
+                    )
                     # Mark all files in batch as errors
                     for item in batch_keys:
-                        errors.append(f"{item.get('key', 'Unknown')}: Executor setup failed")
+                        errors.append(
+                            f"{item.get('key', 'Unknown')}: Executor setup failed"
+                        )
                     processed_count += len(batch_keys)
 
                 # Update existing_calls with batch data (for next batch)
