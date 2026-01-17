@@ -6506,22 +6506,15 @@ if is_super_admin():
                 current_version = st.session_state.get("_cache_version", 0)
                 st.session_state["_cache_version"] = current_version + 1
 
-                # Store S3 cache timestamp after saving (so we can detect when it's updated)
-                s3_client, s3_bucket = get_s3_client_and_bucket()
-                if s3_client and s3_bucket:
-                    try:
-                        response = s3_client.get_object(
-                            Bucket=s3_bucket, Key=S3_CACHE_KEY
-                        )
-                        s3_data = json.loads(response["Body"].read().decode("utf-8"))
-                        s3_timestamp = s3_data.get("timestamp", None)
-                        if s3_timestamp:
-                            st.session_state["_s3_cache_timestamp"] = s3_timestamp
-                            logger.info(f" Stored S3 cache timestamp: {s3_timestamp}")
-                    except Exception as s3_read_error:
-                        logger.debug(
-                            f"Could not read S3 cache timestamp: {s3_read_error}"
-                        )
+                # CRITICAL FIX: Don't read S3 cache timestamp back from S3 - we already stored it
+                # when saving (save_cached_data_to_s3 line 2531), and reading it back can cause
+                # hangs/connection resets. The timestamp is already in session state.
+                # If _s3_cache_timestamp is not set, it will be set on next S3 load, which is fine.
+                existing_timestamp = st.session_state.get("_s3_cache_timestamp")
+                if existing_timestamp:
+                    logger.debug(f" Using existing S3 cache timestamp: {existing_timestamp}")
+                else:
+                    logger.debug(" S3 cache timestamp not in session state - will be set on next S3 load")
 
                 # Clear Streamlit cache to force reload from S3 cache
                 load_all_calls_cached.clear()
