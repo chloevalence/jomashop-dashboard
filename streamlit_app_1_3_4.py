@@ -2168,7 +2168,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
 
     # Fall back to local disk if S3 unavailable or not found
     if not CACHE_FILE.exists():
-        return ([], [])  # Return empty tuple instead of None, None
+        return None, None  # Return None to indicate cache doesn't exist (consistent with error paths)
 
     # Retry logic for transient errors
     for attempt in range(max_retries):
@@ -6400,7 +6400,9 @@ if is_super_admin():
                 # Clear notification count after successful refresh
                 st.session_state.new_csvs_notification_count = 0
             except (RuntimeError, AttributeError) as session_error:
-                logger.error(f" CRITICAL: Could not update session state after merge: {session_error}")
+                logger.error(
+                    f" CRITICAL: Could not update session state after merge: {session_error}"
+                )
                 logger.error(" Refresh completed but session state may be stale")
                 # Continue anyway - data is saved to disk/S3 cache
 
@@ -6451,7 +6453,9 @@ if is_super_admin():
                 st.rerun()
             except Exception as rerun_error:
                 logger.error(f" CRITICAL: Could not rerun after refresh: {rerun_error}")
-                logger.error(" Refresh completed but page may not update - try manual refresh")
+                logger.error(
+                    " Refresh completed but page may not update - try manual refresh"
+                )
         else:
             # No new files found and no errors
             st.session_state["refresh_in_progress"] = False  # Clear flag
@@ -12049,7 +12053,7 @@ with export_col2:
         mime="text/csv",
     )
 
-# --- Selecload thit Calls for Export ---
+# --- Select Calls for Export ---
 st.markdown("---")
 st.markdown("### Select Calls for Export")
 if len(filtered_df) > 0:
