@@ -4909,9 +4909,13 @@ def load_new_calls_only():
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import time
 
-        BATCH_SIZE = 20  # Process 20 CSV files per batch (matches MAX_FILES_PER_REFRESH)
+        BATCH_SIZE = (
+            20  # Process 20 CSV files per batch (matches MAX_FILES_PER_REFRESH)
+        )
         DASHBOARD_UPDATE_INTERVAL = 500
-        MAX_FILES_PER_REFRESH = 20  # Process only 20 CSV files per refresh for faster loading
+        MAX_FILES_PER_REFRESH = (
+            20  # Process only 20 CSV files per refresh for faster loading
+        )
 
         # Limit the number of files processed per refresh
         total_new_unlimited = len(new_csv_keys)
@@ -6089,10 +6093,14 @@ if is_super_admin():
                     )
                     logger.error("Using all_calls_merged as fallback")
                     # Use all_calls_merged as fallback since verification failed
-                    st.session_state["_merged_cache_data"] = all_calls_merged
-                    st.session_state["_merged_cache_errors"] = (
-                        new_errors if new_errors else []
-                    )
+                    try:
+                        st.session_state["_merged_cache_data"] = all_calls_merged
+                        st.session_state["_merged_cache_errors"] = (
+                            new_errors if new_errors else []
+                        )
+                    except (RuntimeError, AttributeError) as session_error:
+                        logger.error(f" Could not set session state: {session_error}")
+                        logger.error(" Data may not be available after refresh")
                 # Merge preserved Streamlit cache with disk cache (preserving all data)
                 elif previous_streamlit_cache and len(previous_streamlit_cache) > 0:
                     # CRITICAL FIX: Only merge if disk_result_verify[0] is not None
@@ -6373,22 +6381,28 @@ if is_super_admin():
                     )
 
             # We need to manually update the cache - store in session state temporarily
-            st.session_state["merged_calls"] = all_calls_merged
-            st.session_state["merged_errors"] = new_errors if new_errors else []
-            # Update processed keys tracking
-            if "processed_s3_keys" not in st.session_state:
-                st.session_state["processed_s3_keys"] = set()
-            new_keys = {
-                call.get("_s3_key") for call in new_calls if call.get("_s3_key")
-            }
-            st.session_state["processed_s3_keys"].update(new_keys)
-            st.success(
-                f" Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls"
-            )
-            if new_errors:
-                st.warning(f" {len(new_errors)} file(s) had errors")
-            # Clear notification count after successful refresh
-            st.session_state.new_csvs_notification_count = 0
+            # CRITICAL FIX: Protect all session state accesses to prevent crashes
+            try:
+                st.session_state["merged_calls"] = all_calls_merged
+                st.session_state["merged_errors"] = new_errors if new_errors else []
+                # Update processed keys tracking
+                if "processed_s3_keys" not in st.session_state:
+                    st.session_state["processed_s3_keys"] = set()
+                new_keys = {
+                    call.get("_s3_key") for call in new_calls if call.get("_s3_key")
+                }
+                st.session_state["processed_s3_keys"].update(new_keys)
+                st.success(
+                    f" Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls"
+                )
+                if new_errors:
+                    st.warning(f" {len(new_errors)} file(s) had errors")
+                # Clear notification count after successful refresh
+                st.session_state.new_csvs_notification_count = 0
+            except (RuntimeError, AttributeError) as session_error:
+                logger.error(f" CRITICAL: Could not update session state after merge: {session_error}")
+                logger.error(" Refresh completed but session state may be stale")
+                # Continue anyway - data is saved to disk/S3 cache
 
             # CRITICAL FIX: Increment cache version and clear Streamlit cache before rerun
             # This forces Streamlit cache to reload from S3 cache (source of truth) on next call
@@ -6426,11 +6440,18 @@ if is_super_admin():
                 # Continue anyway - cache_version parameter will force refresh
 
             # Clear refresh flag before rerun
-            st.session_state["refresh_in_progress"] = False
-            if "_refresh_start_time" in st.session_state:
-                del st.session_state["_refresh_start_time"]
+            try:
+                st.session_state["refresh_in_progress"] = False
+                if "_refresh_start_time" in st.session_state:
+                    del st.session_state["_refresh_start_time"]
+            except (RuntimeError, AttributeError) as session_error:
+                logger.warning(f" Could not clear refresh flags: {session_error}")
             # Rerun to show updated data (Streamlit cache will reload from _merged_cache_data)
-            st.rerun()
+            try:
+                st.rerun()
+            except Exception as rerun_error:
+                logger.error(f" CRITICAL: Could not rerun after refresh: {rerun_error}")
+                logger.error(" Refresh completed but page may not update - try manual refresh")
         else:
             # No new files found and no errors
             st.session_state["refresh_in_progress"] = False  # Clear flag
