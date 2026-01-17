@@ -4909,9 +4909,9 @@ def load_new_calls_only():
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import time
 
-        BATCH_SIZE = 25  # Reduced from 50 to lower memory per batch
+        BATCH_SIZE = 20  # Process 20 CSV files per batch (matches MAX_FILES_PER_REFRESH)
         DASHBOARD_UPDATE_INTERVAL = 500
-        MAX_FILES_PER_REFRESH = 500  # Reduced from 1000 to process in smaller chunks and reduce memory pressure
+        MAX_FILES_PER_REFRESH = 20  # Process only 20 CSV files per refresh for faster loading
 
         # Limit the number of files processed per refresh
         total_new_unlimited = len(new_csv_keys)
@@ -4921,7 +4921,7 @@ def load_new_calls_only():
         if total_new_unlimited > MAX_FILES_PER_REFRESH:
             remaining = total_new_unlimited - MAX_FILES_PER_REFRESH
             logger.info(
-                f" Refresh New Data: Found {total_new_unlimited} new CSV files total, processing {total_new} this refresh (limit: {MAX_FILES_PER_REFRESH}), {remaining} remaining"
+                f" Refresh New Data: Found {total_new_unlimited} new CSV files total, processing {total_new} this refresh (limit: {MAX_FILES_PER_REFRESH}), {remaining} remaining. Click 'Refresh New Data' again to process next batch."
             )
         else:
             logger.info(
@@ -4959,7 +4959,7 @@ def load_new_calls_only():
         last_incremental_save_time = time.time()
         batches_since_save = 0
         SAVE_INTERVAL_BATCHES = (
-            2  # Save every 2 batches (more frequent to reduce memory accumulation)
+            1  # Save after each batch (since we're processing 20 files per refresh)
         )
         SAVE_INTERVAL_SECONDS = 90  # Or every 90 seconds, whichever comes first
 
