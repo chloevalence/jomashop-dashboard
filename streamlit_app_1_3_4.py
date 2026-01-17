@@ -6875,7 +6875,7 @@ try:
     # CRITICAL FIX: Initialize call_data and errors to None to track if they were loaded
     call_data = None
     errors = None
-    
+
     if "merged_calls" in st.session_state:
         logger.info("Found merged calls in session state, using cached data")
         # CRITICAL FIX: Add defensive error handling around merged_calls access
@@ -6883,45 +6883,61 @@ try:
             # Use merged data from smart refresh
             merged_calls = st.session_state.get("merged_calls")
             if merged_calls is None:
-                logger.warning("merged_calls is None in session state - using empty list")
+                logger.warning(
+                    "merged_calls is None in session state - using empty list"
+                )
                 call_data = []
             elif not isinstance(merged_calls, list):
-                logger.warning(f"merged_calls is not a list (type: {type(merged_calls)}) - converting")
+                logger.warning(
+                    f"merged_calls is not a list (type: {type(merged_calls)}) - converting"
+                )
                 call_data = list(merged_calls) if merged_calls else []
             else:
                 call_data = merged_calls
-            
+
             # Validate call_data is not empty and has expected structure
             if call_data and len(call_data) > 0:
                 # Sample check first call to ensure it's a dict
                 if not isinstance(call_data[0], dict):
-                    logger.warning("First call in merged_calls is not a dict - may be corrupted")
+                    logger.warning(
+                        "First call in merged_calls is not a dict - may be corrupted"
+                    )
                     call_data = [c for c in call_data if isinstance(c, dict)]
                     logger.info(f"Filtered to {len(call_data)} valid calls")
-            
+
             errors = st.session_state.get("merged_errors", [])
             if not isinstance(errors, list):
-                logger.warning(f"merged_errors is not a list (type: {type(errors)}) - using empty list")
+                logger.warning(
+                    f"merged_errors is not a list (type: {type(errors)}) - using empty list"
+                )
                 errors = []
-            
+
             # Clear the temporary session state
             try:
                 del st.session_state["merged_calls"]
             except (KeyError, RuntimeError, AttributeError) as del_error:
-                logger.warning(f"Could not delete merged_calls from session state: {del_error}")
-            
+                logger.warning(
+                    f"Could not delete merged_calls from session state: {del_error}"
+                )
+
             try:
                 if "merged_errors" in st.session_state:
                     del st.session_state["merged_errors"]
             except (KeyError, RuntimeError, AttributeError) as del_error:
-                logger.warning(f"Could not delete merged_errors from session state: {del_error}")
-            
+                logger.warning(
+                    f"Could not delete merged_errors from session state: {del_error}"
+                )
+
             # Note: Disk cache already has the merged data from refresh, Streamlit cache will update on next access
             elapsed = time.time() - t0
             status_text.empty()
-            logger.info(f"Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors")
+            logger.info(
+                f"Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
+            )
         except Exception as merged_error:
-            logger.exception(f" CRITICAL: Error accessing merged_calls from session state: {merged_error}")
+            logger.exception(
+                f" CRITICAL: Error accessing merged_calls from session state: {merged_error}"
+            )
             logger.warning(" Falling back to normal data load path")
             # Clear merged_calls from session state and reset call_data/errors to None
             try:
@@ -6934,7 +6950,7 @@ try:
             # Reset to None so else block handles normal load
             call_data = None
             errors = None
-    
+
     # CRITICAL FIX: Only proceed with normal load if call_data was not successfully loaded
     if call_data is None:
         # Check if refresh is in progress - skip main data loading to prevent conflicts
