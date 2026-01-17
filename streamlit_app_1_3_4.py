@@ -5142,9 +5142,15 @@ def load_new_calls_only():
 
                         if save_success:
                             last_incremental_save_time = time.time()
-                            st.session_state._last_incremental_save_time = (
-                                last_incremental_save_time
-                            )
+                            # CRITICAL FIX: Protect session state access - may fail during session restart
+                            try:
+                                st.session_state._last_incremental_save_time = (
+                                    last_incremental_save_time
+                                )
+                            except (RuntimeError, AttributeError) as session_error:
+                                logger.warning(
+                                    f" Could not update session state after save: {session_error} - continuing anyway"
+                                )
                             batches_since_save = 0  # Reset counter
                             logger.info(
                                 f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
@@ -5203,12 +5209,21 @@ def load_new_calls_only():
                         logger.error(traceback.format_exc())
 
                 # Log batch completion
-                logger.info(
-                    f" Completed batch {batch_num}/{total_batches}: processed {len(batch_calls)} calls from this batch"
-                )
-                if batch_num == total_batches:
+                # CRITICAL FIX: Protect batch completion log - ensure batch_calls is defined
+                try:
+                    batch_calls_count = len(batch_calls) if batch_calls else 0
                     logger.info(
-                        f" DIAGNOSTIC: Last batch ({batch_num}/{total_batches}) completed, preparing to exit batch loop"
+                        f" Completed batch {batch_num}/{total_batches}: processed {batch_calls_count} calls from this batch"
+                    )
+                    if batch_num == total_batches:
+                        logger.info(
+                            f" DIAGNOSTIC: Last batch ({batch_num}/{total_batches}) completed, preparing to exit batch loop"
+                        )
+                except Exception as log_error:
+                    logger.error(f" Error logging batch completion: {log_error}")
+                    # Continue anyway - batch processing is complete
+                    logger.info(
+                        f" Batch {batch_num}/{total_batches} processing completed (completion log failed)"
                     )
 
             except Exception as batch_error:
