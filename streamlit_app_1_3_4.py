@@ -4599,20 +4599,101 @@ def load_new_calls_only():
             is_truncated = False
         else:
             # List all CSV files in S3 (PDFs are ignored) - pagination required
-            paginator = s3_client_with_timeout.get_paginator("list_objects_v2")
-            pages = paginator.paginate(
-                Bucket=s3_bucket_name, Prefix=s3_prefix, MaxKeys=1000
-            )
-
+            # CRITICAL FIX: Manual pagination with timeout protection to prevent hangs
+            # Using paginator.paginate() generator can hang indefinitely if S3 API call blocks
+            # Manual pagination allows timeout protection per page
+            
             # Track pagination progress
             page_count = 0
             files_per_page = []
             is_truncated = False
             consecutive_empty = 0  # Track consecutive empty pages for early exit
+            continuation_token = None
+            pagination_start_time = time.time()
+            max_pagination_time = 300  # 5 minutes max for pagination
+            max_page_time = 30  # 30 seconds max per page
 
-            for page in pages:
+            while True:
+                # Check overall pagination timeout
+                elapsed_time = time.time() - pagination_start_time
+                if elapsed_time > max_pagination_time:
+                    logger.warning(
+                        f"Pagination timeout after {elapsed_time:.1f}s - stopping at page {page_count}"
+                    )
+                    logger.warning(
+                        f"Processed {total_s3_files} files before timeout - proceeding with available files"
+                    )
+                    break
+
+                # Fetch next page with timeout protection
+                page_start_time = time.time()
+                page = None
+                page_error = None
+                
+                try:
+                    import threading
+                    import queue
+                    
+                    page_queue = queue.Queue()
+                    error_queue = queue.Queue()
+                    
+                    def fetch_page():
+                        try:
+                            params = {
+                                "Bucket": s3_bucket_name,
+                                "Prefix": s3_prefix,
+                                "MaxKeys": 1000
+                            }
+                            if continuation_token:
+                                params["ContinuationToken"] = continuation_token
+                            response = s3_client_with_timeout.list_objects_v2(**params)
+                            page_queue.put(response)
+                        except Exception as e:
+                            error_queue.put(e)
+                    
+                    page_thread = threading.Thread(target=fetch_page, daemon=True)
+                    page_thread.start()
+                    page_thread.join(timeout=max_page_time)
+                    
+                    if page_thread.is_alive():
+                        logger.warning(
+                            f"Page {page_count + 1} fetch timed out after {max_page_time}s - stopping pagination"
+                        )
+                        break
+                    elif not error_queue.empty():
+                        page_error = error_queue.get()
+                        raise page_error
+                    elif not page_queue.empty():
+                        page = page_queue.get()
+                    else:
+                        logger.warning(f"No response from page {page_count + 1} fetch - stopping pagination")
+                        break
+                        
+                except Exception as e:
+                    logger.error(f"Error fetching page {page_count + 1}: {e}")
+                    logger.warning("Stopping pagination due to error")
+                    break
+                
+                if page is None:
+                    break
                 page_count += 1
                 page_file_count = 0
+                page_fetch_time = time.time() - page_start_time
+                
+                if page_fetch_time > 10:  # Log slow pages
+                    logger.debug(f"Page {page_count} fetch took {page_fetch_time:.1f}s")
+
+                # Update continuation token for next iteration
+                if isinstance(page, dict):
+                    continuation_token = page.get("NextContinuationToken")
+                    is_truncated = page.get("IsTruncated", False)
+                    # If no continuation token and not truncated, we're done
+                    if not continuation_token and not is_truncated:
+                        # Last page - will break after processing this page
+                        pass
+                else:
+                    is_truncated = False
+                    continuation_token = None
 
                 if isinstance(page, dict) and "Contents" in page:
                     for obj in page["Contents"]:
@@ -4647,31 +4728,27 @@ def load_new_calls_only():
                     0 if page_file_count > 0 else (consecutive_empty + 1)
                 )
 
-                # Check if pagination is truncated (though paginator should handle this automatically)
-                if "IsTruncated" in page:
-                    is_truncated = page["IsTruncated"]
+                # Early exit: if 3+ consecutive empty pages and IsTruncated=False, we're done
+                if (
+                    consecutive_empty >= 3
+                    and total_s3_files > 0
+                    and not is_truncated
+                ):
+                    logger.info(
+                        f" Early exit: Found all CSV files after {page_count} pages (last 3 pages were empty)"
+                    )
+                    break
 
-                    # Early exit: if 3+ consecutive empty pages and IsTruncated=False, we're done
-                    if (
-                        consecutive_empty >= 3
-                        and total_s3_files > 0
-                        and not is_truncated
-                    ):
+                # Log IsTruncated status for pages with CSV files or every 10th page
+                if page_file_count > 0 or page_count % 10 == 0 or is_truncated:
+                    if page_file_count > 0:
                         logger.info(
-                            f" Early exit: Found all CSV files after {page_count} pages (last 3 pages were empty)"
+                            f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
                         )
-                        break
-
-                    # Log IsTruncated status for pages with CSV files or every 10th page
-                    if page_file_count > 0 or page_count % 10 == 0 or is_truncated:
-                        if page_file_count > 0:
-                            logger.info(
-                                f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
-                            )
-                        else:
-                            logger.debug(
-                                f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
-                            )
+                    else:
+                        logger.debug(
+                            f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
+                        )
 
                 # Log pagination progress every 10 pages (only if CSV files found so far)
                 if page_count % 10 == 0:
@@ -4683,6 +4760,11 @@ def load_new_calls_only():
                         logger.debug(
                             f" Processing page {page_count}, no CSV files found yet..."
                         )
+                
+                # Check if we should continue pagination
+                if not continuation_token and not is_truncated:
+                    # No more pages - break
+                    break
 
         # Cache the CSV file list for next time (skip pagination if cache is fresh)
         if not use_cached_keys and all_s3_keys:
