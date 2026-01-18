@@ -4609,13 +4609,15 @@ def load_new_calls_only():
             is_truncated = False
             consecutive_empty = 0  # Track consecutive empty pages for early exit
             continuation_token = None
-            pagination_start_time = time.time()
+            # CRITICAL: Use time module directly (imported at module level)
+            import time as time_module
+            pagination_start_time = time_module.time()
             max_pagination_time = 300  # 5 minutes max for pagination
             max_page_time = 30  # 30 seconds max per page
 
             while True:
                 # Check overall pagination timeout
-                elapsed_time = time.time() - pagination_start_time
+                elapsed_time = time_module.time() - pagination_start_time
                 if elapsed_time > max_pagination_time:
                     logger.warning(
                         f"Pagination timeout after {elapsed_time:.1f}s - stopping at page {page_count}"
@@ -4626,7 +4628,7 @@ def load_new_calls_only():
                     break
 
                 # Fetch next page with timeout protection
-                page_start_time = time.time()
+                page_start_time = time_module.time()
                 page = None
                 page_error = None
                 
@@ -4678,7 +4680,7 @@ def load_new_calls_only():
                     break
                 page_count += 1
                 page_file_count = 0
-                page_fetch_time = time.time() - page_start_time
+                page_fetch_time = time_module.time() - page_start_time
                 
                 if page_fetch_time > 10:  # Log slow pages
                     logger.debug(f"Page {page_count} fetch took {page_fetch_time:.1f}s")
