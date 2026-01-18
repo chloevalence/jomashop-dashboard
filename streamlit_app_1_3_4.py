@@ -1695,65 +1695,91 @@ def cleanup_pdf_sourced_calls():
             s3_client, s3_bucket = get_s3_client_and_bucket()
             if s3_client and s3_bucket:
                 try:
-                    # CRITICAL FIX: Add timeout protection to prevent hangs
-                    # Use threading timeout to prevent S3 operations from hanging indefinitely
-                    import threading
-                    import queue
-
-                    result_queue = queue.Queue()
-                    exception_queue = queue.Queue()
-
-                    def s3_operation():
-                        """Perform S3 get_object operation in a separate thread"""
-                        try:
-                            response = s3_client.get_object(
-                                Bucket=s3_bucket, Key=S3_CACHE_KEY
-                            )
-                            body = response["Body"]
-                            chunks = []
-                            max_size = (
-                                10 * 1024 * 1024
-                            )  # Limit to 10MB to prevent memory issues
-                            total_size = 0
-                            for chunk in body.iter_chunks(chunk_size=8192):
-                                total_size += len(chunk)
-                                if total_size > max_size:
-                                    logger.warning(
-                                        "S3 cache file too large during cleanup, truncating"
-                                    )
-                                    break
-                                chunks.append(chunk)
-                            cached_data = json.loads(b"".join(chunks).decode("utf-8"))
-                            result_queue.put(cached_data)
-                        except Exception as e:
-                            exception_queue.put(e)
-
-                    # Start S3 operation in a thread with 5 second timeout
-                    s3_thread = threading.Thread(target=s3_operation, daemon=True)
-                    s3_thread.start()
-                    s3_thread.join(timeout=5)  # 5 second timeout
-
-                    if s3_thread.is_alive():
-                        logger.warning(
-                            "S3 get_object timed out during cleanup, skipping S3 cache"
+                    # CRITICAL FIX: Check file size FIRST before attempting to load
+                    # This prevents corrupting the cache by truncating mid-JSON
+                    # If file is too large, skip S3 cache and use disk cache only
+                    max_size = 10 * 1024 * 1024  # 10MB limit to prevent memory issues
+                    try:
+                        head_response = s3_client.head_object(
+                            Bucket=s3_bucket, Key=S3_CACHE_KEY
                         )
-                    elif not exception_queue.empty():
-                        # Check if it's a ClientError we should handle
-                        e = exception_queue.get()
-                        if isinstance(e, ClientError):
-                            error_code = e.response.get("Error", {}).get("Code", "")
-                            if error_code != "NoSuchKey":
-                                logger.warning(
-                                    f"Could not load S3 cache for cleanup: {e}"
-                                )
+                        file_size = head_response.get("ContentLength", 0)
+                        
+                        if file_size > max_size:
+                            logger.info(
+                                f"S3 cache file too large ({file_size / 1024 / 1024:.1f}MB > {max_size / 1024 / 1024:.1f}MB) - skipping S3 cache load for cleanup to prevent corruption. Using disk cache only."
+                            )
+                            # Skip S3 load, will use disk cache or proceed without cache
+                            call_data = []
+                        elif file_size == 0:
+                            logger.debug("S3 cache file is empty, skipping")
+                            call_data = []
                         else:
-                            logger.warning(f"Error loading S3 cache for cleanup: {e}")
-                    elif not result_queue.empty():
-                        # Successfully loaded data
-                        cached_data = result_queue.get()
-                        call_data = cached_data.get("call_data", [])
-                        errors = cached_data.get("errors", [])
-                        cache_timestamp = cached_data.get("timestamp")
+                            # File size is acceptable, proceed with load
+                            # CRITICAL FIX: Add timeout protection to prevent hangs
+                            # Use threading timeout to prevent S3 operations from hanging indefinitely
+                            import threading
+                            import queue
+
+                            result_queue = queue.Queue()
+                            exception_queue = queue.Queue()
+
+                            def s3_operation():
+                                """Perform S3 get_object operation in a separate thread"""
+                                try:
+                                    response = s3_client.get_object(
+                                        Bucket=s3_bucket, Key=S3_CACHE_KEY
+                                    )
+                                    body = response["Body"]
+                                    # CRITICAL: Load ENTIRE file, don't truncate mid-JSON
+                                    # We already checked size, so it's safe to load completely
+                                    chunks = []
+                                    for chunk in body.iter_chunks(chunk_size=8192):
+                                        chunks.append(chunk)
+                                    # Load complete file - never truncate JSON
+                                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                                    result_queue.put(cached_data)
+                                except Exception as e:
+                                    exception_queue.put(e)
+
+                            # Start S3 operation in a thread with 5 second timeout
+                            s3_thread = threading.Thread(target=s3_operation, daemon=True)
+                            s3_thread.start()
+                            s3_thread.join(timeout=5)  # 5 second timeout
+
+                            if s3_thread.is_alive():
+                                logger.warning(
+                                    "S3 get_object timed out during cleanup, skipping S3 cache"
+                                )
+                            elif not exception_queue.empty():
+                                # Check if it's a ClientError we should handle
+                                e = exception_queue.get()
+                                if isinstance(e, ClientError):
+                                    error_code = e.response.get("Error", {}).get("Code", "")
+                                    if error_code != "NoSuchKey":
+                                        logger.warning(
+                                            f"Could not load S3 cache for cleanup: {e}"
+                                        )
+                                else:
+                                    logger.warning(f"Error loading S3 cache for cleanup: {e}")
+                            elif not result_queue.empty():
+                                # Successfully loaded data
+                                cached_data = result_queue.get()
+                                call_data = cached_data.get("call_data", [])
+                                errors = cached_data.get("errors", [])
+                                cache_timestamp = cached_data.get("timestamp")
+                    except ClientError as head_error:
+                        error_code = head_error.response.get("Error", {}).get("Code", "")
+                        if error_code == "NoSuchKey":
+                            # File doesn't exist, proceed without cache
+                            logger.debug("S3 cache file does not exist")
+                            call_data = []
+                        else:
+                            logger.warning(
+                                f"Could not check S3 cache file size for cleanup: {head_error}"
+                            )
+                            # If we can't check size, skip S3 load to be safe
+                            call_data = []
                 except ClientError as e:
                     error_code = e.response.get("Error", {}).get("Code", "")
                     if error_code != "NoSuchKey":
