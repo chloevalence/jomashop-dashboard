@@ -398,6 +398,42 @@ except (RuntimeError, AttributeError) as e:
     # Continue anyway - page config is best-effort
 
 
+# Heartbeat mechanism to prevent health check timeouts during long rendering
+_heartbeat_counter = {"count": 0, "last_heartbeat": time.time()}
+_heartbeat_placeholder = None
+_HEARTBEAT_INTERVAL = 10  # Send heartbeat every 10 seconds during long operations
+
+
+def send_heartbeat(force=False):
+    """Send a heartbeat signal to Streamlit to prevent health check timeouts.
+
+    This should be called periodically during long operations to keep the
+    Streamlit server alive and prevent health check timeouts.
+
+    Args:
+        force: If True, always send heartbeat. If False, only send if enough
+               time has passed since last heartbeat (to avoid excessive calls).
+    """
+    global _heartbeat_placeholder
+    try:
+        current_time = time.time()
+        time_since_last = current_time - _heartbeat_counter["last_heartbeat"]
+
+        # Only send heartbeat if forced or if enough time has passed
+        if force or time_since_last >= _HEARTBEAT_INTERVAL:
+            _heartbeat_counter["count"] += 1
+            _heartbeat_counter["last_heartbeat"] = current_time
+            # Use a lightweight Streamlit operation to send heartbeat
+            # This keeps the connection alive without visible UI changes
+            if _heartbeat_placeholder is None:
+                _heartbeat_placeholder = st.empty()
+            # Update the placeholder (even if empty) to send a heartbeat
+            _heartbeat_placeholder.empty()
+    except Exception:
+        # Silently fail - heartbeat is best-effort
+        pass
+
+
 def st_pyplot_safe(fig, **kwargs):
     """Display matplotlib figure in Streamlit and automatically close it to prevent memory leaks.
 
@@ -405,6 +441,9 @@ def st_pyplot_safe(fig, **kwargs):
         fig: matplotlib figure object
         **kwargs: Additional arguments passed to st.pyplot()
     """
+    # Send heartbeat before rendering to prevent health check timeout
+    # Force heartbeat to ensure we send one before each plot
+    send_heartbeat(force=True)
     try:
         st.pyplot(fig, **kwargs)
     except Exception as e:
@@ -9489,6 +9528,7 @@ if search_text:
 
 # Apply enhanced rubric code filter - OPTIMIZED: Use vectorized apply instead of iterrows()
 if selected_rubric_codes:
+    send_heartbeat()  # Send heartbeat before potentially long operation
     with st.spinner("Filtering by rubric codes..."):
 
         def matches_rubric_filter(rubric_details):
@@ -9654,6 +9694,8 @@ if filtered_df.empty:
     st.stop()
 
 # --- Main Dashboard ---
+# Send heartbeat before main UI rendering to prevent health check timeout
+send_heartbeat(force=True)
 if user_agent_id:
     st.title(f" My QA Performance Dashboard - {user_agent_id}")
 else:
