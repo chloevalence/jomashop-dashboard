@@ -459,9 +459,13 @@ def st_pyplot_safe(fig, **kwargs):
             # when filters change and the page reruns
             logger.debug(f"Ignoring stale matplotlib figure reference: {error_str}")
         else:
-            # Re-raise other exceptions
+            # Log error but don't crash - show user-friendly error instead
             logger.warning(f"Error displaying matplotlib figure: {e}")
-            raise
+            try:
+                st.error(f"Error displaying chart: {str(e)}")
+            except Exception:
+                # If Streamlit is not available, just log
+                pass
     finally:
         plt.close(fig)
         # Close all remaining open figures to prevent accumulation
@@ -474,10 +478,10 @@ def st_pyplot_safe(fig, **kwargs):
 
 def get_df_hash(df):
     """Get hash of DataFrame for cache key.
-    
+
     Args:
         df: pandas DataFrame
-        
+
     Returns:
         str: Hash string for use as cache key
     """
@@ -504,12 +508,12 @@ def get_df_hash(df):
 
 def get_cached_computation(cache_key, compute_func, *args, **kwargs):
     """Get cached result or compute and cache it.
-    
+
     Args:
         cache_key: Unique key for this computation
         compute_func: Function to compute the result if not cached
         *args, **kwargs: Arguments to pass to compute_func
-        
+
     Returns:
         Result from compute_func (cached or newly computed)
     """
@@ -518,7 +522,7 @@ def get_cached_computation(cache_key, compute_func, *args, **kwargs):
         # Check if Streamlit is ready
         if not hasattr(st, "session_state"):
             return compute_func(*args, **kwargs)
-        
+
         # Try to access session_state to verify it's available
         _ = st.session_state
     except (RuntimeError, AttributeError, NameError):
@@ -527,7 +531,7 @@ def get_cached_computation(cache_key, compute_func, *args, **kwargs):
     except Exception:
         # Any other error accessing Streamlit, compute without caching
         return compute_func(*args, **kwargs)
-    
+
     # Streamlit is ready, try to use caching
     try:
         if cache_key not in st.session_state:
@@ -551,37 +555,47 @@ try:
     # Initialize S3 client from secrets (but don't test connection yet - do that after login)
     logger.debug("Initializing S3 client from secrets...")
     try:
-    # Check if secrets are available
+        # Check if secrets are available
         if "s3" not in st.secrets:
             raise KeyError("s3 section not found in secrets")
 
+        # CRITICAL FIX: Validate all required S3 secrets exist before accessing
+        s3_secrets = st.secrets["s3"]
+        required_keys = ["aws_access_key_id", "aws_secret_access_key", "bucket_name"]
+        missing_keys = [
+            key for key in required_keys if key not in s3_secrets or not s3_secrets[key]
+        ]
+
+        if missing_keys:
+            raise KeyError(f"Missing required S3 secrets: {missing_keys}")
+
         s3_client = boto3.client(
-        "s3",
-        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-        region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            "s3",
+            aws_access_key_id=s3_secrets["aws_access_key_id"],
+            aws_secret_access_key=s3_secrets["aws_secret_access_key"],
+            region_name=s3_secrets.get("region_name", "us-east-1"),
         )
-        s3_bucket_name = st.secrets["s3"]["bucket_name"]
-        s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
+        s3_bucket_name = s3_secrets["bucket_name"]
+        s3_prefix = s3_secrets.get("prefix", "")  # Optional prefix/folder path
         logger.debug(
-        f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}"
+            f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}"
         )
         initial_status.empty()  # Clear initial status once S3 client is ready
     except KeyError as e:
         logger.error(f"Missing S3 configuration in secrets: {e}")
         initial_status.empty()
-    st.error(f" Missing S3 configuration in secrets: {e}")
-    st.error(
-        "Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set."
-    )
-    st.error(f"**Current working directory:** `{os.getcwd()}`")
-    st.error(
-        "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
-    )
-    st.error(
-        f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
-    )
-    st.stop()
+        st.error(f" Missing S3 configuration in secrets: {e}")
+        st.error(
+            "Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set."
+        )
+        st.error(f"**Current working directory:** `{os.getcwd()}`")
+        st.error(
+            "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
+        )
+        st.error(
+            f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
+        )
+        st.stop()
 except Exception as e:
     logger.exception(f"Error initializing S3 client: {e}")
     initial_status.empty()
@@ -1295,14 +1309,29 @@ def load_all_calls_internal(max_files=None):
         # Configure S3 client with timeout
         import botocore.config
 
+        # CRITICAL FIX: Validate S3 secrets before accessing
+        if "s3" not in st.secrets:
+            logger.error("S3 secrets not configured")
+            return [], ["S3 secrets not configured in .streamlit/secrets.toml"]
+
+        s3_secrets = st.secrets["s3"]
+        required_keys = ["aws_access_key_id", "aws_secret_access_key"]
+        missing_keys = [
+            key for key in required_keys if key not in s3_secrets or not s3_secrets[key]
+        ]
+
+        if missing_keys:
+            logger.error(f"Missing required S3 secrets: {missing_keys}")
+            return [], [f"Missing required S3 secrets: {missing_keys}"]
+
         config = botocore.config.Config(
             connect_timeout=10, read_timeout=30, retries={"max_attempts": 2}
         )
         s3_client_with_timeout = boto3.client(
             "s3",
-            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-            region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            aws_access_key_id=s3_secrets["aws_access_key_id"],
+            aws_secret_access_key=s3_secrets["aws_secret_access_key"],
+            region_name=s3_secrets.get("region_name", "us-east-1"),
             config=config,
         )
 
@@ -1418,13 +1447,25 @@ def get_s3_client_and_bucket():
 
         if "s3" not in st.secrets:
             return None, None
+
+        # CRITICAL FIX: Validate all required S3 secrets exist before accessing
+        s3_secrets = st.secrets["s3"]
+        required_keys = ["aws_access_key_id", "aws_secret_access_key", "bucket_name"]
+        missing_keys = [
+            key for key in required_keys if key not in s3_secrets or not s3_secrets[key]
+        ]
+
+        if missing_keys:
+            logger.warning(f"Missing required S3 secrets: {missing_keys}")
+            return None, None
+
         s3_client = boto3.client(
             "s3",
-            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-            region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            aws_access_key_id=s3_secrets["aws_access_key_id"],
+            aws_secret_access_key=s3_secrets["aws_secret_access_key"],
+            region_name=s3_secrets.get("region_name", "us-east-1"),
         )
-        s3_bucket_name = st.secrets["s3"]["bucket_name"]
+        s3_bucket_name = s3_secrets["bucket_name"]
         return s3_client, s3_bucket_name
     except Exception as e:
         logger.debug(f"Could not get S3 client: {e}")
@@ -1829,6 +1870,8 @@ def cleanup_pdf_sourced_calls():
 
                             def s3_operation():
                                 """Perform S3 get_object operation in a separate thread"""
+                                response = None
+                                body = None
                                 try:
                                     response = s3_client.get_object(
                                         Bucket=s3_bucket, Key=S3_CACHE_KEY
@@ -1846,6 +1889,21 @@ def cleanup_pdf_sourced_calls():
                                     result_queue.put(cached_data)
                                 except Exception as e:
                                     exception_queue.put(e)
+                                finally:
+                                    # CRITICAL FIX: Ensure S3 response body is closed to prevent resource leaks
+                                    if body is not None:
+                                        try:
+                                            body.close()
+                                        except Exception:
+                                            pass
+                                    if response is not None:
+                                        try:
+                                            # Ensure response is fully consumed/closed
+                                            response.get("Body", {}).close() if hasattr(
+                                                response.get("Body"), "close"
+                                            ) else None
+                                        except Exception:
+                                            pass
 
                             # Start S3 operation in a thread with 5 second timeout
                             s3_thread = threading.Thread(
@@ -2576,14 +2634,35 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
             if partial:  # Only check if saving PARTIAL cache
                 try:
                     # Create S3 client with timeout for checking existing cache
+                    # CRITICAL FIX: Validate S3 secrets before accessing
+                    if "s3" not in st.secrets:
+                        logger.warning(
+                            "S3 secrets not configured, skipping S3 cache check"
+                        )
+                        return
+
+                    s3_secrets = st.secrets["s3"]
+                    required_keys = ["aws_access_key_id", "aws_secret_access_key"]
+                    missing_keys = [
+                        key
+                        for key in required_keys
+                        if key not in s3_secrets or not s3_secrets[key]
+                    ]
+
+                    if missing_keys:
+                        logger.warning(
+                            f"Missing required S3 secrets: {missing_keys}, skipping S3 cache check"
+                        )
+                        return
+
                     config = botocore.config.Config(
                         connect_timeout=10, read_timeout=30, retries={"max_attempts": 2}
                     )
                     s3_check_client = boto3.client(
                         "s3",
-                        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-                        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-                        region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+                        aws_access_key_id=s3_secrets["aws_access_key_id"],
+                        aws_secret_access_key=s3_secrets["aws_secret_access_key"],
+                        region_name=s3_secrets.get("region_name", "us-east-1"),
                         config=config,
                     )
 
@@ -2610,10 +2689,10 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                             # Continue to save below - don't return early
                         else:
                             logger.warning(
-                            f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
-                            f"with PARTIAL cache ({len(call_data)} calls). "
-                            f"Complete cache preserved. Local cache saved successfully."
-                        )
+                                f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
+                                f"with PARTIAL cache ({len(call_data)} calls). "
+                                f"Complete cache preserved. Local cache saved successfully."
+                            )
                         return  # Don't overwrite COMPLETE cache with PARTIAL
                     else:
                         # Both are PARTIAL - check progress
@@ -2757,7 +2836,7 @@ def load_all_calls_cached(cache_version=0):
                     )
                     + "\n"
                 )
-        except:
+        except Exception:
             pass
         # #endregion
 
@@ -2794,8 +2873,8 @@ def load_all_calls_cached(cache_version=0):
                             }
                         )
                         + "\n"
-            )
-            except:
+                    )
+            except Exception:
                 pass
             # #endregion
             # Clear the flag and start a new load
@@ -2855,7 +2934,7 @@ def load_all_calls_cached(cache_version=0):
                             )
                             + "\n"
                         )
-                except:
+                except Exception:
                     pass
                 # #endregion
                 if not flag_still_set:
@@ -2890,7 +2969,7 @@ def load_all_calls_cached(cache_version=0):
                                 )
                                 + "\n"
                             )
-                    except:
+                    except Exception:
                         pass
                     # #endregion
                     # Try disk cache
@@ -2923,7 +3002,7 @@ def load_all_calls_cached(cache_version=0):
                                     )
                                     + "\n"
                                 )
-                        except:
+                        except Exception:
                             pass
                         # #endregion
                         if disk_result and disk_result[0] and len(disk_result[0]) > 0:
@@ -2974,10 +3053,6 @@ def load_all_calls_cached(cache_version=0):
             try:
                 # Force cache refresh by using a dummy cache key
                 # The actual cache will be used if available
-                from streamlit.runtime.caching import cache_data_api
-
-                # Try to get from cache using the function's cache key
-                cache_key = f"load_all_calls_cached_{cache_version}"
                 if hasattr(st.session_state, "_cached_call_data"):
                     cached_data = st.session_state.get("_cached_call_data")
                     if cached_data and len(cached_data) > 0:
@@ -3018,12 +3093,12 @@ def load_all_calls_cached(cache_version=0):
                         and isinstance(s3_cached_data[0], list)
                         and len(s3_cached_data[0]) > 0
                     ):
-                            migrated = migrate_old_cache_format(s3_cached_data[0])
-                            logger.info(
-                                f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
-                            )
-                            return migrated, s3_cached_data[1] if len(
-                                s3_cached_data
+                        migrated = migrate_old_cache_format(s3_cached_data[0])
+                        logger.info(
+                            f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
+                        )
+                        return migrated, s3_cached_data[1] if len(
+                            s3_cached_data
                         ) > 1 and s3_cached_data[1] is not None else []
             except Exception as e:
                 logger.debug(
@@ -3063,7 +3138,7 @@ def load_all_calls_cached(cache_version=0):
                 )
                 + "\n"
             )
-    except:
+    except Exception:
         pass
     # #endregion
     st.session_state[load_in_progress_key] = True
@@ -3090,11 +3165,11 @@ def load_all_calls_cached(cache_version=0):
                             logger.info(f" Deleted disk cache file: {CACHE_FILE}")
                         else:
                             logger.warning(
-                                f" Disk cache file still exists after deletion attempt"
+                                " Disk cache file still exists after deletion attempt"
                             )
             except LockTimeoutError:
                 logger.warning(
-                    f" Timeout deleting disk cache (file may be locked by another process)"
+                    " Timeout deleting disk cache (file may be locked by another process)"
                 )
             except Exception as e:
                 logger.warning(f" Could not delete disk cache: {e}")
@@ -3105,7 +3180,7 @@ def load_all_calls_cached(cache_version=0):
             s3_cache_deleted = False
             logger.info(
                 " S3 cache preserved (not deleted) - new data will be merged with existing cache"
-                        )
+            )
 
             # Clear Streamlit cache
             streamlit_cache_cleared = False
@@ -3321,7 +3396,7 @@ def load_all_calls_cached(cache_version=0):
                                     )
                                     + "\n"
                                 )
-                        except:
+                        except Exception:
                             pass
                         # #endregion
                         # CRITICAL: Check file size first to decide loading strategy
@@ -3358,7 +3433,7 @@ def load_all_calls_cached(cache_version=0):
                                     )
                                     + "\n"
                                 )
-                        except:
+                        except Exception:
                             pass
                         # #endregion
 
@@ -3400,7 +3475,7 @@ def load_all_calls_cached(cache_version=0):
                                             )
                                             + "\n"
                                         )
-                                except:
+                                except Exception:
                                     pass
                                 # #endregion
                                 for chunk in body.iter_chunks(chunk_size=chunk_size):
@@ -3438,7 +3513,7 @@ def load_all_calls_cached(cache_version=0):
                                                     )
                                                     + "\n"
                                                 )
-                                        except:
+                                        except Exception:
                                             pass
                                         # #endregion
                             except Exception as stream_error:
@@ -3477,7 +3552,7 @@ def load_all_calls_cached(cache_version=0):
                                             )
                                             + "\n"
                                         )
-                                except:
+                                except Exception:
                                     pass
                                 # #endregion
                                 s3_cached_data = json.loads(
@@ -3523,7 +3598,7 @@ def load_all_calls_cached(cache_version=0):
                                             )
                                             + "\n"
                                         )
-                                except:
+                                except Exception:
                                     pass
                                 # #endregion
                                 logger.info(
@@ -4137,7 +4212,7 @@ def load_all_calls_cached(cache_version=0):
                         )
                         + "\n"
                     )
-            except:
+            except Exception:
                 pass
             # #endregion
             if load_in_progress_key in st.session_state:
@@ -4171,7 +4246,7 @@ def load_all_calls_cached(cache_version=0):
                         )
                         + "\n"
                     )
-            except:
+            except Exception:
                 pass
             # #endregion
             elapsed = time.time() - start_time
@@ -4213,7 +4288,7 @@ def load_all_calls_cached(cache_version=0):
                             )
                             + "\n"
                         )
-                except:
+                except Exception:
                     pass
                 # #endregion
                 if load_in_progress_key in st.session_state:
@@ -4242,7 +4317,7 @@ def load_all_calls_cached(cache_version=0):
                             )
                             + "\n"
                         )
-                except:
+                except Exception:
                     pass
                 # #endregion
             except Exception as clear_error:
@@ -4268,7 +4343,7 @@ def load_all_calls_cached(cache_version=0):
                             )
                             + "\n"
                         )
-                except:
+                except Exception:
                     pass
                 # #endregion
                 logger.warning(f"Failed to clear load progress flags: {clear_error}")
@@ -4649,7 +4724,7 @@ def predict_future_scores_simple(df, days_ahead=7):
         }
 
     # Check if all scores are the same
-    if scores.nunique() == 1:
+    if scores.nunique() == 1 and len(scores) > 0:
         # All scores are the same - return flat forecast
         avg_score = scores.iloc[0]
         return {
@@ -4883,8 +4958,13 @@ def classify_trajectory(df, agent=None):
         trajectory = "stable"
 
     # Projected score if trend continues
-    last_score = scores.iloc[-1]
-    projected_score = last_score + (slope * 7)  # Project 7 days ahead
+    if len(scores) > 0:
+        last_score = scores.iloc[-1]
+        projected_score = last_score + (slope * 7)  # Project 7 days ahead
+    else:
+        # Fallback if scores is empty (shouldn't happen due to earlier check, but defensive)
+        last_score = 0
+        projected_score = 0
 
     return {
         "trajectory": trajectory,
@@ -5094,7 +5174,6 @@ def load_new_calls_only():
 
         # CRITICAL OPTIMIZATION: Avoid reloading large cache files (>100MB) multiple times
         # Extract metadata from file header without loading entire JSON
-        cache_metadata = {}
         last_save_time = 0
 
         # For large files (>100MB), skip S3 reloads and extract metadata from header only
@@ -5263,7 +5342,7 @@ def load_new_calls_only():
                 )
             else:
                 logger.info(
-                " No disk cache found - existing_calls is empty - all files will be treated as new"
+                    " No disk cache found - existing_calls is empty - all files will be treated as new"
                 )
 
         # Also check session state (for files processed in current session)
@@ -5312,7 +5391,7 @@ def load_new_calls_only():
             except Exception as cache_check_error:
                 logger.debug(
                     f" Could not check cache validity: {cache_check_error}, will re-paginate"
-        )
+                )
 
         # Find new CSV files (not in processed_keys)
         new_csv_keys = []
@@ -5410,7 +5489,12 @@ def load_new_calls_only():
                         break
                     elif not error_queue.empty():
                         page_error = error_queue.get()
-                        raise page_error
+                        # Log error instead of crashing - allow pagination to continue
+                        logger.error(
+                            f"Error fetching page {page_count + 1}: {page_error}"
+                        )
+                        logger.warning("Continuing pagination despite error")
+                        # Don't raise - allow retry or skip this page
                     elif not page_queue.empty():
                         page = page_queue.get()
                     else:
@@ -5857,8 +5941,8 @@ def load_new_calls_only():
 
             # CRITICAL FIX: Log ALL batches at INFO level to diagnose missing batches
             logger.info(
-                    f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
-                )
+                f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
+            )
 
             # CRITICAL FIX: Wrap entire batch processing in try/except to prevent crashes
             logger.debug(f" Starting batch {batch_num}/{total_batches} processing...")
@@ -5873,126 +5957,127 @@ def load_new_calls_only():
                 try:
                     with ThreadPoolExecutor(
                         max_workers=5
-                        ) as executor:  # Reduced from 10 to lower memory pressure
-                            try:
-                                future_to_key = {
-                                    executor.submit(process_csv, item): item["key"]
-                                    for item in batch_keys
-                                }
-                                logger.debug(
-                                    f" Submitted {len(future_to_key)} CSV files to ThreadPoolExecutor"
-                                )
-                            except Exception as submit_error:
-                                logger.error(
+                    ) as executor:  # Reduced from 10 to lower memory pressure
+                        try:
+                            future_to_key = {
+                                executor.submit(process_csv, item): item["key"]
+                                for item in batch_keys
+                            }
+                            logger.debug(
+                                f" Submitted {len(future_to_key)} CSV files to ThreadPoolExecutor"
+                            )
+                        except Exception as submit_error:
+                            logger.error(
                                 f" CRITICAL: Failed to submit tasks to ThreadPoolExecutor: {submit_error}"
-                                )
-                                # Continue with empty future_to_key - will skip processing this batch
-                                future_to_key = {}
+                            )
+                            # Continue with empty future_to_key - will skip processing this batch
+                            future_to_key = {}
 
-                            # Process completed futures with timeout protection
-                            completed_count = 0
-                            try:
-                                for future in as_completed(future_to_key):
-                                    try:
-                                        csv_calls_list, error = future.result(
+                        # Process completed futures with timeout protection
+                        try:
+                            for future in as_completed(future_to_key):
+                                try:
+                                    csv_calls_list, error = future.result(
                                         timeout=120
                                     )  # 120 second timeout per CSV file (may contain many rows)
-                                    except Exception as e:
-                                        # Handle both TimeoutError and concurrent.futures.TimeoutError
-                                        from concurrent.futures import (
-                                            TimeoutError as FuturesTimeoutError,
-                                        )
+                                    # Successfully processed - add to results
+                                    if csv_calls_list:
+                                        batch_calls.extend(csv_calls_list)
+                                    if error:
+                                        errors.append(error)
+                                    processed_count += 1
+                                except Exception as e:
+                                    # Handle both TimeoutError and concurrent.futures.TimeoutError
+                                    from concurrent.futures import (
+                                        TimeoutError as FuturesTimeoutError,
+                                    )
 
-                                        if isinstance(
-                                            e, (TimeoutError, FuturesTimeoutError)
-                                            ):
-                                            key = future_to_key.get(future, "Unknown")
-                                            logger.error(
+                                    key = future_to_key.get(future, "Unknown")
+                                    if isinstance(
+                                        e, (TimeoutError, FuturesTimeoutError)
+                                    ):
+                                        logger.error(
                                             f" Timeout processing CSV {key}: {e}"
-                                            )
+                                        )
                                         errors.append(
                                             f"{key}: Processing timeout (120s)"
                                         )
-                                        processed_count += 1
-                                        continue
                                     else:
                                         # Unexpected error in future execution
                                         logger.error(
-                                            f" Unexpected error in future: {e}"
+                                            f" Unexpected error processing CSV {key}: {e}"
                                         )
-                                        errors.append(f"Unknown: {str(e)}")
-                                        processed_count += 1
-                                        continue
-
+                                        errors.append(f"{key}: {str(e)}")
                                     processed_count += 1
+                                    continue
 
-                                    if csv_calls_list:
-                                        # Extend with list of calls from CSV
-                                        duplicate_count = 0
-                                        for parsed_data in csv_calls_list:
-                                            # Check if this call is already in cache BEFORE adding
-                                            # Use consistent key extraction logic
-                                            call_key = extract_cache_key(parsed_data)
+                                if csv_calls_list:
+                                    # Extend with list of calls from CSV
+                                    duplicate_count = 0
+                                    for parsed_data in csv_calls_list:
+                                        # Check if this call is already in cache BEFORE adding
+                                        # Use consistent key extraction logic
+                                        call_key = extract_cache_key(parsed_data)
 
-                                            if call_key and call_key in existing_cache_keys:
-                                                # Already in cache - skip this call
-                                                duplicate_count += 1
-                                                continue
+                                        if call_key and call_key in existing_cache_keys:
+                                            # Already in cache - skip this call
+                                            duplicate_count += 1
+                                            continue
 
-                                            # Not in cache - add to new calls
-                                            new_calls.append(parsed_data)
-                                            batch_calls.append(
-                                                parsed_data
-                                            )  # Track for this batch
+                                        # Not in cache - add to new calls
+                                        new_calls.append(parsed_data)
+                                        batch_calls.append(
+                                            parsed_data
+                                        )  # Track for this batch
 
-                                        if duplicate_count > 0:
-                                            logger.debug(
-                                                f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
-                                            )
-                                        elif error:
-                                            errors.append(error)
-
-                                    # Log progress every 100 files (unconditionally for each processed file)
-                                    if processed_count % 100 == 0:
-                                        elapsed = time.time() - processing_start_time
-                                        rate = (
-                                        processed_count / elapsed if elapsed > 0 else 0
+                                    if duplicate_count > 0:
+                                        logger.debug(
+                                            f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
                                         )
-                                        remaining = (
+                                    elif error:
+                                        errors.append(error)
+
+                                # Log progress every 100 files (unconditionally for each processed file)
+                                if processed_count % 100 == 0:
+                                    elapsed = time.time() - processing_start_time
+                                    rate = (
+                                        processed_count / elapsed if elapsed > 0 else 0
+                                    )
+                                    remaining = (
                                         (total_new - processed_count) / rate
                                         if rate > 0
                                         else 0
-                                        )
-                                        logger.info(
+                                    )
+                                    logger.info(
                                         f" Refresh Progress: {processed_count}/{total_new} files processed ({processed_count * 100 // total_new if total_new > 0 else 0}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining / 60:.1f} min"
+                                    )
+
+                                    # Periodic memory check every 100 files
+                                    try:
+                                        import psutil
+                                        import os
+
+                                        process = psutil.Process(os.getpid())
+                                        memory_percent = process.memory_percent()
+                                        memory_mb = (
+                                            process.memory_info().rss / 1024 / 1024
                                         )
-
-                                        # Periodic memory check every 100 files
-                                        try:
-                                            import psutil
-                                            import os
-
-                                            process = psutil.Process(os.getpid())
-                                            memory_percent = process.memory_percent()
-                                            memory_mb = (
-                                                process.memory_info().rss / 1024 / 1024
+                                        if memory_percent > 85:
+                                            logger.warning(
+                                                f" High memory usage: {memory_percent:.1f}% ({memory_mb:.0f} MB) - consider reducing batch size if issues occur"
                                             )
-                                            if memory_percent > 85:
-                                                logger.warning(
-                                                    f" High memory usage: {memory_percent:.1f}% ({memory_mb:.0f} MB) - consider reducing batch size if issues occur"
-                                                )
-                                        except Exception:
-                                            pass  # Ignore memory check errors
-                            except Exception as executor_error:
-                                logger.error(
-                                    f" CRITICAL: Error in ThreadPoolExecutor loop: {executor_error}"
-                                )
-                                import traceback
+                                    except Exception:
+                                        pass  # Ignore memory check errors
+                        except Exception as executor_error:
+                            logger.error(
+                                f" CRITICAL: Error in ThreadPoolExecutor loop: {executor_error}"
+                            )
+                            import traceback
 
-                                logger.error(
-                                    f" Executor error traceback: {traceback.format_exc()}"
-                                )
-                                # Continue processing - some files may have completed
+                            logger.error(
+                                f" Executor error traceback: {traceback.format_exc()}"
+                            )
+                            # Continue processing - some files may have completed
                 except Exception as executor_setup_error:
                     logger.error(
                         f" CRITICAL: Failed to create ThreadPoolExecutor: {executor_setup_error}"
@@ -6092,13 +6177,13 @@ def load_new_calls_only():
                                 )
                             batches_since_save = 0  # Reset counter
                             logger.info(
-                            f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
+                                f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
                             )
 
                             # SAFE MEMORY OPTIMIZATION: Clear old batches after successful save, keep last 2 saves as buffer
                             # This reduces memory while maintaining safety buffer
                             batches_to_keep = (
-                            SAVE_INTERVAL_BATCHES * 2
+                                SAVE_INTERVAL_BATCHES * 2
                             )  # Keep last 2 saves worth
                             calls_per_save = batches_to_keep * BATCH_SIZE
 
@@ -6333,8 +6418,8 @@ else:
                 or "frontend assets" in error_msg
                 or "network latency" in error_msg
                 or "proxy settings" in error_msg
-                    or "importing a module script failed" in error_msg
-                    or "module script failed" in error_msg
+                or "importing a module script failed" in error_msg
+                or "module script failed" in error_msg
             )
 
             if is_component_error and attempt < max_retries - 1:
@@ -7330,9 +7415,7 @@ if is_super_admin():
                                     )
                                     else []
                                 )
-                                st.session_state["_merged_cache_errors"] = (
-                                    verify_errors
-                                )
+                                st.session_state["_merged_cache_errors"] = verify_errors
                                 # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
                                 st.session_state["_merged_cache_data_timestamp"] = (
                                     datetime.now().isoformat()
@@ -7514,9 +7597,9 @@ if is_super_admin():
                         f" Using existing S3 cache timestamp: {existing_timestamp}"
                     )
                 else:
-                        logger.debug(
+                    logger.debug(
                         " S3 cache timestamp not in session state - will be set on next S3 load"
-                        )
+                    )
 
                 # Clear Streamlit cache to force reload from S3 cache
                 load_all_calls_cached.clear()
@@ -7600,7 +7683,7 @@ if is_super_admin():
                             logger.info(f" Cleared persistent disk cache: {CACHE_FILE}")
                     except LockTimeoutError:
                         logger.warning(
-                            f"Timeout clearing disk cache (file may be locked)"
+                            "Timeout clearing disk cache (file may be locked)"
                         )
                     except Exception as e:
                         logger.warning(f"Failed to clear disk cache: {e}")
@@ -8378,7 +8461,7 @@ try:
                     )
                     + "\n"
                 )
-        except:
+        except Exception:
             pass
         # #endregion
     else:
@@ -8449,6 +8532,10 @@ def anonymize_dataframe(df, create_mappings_from=None):
     if not is_anonymous_user:
         return df
 
+    # CRITICAL FIX: Validate DataFrame before operations
+    if df is None or df.empty:
+        return df
+
     df = df.copy()
 
     # Use provided dataframe for mapping creation, or use current df
@@ -8464,7 +8551,7 @@ def anonymize_dataframe(df, create_mappings_from=None):
                 )
             )
         agent_mapping = st.session_state.anonymization_mappings["agent_mapping"]
-        if "Agent" in df.columns and agent_mapping:
+        if df is not None and not df.empty and "Agent" in df.columns and agent_mapping:
             # Use vectorized replace for much faster performance
             # Handle NaN values properly
             mask = df["Agent"].notna()
@@ -8481,7 +8568,12 @@ def anonymize_dataframe(df, create_mappings_from=None):
                 )
             )
         company_mapping = st.session_state.anonymization_mappings["company_mapping"]
-        if "Company" in df.columns and company_mapping:
+        if (
+            df is not None
+            and not df.empty
+            and "Company" in df.columns
+            and company_mapping
+        ):
             # Use vectorized replace for much faster performance
             # Handle NaN values properly
             mask = df["Company"].notna()
@@ -8498,7 +8590,12 @@ def anonymize_dataframe(df, create_mappings_from=None):
                 )
             )
         call_id_mapping = st.session_state.anonymization_mappings["call_id_mapping"]
-        if "Call ID" in df.columns and call_id_mapping:
+        if (
+            df is not None
+            and not df.empty
+            and "Call ID" in df.columns
+            and call_id_mapping
+        ):
             # Use vectorized replace for much faster performance
             # Handle NaN values properly
             mask = df["Call ID"].notna()
@@ -8800,7 +8897,7 @@ if "speaking_time_per_speaker" in meta_df.columns:
                 )
                 + "\n"
             )
-    except:
+    except Exception:
         pass
     # #endregion
     try:
@@ -8831,7 +8928,7 @@ if "speaking_time_per_speaker" in meta_df.columns:
                     )
                     + "\n"
                 )
-        except:
+        except Exception:
             pass
         # #endregion
     except Exception as apply_error:
@@ -8858,7 +8955,7 @@ if "speaking_time_per_speaker" in meta_df.columns:
                     )
                     + "\n"
                 )
-        except:
+        except Exception:
             pass
         # #endregion
         meta_df["Call Duration (s)"] = None
@@ -8909,7 +9006,7 @@ try:
             )
             + "\n"
         )
-except:
+except Exception:
     pass
 # #endregion
 try:
@@ -8938,7 +9035,7 @@ try:
                 )
                 + "\n"
             )
-    except:
+    except Exception:
         pass
     # #endregion
 except Exception as dropna_error:
@@ -8965,7 +9062,7 @@ except Exception as dropna_error:
                 )
                 + "\n"
             )
-    except:
+    except Exception:
         pass
     # #endregion
 
@@ -8998,7 +9095,7 @@ if "Agent" in meta_df.columns:
                 )
                 + "\n"
             )
-    except:
+    except Exception:
         pass
     # #endregion
     try:
@@ -9027,7 +9124,7 @@ if "Agent" in meta_df.columns:
                     )
                     + "\n"
                 )
-        except:
+        except Exception:
             pass
         # #endregion
         # #region agent log
@@ -9052,7 +9149,7 @@ if "Agent" in meta_df.columns:
                     )
                     + "\n"
                 )
-        except:
+        except Exception:
             pass
         # #endregion
     except Exception as norm_error:
@@ -9079,7 +9176,7 @@ if "Agent" in meta_df.columns:
                     )
                     + "\n"
                 )
-        except:
+        except Exception:
             pass
         # #endregion
         # Fallback: keep original agent IDs if normalization fails
@@ -9104,10 +9201,16 @@ if "Agent" in meta_df.columns:
             "These should have been normalized earlier. Re-normalizing..."
         )
         # Re-normalize any that slipped through
-        for idx in meta_df[non_normalized_mask].index:
-            original = meta_df.loc[idx, "Agent"]
-            normalized = normalize_agent_id(original)
-            meta_df.loc[idx, "Agent"] = normalized
+        # CRITICAL FIX: Validate DataFrame and index before accessing
+        if meta_df is not None and not meta_df.empty and "Agent" in meta_df.columns:
+            for idx in meta_df[non_normalized_mask].index:
+                try:
+                    original = meta_df.loc[idx, "Agent"]
+                    normalized = normalize_agent_id(original)
+                    meta_df.loc[idx, "Agent"] = normalized
+                except (KeyError, IndexError) as e:
+                    logger.warning(f"Could not normalize agent ID at index {idx}: {e}")
+                    continue
             if original != normalized:
                 changed_count += 1
                 logger.debug(f" Re-normalized agent ID: {original} -> {normalized}")
@@ -9495,7 +9598,7 @@ else:
     # Use cached rubric codes
     all_rubric_codes = st.session_state["all_rubric_codes"]
 
-# Display rubric filter UI
+    # Display rubric filter UI
     if all_rubric_codes:
         rubric_filter_type = st.sidebar.radio(
             "Filter Type",
@@ -10821,7 +10924,7 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         # Get cached or compute call products
                         call_products = get_cached_computation(
                             cache_key_trend, compute_call_products
-                                    )
+                        )
 
                         if len(call_products) > 0:
                             products_df = pd.DataFrame(call_products)
@@ -11080,7 +11183,7 @@ if (
                 # Get cached or compute high-AHT coaching categories
                 high_aht_coaching_categories = get_cached_computation(
                     cache_key_high_aht_coaching, compute_high_aht_coaching
-                        )
+                )
 
             # OPTIMIZED: Calculate rubric code analysis using vectorized operations
             if "Rubric Details" in filtered_df.columns:
@@ -11535,7 +11638,7 @@ if (
                 high_aht_coaching_categories = get_cached_computation(
                     cache_key_high_aht_coaching_analysis,
                     compute_high_aht_coaching_analysis,
-                        )
+                )
 
                 if high_aht_coaching_categories:
                     # Calculate frequencies
@@ -11676,7 +11779,7 @@ if (
                 )
                 high_aht_challenge_categories = get_cached_computation(
                     cache_key_high_aht_challenges, compute_high_aht_challenges
-                        )
+                )
 
                 if high_aht_challenge_categories:
                     from collections import Counter
