@@ -4218,6 +4218,11 @@ def load_new_calls_only():
     Smart refresh: Only loads CSV files that haven't been processed yet (PDFs are ignored).
     Returns tuple: (new_call_data_list, error_message, count_of_new_files)
     """
+    # CRITICAL: Import time module at function start to avoid UnboundLocalError
+    # Must import BEFORE any uses of time.time() or time.sleep() in the function
+    # This ensures Python treats 'time' as a local variable throughout the function
+    import time
+    
     logger.info(" Starting refresh: Checking for new CSV files...")
     try:
         # OPTIMIZATION: Load cache ONCE at start and reuse throughout refresh
