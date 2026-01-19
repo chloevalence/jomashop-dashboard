@@ -385,9 +385,6 @@ try:
         save_metrics(metrics)
         st.session_state.session_started = True
         logger.info(f"New session started. Total sessions: {metrics['sessions']}")
-    else:
-        # Session already started - don't log again (prevents repeated logs on reruns)
-        logger.debug("Session already initialized, skipping session start log")
 except (RuntimeError, AttributeError):
     # Streamlit not initialized yet, skip - this is normal during module import
     pass
@@ -437,90 +434,6 @@ def send_heartbeat(force=False):
         pass
 
 
-def get_df_hash(df):
-    """Get hash of DataFrame for cache key.
-
-    Args:
-        df: pandas DataFrame
-
-    Returns:
-        str: Hash string for use as cache key
-    """
-    try:
-        # Handle None or empty DataFrame
-        if df is None:
-            return "none_df"
-        if not hasattr(df, "__len__"):
-            return "invalid_df"
-        if len(df) == 0:
-            return "empty_df"
-        # Create a hash based on DataFrame size, columns, and sample of index
-        # This is fast and sufficient for cache invalidation
-        index_sample = str(df.index.tolist()[:10]) if len(df) > 0 else ""
-        return str(hash(str(len(df)) + str(df.columns.tolist()) + index_sample))
-    except Exception as e:
-        # Fallback to simple hash if anything fails
-        try:
-            logger.debug(f"Error computing DataFrame hash: {e}")
-        except Exception:
-            pass  # Logger might not be available
-        try:
-            if df is not None and hasattr(df, "__len__"):
-                return str(hash(str(len(df))))
-            return "error_hash"
-        except Exception:
-            return "error_hash"
-
-
-def get_cached_computation(cache_key, compute_func, *args, **kwargs):
-    """Get cached result or compute and cache it.
-
-    Args:
-        cache_key: Unique key for this computation
-        compute_func: Function to compute the result if not cached
-        *args, **kwargs: Arguments to pass to compute_func
-
-    Returns:
-        Result from compute_func (cached or newly computed)
-    """
-    # Always try to compute directly first if Streamlit isn't available
-    # This prevents any issues during module initialization
-    try:
-        # Check if Streamlit is ready
-        if not hasattr(st, "session_state"):
-            # Streamlit not ready, just compute without caching
-            return compute_func(*args, **kwargs)
-
-        # Try to access session_state to verify it's available
-        _ = st.session_state
-    except (RuntimeError, AttributeError, NameError):
-        # Streamlit not ready or not imported, just compute without caching
-        return compute_func(*args, **kwargs)
-    except Exception:
-        # Any other error accessing Streamlit, compute without caching
-        return compute_func(*args, **kwargs)
-
-    # Streamlit is ready, try to use caching
-    try:
-        if cache_key not in st.session_state:
-            st.session_state[cache_key] = compute_func(*args, **kwargs)
-        return st.session_state[cache_key]
-    except (RuntimeError, AttributeError) as e:
-        # Streamlit not ready or session_state not available
-        try:
-            logger.debug(f"Streamlit not ready for caching, computing directly: {e}")
-        except Exception:
-            pass  # Logger might not be available
-        return compute_func(*args, **kwargs)
-    except Exception as e:
-        # Other error - log and compute directly
-        try:
-            logger.warning(f"Error in get_cached_computation, computing directly: {e}")
-        except Exception:
-            pass  # Logger might not be available
-        return compute_func(*args, **kwargs)
-
-
 def st_pyplot_safe(fig, **kwargs):
     """Display matplotlib figure in Streamlit and automatically close it to prevent memory leaks.
 
@@ -559,6 +472,75 @@ def st_pyplot_safe(fig, **kwargs):
         gc.collect()
 
 
+def get_df_hash(df):
+    """Get hash of DataFrame for cache key.
+    
+    Args:
+        df: pandas DataFrame
+        
+    Returns:
+        str: Hash string for use as cache key
+    """
+    try:
+        # Handle None or empty DataFrame safely
+        if df is None:
+            return "none_df"
+        if not hasattr(df, "__len__"):
+            return "invalid_df"
+        if len(df) == 0:
+            return "empty_df"
+        # Create a simple hash based on DataFrame size and columns
+        # This is fast and sufficient for cache invalidation
+        return str(hash(str(len(df)) + str(tuple(df.columns))))
+    except Exception:
+        # Fallback to simple hash if anything fails
+        try:
+            if df is not None and hasattr(df, "__len__"):
+                return str(hash(str(len(df))))
+        except Exception:
+            pass
+        return "error_hash"
+
+
+def get_cached_computation(cache_key, compute_func, *args, **kwargs):
+    """Get cached result or compute and cache it.
+    
+    Args:
+        cache_key: Unique key for this computation
+        compute_func: Function to compute the result if not cached
+        *args, **kwargs: Arguments to pass to compute_func
+        
+    Returns:
+        Result from compute_func (cached or newly computed)
+    """
+    # Always try to compute directly first if Streamlit isn't available
+    try:
+        # Check if Streamlit is ready
+        if not hasattr(st, "session_state"):
+            return compute_func(*args, **kwargs)
+        
+        # Try to access session_state to verify it's available
+        _ = st.session_state
+    except (RuntimeError, AttributeError, NameError):
+        # Streamlit not ready or not imported, just compute without caching
+        return compute_func(*args, **kwargs)
+    except Exception:
+        # Any other error accessing Streamlit, compute without caching
+        return compute_func(*args, **kwargs)
+    
+    # Streamlit is ready, try to use caching
+    try:
+        if cache_key not in st.session_state:
+            st.session_state[cache_key] = compute_func(*args, **kwargs)
+        return st.session_state[cache_key]
+    except (RuntimeError, AttributeError):
+        # Streamlit not ready or session_state not available
+        return compute_func(*args, **kwargs)
+    except Exception:
+        # Other error - compute directly
+        return compute_func(*args, **kwargs)
+
+
 # CRITICAL FIX: Protect module-level Streamlit access
 try:
     _ = st.empty  # Test if Streamlit is available
@@ -569,43 +551,43 @@ try:
     # Initialize S3 client from secrets (but don't test connection yet - do that after login)
     logger.debug("Initializing S3 client from secrets...")
     try:
-        # Check if secrets are available
+    # Check if secrets are available
         if "s3" not in st.secrets:
             raise KeyError("s3 section not found in secrets")
 
         s3_client = boto3.client(
-            "s3",
-            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-            region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+        "s3",
+        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+        region_name=st.secrets["s3"].get("region_name", "us-east-1"),
         )
         s3_bucket_name = st.secrets["s3"]["bucket_name"]
         s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
         logger.debug(
-            f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}"
+        f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}"
         )
         initial_status.empty()  # Clear initial status once S3 client is ready
     except KeyError as e:
         logger.error(f"Missing S3 configuration in secrets: {e}")
         initial_status.empty()
-        st.error(f" Missing S3 configuration in secrets: {e}")
-        st.error(
-            "Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set."
-        )
-        st.error(f"**Current working directory:** `{os.getcwd()}`")
-        st.error(
-            "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
-        )
-        st.error(
-            f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
-        )
-        st.stop()
-    except Exception as e:
-        logger.exception(f"Error initializing S3 client: {e}")
-        initial_status.empty()
-        st.error(f" Error initializing S3 client: {e}")
-        st.error("Please check your AWS credentials and try again.")
-        st.stop()
+    st.error(f" Missing S3 configuration in secrets: {e}")
+    st.error(
+        "Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set."
+    )
+    st.error(f"**Current working directory:** `{os.getcwd()}`")
+    st.error(
+        "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
+    )
+    st.error(
+        f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
+    )
+    st.stop()
+except Exception as e:
+    logger.exception(f"Error initializing S3 client: {e}")
+    initial_status.empty()
+    st.error(f" Error initializing S3 client: {e}")
+    st.error("Please check your AWS credentials and try again.")
+    st.stop()
 except (RuntimeError, AttributeError):
     # Streamlit not initialized yet - skip S3 initialization
     logger.debug("Streamlit not ready, skipping S3 initialization (will retry later)")
@@ -1269,9 +1251,6 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                             # CRITICAL: This append MUST be inside the row loop to process all rows
                             all_calls.append(parsed_data)
                             rows_added += 1
-                        # Send heartbeat every 100 rows to prevent health check timeout
-                        if rows_processed % 100 == 0:
-                            send_heartbeat()
                     except Exception as e:
                         error_msg = (
                             f"Error parsing row {idx + 1} in {filename}: {str(e)}"
@@ -1801,21 +1780,16 @@ def cleanup_pdf_sourced_calls():
         if CACHE_FILE.exists():
             try:
                 logger.debug("cleanup_pdf_sourced_calls: Attempting to load disk cache")
-                try:
-                    with cache_file_lock(CACHE_FILE, timeout=5):
-                        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                            cached_data = json.load(f)
-                        call_data = cached_data.get("call_data", [])
-                        errors = cached_data.get("errors", [])
-                        cache_timestamp = cached_data.get("timestamp")
-                except LockTimeoutError:
-                    logger.warning(
-                        "Could not acquire lock for disk cache during cleanup, skipping disk cache"
-                    )
-                except Exception as lock_error:
-                    logger.warning(
-                        f"Error loading disk cache for cleanup: {lock_error}"
-                    )
+                with cache_file_lock(CACHE_FILE, timeout=5):
+                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                        cached_data = json.load(f)
+                    call_data = cached_data.get("call_data", [])
+                    errors = cached_data.get("errors", [])
+                    cache_timestamp = cached_data.get("timestamp")
+            except LockTimeoutError:
+                logger.warning(
+                    "Could not acquire lock for disk cache during cleanup, skipping disk cache"
+                )
             except Exception as e:
                 logger.warning(f"Could not load disk cache for cleanup: {e}")
 
@@ -1939,16 +1913,15 @@ def cleanup_pdf_sourced_calls():
                 logger.debug(
                     "cleanup_pdf_sourced_calls: Marking cleanup as complete (no cache found)"
                 )
-                try:
-                    with cache_file_lock(CACHE_FILE, timeout=5):
-                        atomic_write_json(CACHE_FILE, cleanup_metadata)
-                except LockTimeoutError:
-                    logger.warning(
-                        "Could not acquire lock to mark cleanup complete, will retry next time"
-                    )
-                    return
-                except Exception as lock_error:
-                    logger.warning(f"Error saving cleanup flag: {lock_error}")
+                with cache_file_lock(CACHE_FILE, timeout=5):
+                    atomic_write_json(CACHE_FILE, cleanup_metadata)
+            except LockTimeoutError:
+                logger.warning(
+                    "Could not acquire lock to mark cleanup complete, will retry next time"
+                )
+                return
+            except Exception as lock_error:
+                logger.warning(f"Error saving cleanup flag: {lock_error}")
                 # Also save to S3
                 s3_client, s3_bucket = get_s3_client_and_bucket()
                 if s3_client and s3_bucket:
@@ -2637,11 +2610,11 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                             # Continue to save below - don't return early
                         else:
                             logger.warning(
-                                f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
-                                f"with PARTIAL cache ({len(call_data)} calls). "
-                                f"Complete cache preserved. Local cache saved successfully."
-                            )
-                            return  # Don't overwrite COMPLETE cache with PARTIAL
+                            f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
+                            f"with PARTIAL cache ({len(call_data)} calls). "
+                            f"Complete cache preserved. Local cache saved successfully."
+                        )
+                        return  # Don't overwrite COMPLETE cache with PARTIAL
                     else:
                         # Both are PARTIAL - check progress
                         existing_processed = existing_data.get("processed", 0)
@@ -2821,7 +2794,7 @@ def load_all_calls_cached(cache_version=0):
                             }
                         )
                         + "\n"
-                    )
+            )
             except:
                 pass
             # #endregion
@@ -3045,12 +3018,12 @@ def load_all_calls_cached(cache_version=0):
                         and isinstance(s3_cached_data[0], list)
                         and len(s3_cached_data[0]) > 0
                     ):
-                        migrated = migrate_old_cache_format(s3_cached_data[0])
-                        logger.info(
-                            f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
-                        )
-                        return migrated, s3_cached_data[1] if len(
-                            s3_cached_data
+                            migrated = migrate_old_cache_format(s3_cached_data[0])
+                            logger.info(
+                                f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
+                            )
+                            return migrated, s3_cached_data[1] if len(
+                                s3_cached_data
                         ) > 1 and s3_cached_data[1] is not None else []
             except Exception as e:
                 logger.debug(
@@ -3132,7 +3105,7 @@ def load_all_calls_cached(cache_version=0):
             s3_cache_deleted = False
             logger.info(
                 " S3 cache preserved (not deleted) - new data will be merged with existing cache"
-            )
+                        )
 
             # Clear Streamlit cache
             streamlit_cache_cleared = False
@@ -3567,12 +3540,12 @@ def load_all_calls_cached(cache_version=0):
                             logger.debug(
                                 f" S3 cache file is small ({file_size / (1024 * 1024):.1f}MB) - using direct loading"
                             )
-                            response = s3_client.get_object(
-                                Bucket=s3_bucket, Key=S3_CACHE_KEY
-                            )
-                            s3_cached_data = json.loads(
-                                response["Body"].read().decode("utf-8")
-                            )
+                        response = s3_client.get_object(
+                            Bucket=s3_bucket, Key=S3_CACHE_KEY
+                        )
+                        s3_cached_data = json.loads(
+                            response["Body"].read().decode("utf-8")
+                        )
 
                         if isinstance(s3_cached_data, dict):
                             s3_cache_result = (
@@ -5288,10 +5261,10 @@ def load_new_calls_only():
                 logger.warning(
                     f" {keys_missing} cached calls are missing file keys (filename/_s3_key) - they may be reprocessed"
                 )
-        else:
-            logger.info(
+            else:
+                logger.info(
                 " No disk cache found - existing_calls is empty - all files will be treated as new"
-            )
+                )
 
         # Also check session state (for files processed in current session)
         session_keys = st.session_state.get("processed_s3_keys", set())
@@ -5339,7 +5312,7 @@ def load_new_calls_only():
             except Exception as cache_check_error:
                 logger.debug(
                     f" Could not check cache validity: {cache_check_error}, will re-paginate"
-                )
+        )
 
         # Find new CSV files (not in processed_keys)
         new_csv_keys = []
@@ -5453,6 +5426,7 @@ def load_new_calls_only():
 
                 if page is None:
                     break
+
                 page_count += 1
                 page_file_count = 0
                 page_fetch_time = time.time() - page_start_time
@@ -5790,18 +5764,13 @@ def load_new_calls_only():
 
                 # Process each row
                 csv_calls = []
-                rows_processed = 0
                 for idx, row in df.iterrows():
-                    rows_processed += 1
                     try:
                         parsed_data = parse_csv_row(row, filename)
                         if parsed_data:
                             # _id and _s3_key are already set in parse_csv_row based on call_id
                             # No need to override them here - each row should have unique _id
                             csv_calls.append(parsed_data)
-                        # Send heartbeat every 100 rows to prevent health check timeout
-                        if rows_processed % 100 == 0:
-                            send_heartbeat()
                     except Exception as e:
                         error_msg = (
                             f"Error parsing row {idx + 1} in {filename}: {str(e)}"
@@ -5888,8 +5857,8 @@ def load_new_calls_only():
 
             # CRITICAL FIX: Log ALL batches at INFO level to diagnose missing batches
             logger.info(
-                f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
-            )
+                    f" Processing batch {batch_num}/{total_batches}: files {batch_start + 1}-{batch_end} of {total_new}"
+                )
 
             # CRITICAL FIX: Wrap entire batch processing in try/except to prevent crashes
             logger.debug(f" Starting batch {batch_num}/{total_batches} processing...")
@@ -5904,43 +5873,43 @@ def load_new_calls_only():
                 try:
                     with ThreadPoolExecutor(
                         max_workers=5
-                    ) as executor:  # Reduced from 10 to lower memory pressure
-                        try:
-                            future_to_key = {
-                                executor.submit(process_csv, item): item["key"]
-                                for item in batch_keys
-                            }
-                            logger.debug(
-                                f" Submitted {len(future_to_key)} CSV files to ThreadPoolExecutor"
-                            )
-                        except Exception as submit_error:
-                            logger.error(
+                        ) as executor:  # Reduced from 10 to lower memory pressure
+                            try:
+                                future_to_key = {
+                                    executor.submit(process_csv, item): item["key"]
+                                    for item in batch_keys
+                                }
+                                logger.debug(
+                                    f" Submitted {len(future_to_key)} CSV files to ThreadPoolExecutor"
+                                )
+                            except Exception as submit_error:
+                                logger.error(
                                 f" CRITICAL: Failed to submit tasks to ThreadPoolExecutor: {submit_error}"
-                            )
-                            # Continue with empty future_to_key - will skip processing this batch
-                            future_to_key = {}
+                                )
+                                # Continue with empty future_to_key - will skip processing this batch
+                                future_to_key = {}
 
-                        # Process completed futures with timeout protection
-                        completed_count = 0
-                        try:
-                            for future in as_completed(future_to_key):
-                                try:
-                                    csv_calls_list, error = future.result(
+                            # Process completed futures with timeout protection
+                            completed_count = 0
+                            try:
+                                for future in as_completed(future_to_key):
+                                    try:
+                                        csv_calls_list, error = future.result(
                                         timeout=120
                                     )  # 120 second timeout per CSV file (may contain many rows)
-                                except Exception as e:
-                                    # Handle both TimeoutError and concurrent.futures.TimeoutError
-                                    from concurrent.futures import (
-                                        TimeoutError as FuturesTimeoutError,
-                                    )
-
-                                    if isinstance(
-                                        e, (TimeoutError, FuturesTimeoutError)
-                                    ):
-                                        key = future_to_key.get(future, "Unknown")
-                                        logger.error(
-                                            f" Timeout processing CSV {key}: {e}"
+                                    except Exception as e:
+                                        # Handle both TimeoutError and concurrent.futures.TimeoutError
+                                        from concurrent.futures import (
+                                            TimeoutError as FuturesTimeoutError,
                                         )
+
+                                        if isinstance(
+                                            e, (TimeoutError, FuturesTimeoutError)
+                                            ):
+                                            key = future_to_key.get(future, "Unknown")
+                                            logger.error(
+                                            f" Timeout processing CSV {key}: {e}"
+                                            )
                                         errors.append(
                                             f"{key}: Processing timeout (120s)"
                                         )
@@ -5955,75 +5924,75 @@ def load_new_calls_only():
                                         processed_count += 1
                                         continue
 
-                                processed_count += 1
+                                    processed_count += 1
 
-                                if csv_calls_list:
-                                    # Extend with list of calls from CSV
-                                    duplicate_count = 0
-                                    for parsed_data in csv_calls_list:
-                                        # Check if this call is already in cache BEFORE adding
-                                        # Use consistent key extraction logic
-                                        call_key = extract_cache_key(parsed_data)
+                                    if csv_calls_list:
+                                        # Extend with list of calls from CSV
+                                        duplicate_count = 0
+                                        for parsed_data in csv_calls_list:
+                                            # Check if this call is already in cache BEFORE adding
+                                            # Use consistent key extraction logic
+                                            call_key = extract_cache_key(parsed_data)
 
-                                        if call_key and call_key in existing_cache_keys:
-                                            # Already in cache - skip this call
-                                            duplicate_count += 1
-                                            continue
+                                            if call_key and call_key in existing_cache_keys:
+                                                # Already in cache - skip this call
+                                                duplicate_count += 1
+                                                continue
 
-                                        # Not in cache - add to new calls
-                                        new_calls.append(parsed_data)
-                                        batch_calls.append(
-                                            parsed_data
-                                        )  # Track for this batch
+                                            # Not in cache - add to new calls
+                                            new_calls.append(parsed_data)
+                                            batch_calls.append(
+                                                parsed_data
+                                            )  # Track for this batch
 
-                                    if duplicate_count > 0:
-                                        logger.debug(
-                                            f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
-                                        )
-                                elif error:
-                                    errors.append(error)
+                                        if duplicate_count > 0:
+                                            logger.debug(
+                                                f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
+                                            )
+                                        elif error:
+                                            errors.append(error)
 
-                                # Log progress every 100 files (unconditionally for each processed file)
-                                if processed_count % 100 == 0:
-                                    elapsed = time.time() - processing_start_time
-                                    rate = (
+                                    # Log progress every 100 files (unconditionally for each processed file)
+                                    if processed_count % 100 == 0:
+                                        elapsed = time.time() - processing_start_time
+                                        rate = (
                                         processed_count / elapsed if elapsed > 0 else 0
-                                    )
-                                    remaining = (
+                                        )
+                                        remaining = (
                                         (total_new - processed_count) / rate
                                         if rate > 0
                                         else 0
-                                    )
-                                    logger.info(
-                                        f" Refresh Progress: {processed_count}/{total_new} files processed ({processed_count * 100 // total_new if total_new > 0 else 0}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining / 60:.1f} min"
-                                    )
-
-                                    # Periodic memory check every 100 files
-                                    try:
-                                        import psutil
-                                        import os
-
-                                        process = psutil.Process(os.getpid())
-                                        memory_percent = process.memory_percent()
-                                        memory_mb = (
-                                            process.memory_info().rss / 1024 / 1024
                                         )
-                                        if memory_percent > 85:
-                                            logger.warning(
-                                                f" High memory usage: {memory_percent:.1f}% ({memory_mb:.0f} MB) - consider reducing batch size if issues occur"
-                                            )
-                                    except Exception:
-                                        pass  # Ignore memory check errors
-                        except Exception as executor_error:
-                            logger.error(
-                                f" CRITICAL: Error in ThreadPoolExecutor loop: {executor_error}"
-                            )
-                            import traceback
+                                        logger.info(
+                                        f" Refresh Progress: {processed_count}/{total_new} files processed ({processed_count * 100 // total_new if total_new > 0 else 0}%), {len(new_calls)} successful, {len(errors)} errors. Rate: {rate:.1f} files/sec, ETA: {remaining / 60:.1f} min"
+                                        )
 
-                            logger.error(
-                                f" Executor error traceback: {traceback.format_exc()}"
-                            )
-                            # Continue processing - some files may have completed
+                                        # Periodic memory check every 100 files
+                                        try:
+                                            import psutil
+                                            import os
+
+                                            process = psutil.Process(os.getpid())
+                                            memory_percent = process.memory_percent()
+                                            memory_mb = (
+                                                process.memory_info().rss / 1024 / 1024
+                                            )
+                                            if memory_percent > 85:
+                                                logger.warning(
+                                                    f" High memory usage: {memory_percent:.1f}% ({memory_mb:.0f} MB) - consider reducing batch size if issues occur"
+                                                )
+                                        except Exception:
+                                            pass  # Ignore memory check errors
+                            except Exception as executor_error:
+                                logger.error(
+                                    f" CRITICAL: Error in ThreadPoolExecutor loop: {executor_error}"
+                                )
+                                import traceback
+
+                                logger.error(
+                                    f" Executor error traceback: {traceback.format_exc()}"
+                                )
+                                # Continue processing - some files may have completed
                 except Exception as executor_setup_error:
                     logger.error(
                         f" CRITICAL: Failed to create ThreadPoolExecutor: {executor_setup_error}"
@@ -6123,13 +6092,13 @@ def load_new_calls_only():
                                 )
                             batches_since_save = 0  # Reset counter
                             logger.info(
-                                f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
+                            f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
                             )
 
                             # SAFE MEMORY OPTIMIZATION: Clear old batches after successful save, keep last 2 saves as buffer
                             # This reduces memory while maintaining safety buffer
                             batches_to_keep = (
-                                SAVE_INTERVAL_BATCHES * 2
+                            SAVE_INTERVAL_BATCHES * 2
                             )  # Keep last 2 saves worth
                             calls_per_save = batches_to_keep * BATCH_SIZE
 
@@ -6248,47 +6217,42 @@ def load_new_calls_only():
             logger.info(
                 f" Batch loop completed. Processed {processed_count} files. Starting final processing..."
             )
-            elapsed_total = time.time() - processing_start_time
-            logger.info(
-                f" Refresh completed: Processed {total_new} new files in {elapsed_total / 60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}. Cache updated with {len(new_calls)} new calls."
-            )
+        except Exception:
+            pass
 
+        elapsed_total = time.time() - processing_start_time
+        logger.info(
+            f" Refresh completed: Processed {total_new} new files in {elapsed_total / 60:.1f} minutes. Success: {len(new_calls)}, Errors: {len(errors)}. Cache updated with {len(new_calls)} new calls."
+        )
+
+        logger.debug(
+            f" Preparing to return from load_new_calls_only(): {len(new_calls)} calls, {len(errors) if errors else 0} errors"
+        )
+        # CRITICAL FIX: Store file counts in session state so refresh handler can check if files remain
+        try:
+            # Calculate total files processed so far (existing + newly processed)
+            existing_files_count = len(processed_keys) if processed_keys else 0
+            total_files_processed = existing_files_count + processed_count
+            st.session_state["_total_s3_files_count"] = total_s3_files
+            st.session_state["_processed_files_count"] = total_files_processed
+            st.session_state["_remaining_files_count"] = (
+                total_s3_files - total_files_processed
+            )
             logger.debug(
-                f" Preparing to return from load_new_calls_only(): {len(new_calls)} calls, {len(errors) if errors else 0} errors"
+                f" Stored file counts in session state: total={total_s3_files}, processed={total_files_processed}, remaining={total_s3_files - total_files_processed}"
             )
-            # CRITICAL FIX: Store file counts in session state so refresh handler can check if files remain
-            try:
-                # Calculate total files processed so far (existing + newly processed)
-                existing_files_count = len(processed_keys) if processed_keys else 0
-                total_files_processed = existing_files_count + processed_count
-                st.session_state["_total_s3_files_count"] = total_s3_files
-                st.session_state["_processed_files_count"] = total_files_processed
-                st.session_state["_remaining_files_count"] = (
-                    total_s3_files - total_files_processed
-                )
-                logger.debug(
-                    f" Stored file counts in session state: total={total_s3_files}, processed={total_files_processed}, remaining={total_s3_files - total_files_processed}"
-                )
-            except Exception as state_error:
-                logger.warning(
-                    f" Could not store file counts in session state: {state_error}"
-                )
+        except Exception as state_error:
+            logger.warning(
+                f" Could not store file counts in session state: {state_error}"
+            )
 
-            # CRITICAL FIX: Safely create return tuple to prevent crashes
-            error_result = errors if errors else None
-            call_count = len(new_calls) if new_calls else 0
-            result = (new_calls if new_calls else [], error_result, call_count)
-            logger.debug(" Successfully created return tuple")
-            logger.info(f" Returning from load_new_calls_only(): {call_count} calls")
-            return result
-        except Exception as return_error:
-            logger.error(f" Error preparing return value: {return_error}")
-            import traceback
-
-            logger.error(f" Return error traceback: {traceback.format_exc()}")
-            # Return safe default values
-            return ([], None, 0)
-
+        # CRITICAL FIX: Safely create return tuple to prevent crashes
+        error_result = errors if errors else None
+        call_count = len(new_calls) if new_calls else 0
+        result = (new_calls if new_calls else [], error_result, call_count)
+        logger.debug(" Successfully created return tuple")
+        logger.info(f" Returning from load_new_calls_only(): {call_count} calls")
+        return result
     except Exception as e:
         logger.error(f" Error in load_new_calls_only(): {e}")
         import traceback
@@ -6317,93 +6281,93 @@ else:
     retry_delay = 4  # Increased initial delay
     skip_auth_after_failures = st.session_state.get("skip_auth_after_failures", False)
 
-    # Check if user has chosen to skip auth after persistent failures
-    if skip_auth_after_failures:
-        logger.warning(
-            "Skipping authentication due to persistent CookieManager failures (user choice)"
-        )
-        authenticator = None
-        st.session_state["authenticator"] = None
-    else:
-        for attempt in range(max_retries):
-            try:
-                # Add progressive delay before each attempt (except first)
-                if attempt > 0:
-                    wait_before = retry_delay * (1.5 ** (attempt - 1))
-                    logger.info(
-                        f"Waiting {wait_before:.1f}s before authentication attempt {attempt + 1}/{max_retries}"
-                    )
-                    time.sleep(min(wait_before, 10))  # Cap at 10 seconds
-
-                authenticator = stauth.Authenticate(
-                    credentials,
-                    cookie["name"],
-                    cookie["key"],
-                    cookie["expiry_days"],
-                    auto_hash=auto_hash,
-                )
-                # Test if CookieManager actually loaded by checking if we can access it
-                # This helps catch cases where initialization appears to succeed but component isn't ready
-                try:
-                    # Longer delay to let component fully initialize
-                    time.sleep(1.0)
-                except Exception:
-                    pass
+# Check if user has chosen to skip auth after persistent failures
+if skip_auth_after_failures:
+    logger.warning(
+        "Skipping authentication due to persistent CookieManager failures (user choice)"
+    )
+    authenticator = None
+    st.session_state["authenticator"] = None
+else:
+    for attempt in range(max_retries):
+        try:
+            # Add progressive delay before each attempt (except first)
+            if attempt > 0:
+                wait_before = retry_delay * (1.5 ** (attempt - 1))
                 logger.info(
-                    f"Authentication component initialized successfully on attempt {attempt + 1}"
+                    f"Waiting {wait_before:.1f}s before authentication attempt {attempt + 1}/{max_retries}"
                 )
-                # Cache authenticator in session_state to prevent reinitialization on reruns
-                st.session_state["authenticator"] = authenticator
-                break  # Success, exit retry loop
-            except Exception as e:
-                error_msg = str(e).lower()
-                is_component_error = (
-                    "cookiemanager" in error_msg
-                    or "component" in error_msg
-                    or "frontend" in error_msg
-                    or "extra_streamlit_components" in error_msg
-                    or "trouble loading" in error_msg
-                    or "cookie_manager" in error_msg
-                    or "cannot assemble" in error_msg
-                    or "cookie manager" in error_msg
-                    or "frontend assets" in error_msg
-                    or "network latency" in error_msg
-                    or "proxy settings" in error_msg
+                time.sleep(min(wait_before, 10))  # Cap at 10 seconds
+
+            authenticator = stauth.Authenticate(
+                credentials,
+                cookie["name"],
+                cookie["key"],
+                cookie["expiry_days"],
+                auto_hash=auto_hash,
+            )
+            # Test if CookieManager actually loaded by checking if we can access it
+            # This helps catch cases where initialization appears to succeed but component isn't ready
+            try:
+                # Longer delay to let component fully initialize
+                time.sleep(1.0)
+            except Exception:
+                pass
+            logger.info(
+                f"Authentication component initialized successfully on attempt {attempt + 1}"
+            )
+            # Cache authenticator in session_state to prevent reinitialization on reruns
+            st.session_state["authenticator"] = authenticator
+            break  # Success, exit retry loop
+        except Exception as e:
+            error_msg = str(e).lower()
+            is_component_error = (
+                "cookiemanager" in error_msg
+                or "component" in error_msg
+                or "frontend" in error_msg
+                or "extra_streamlit_components" in error_msg
+                or "trouble loading" in error_msg
+                or "cookie_manager" in error_msg
+                or "cannot assemble" in error_msg
+                or "cookie manager" in error_msg
+                or "frontend assets" in error_msg
+                or "network latency" in error_msg
+                or "proxy settings" in error_msg
                     or "importing a module script failed" in error_msg
                     or "module script failed" in error_msg
-                )
+            )
 
-                if is_component_error and attempt < max_retries - 1:
-                    # Retry with exponential backoff (longer delays)
-                    wait_time = retry_delay * (2**attempt)
-                    wait_time = min(wait_time, 15)  # Cap at 15 seconds
-                    logger.warning(
-                        f"CookieManager initialization failed (attempt {attempt + 1}/{max_retries}). "
-                        f"Retrying in {wait_time}s... Error: {e}"
-                    )
-                    # Show a loading message to user
-                    if attempt == 0:
-                        with st.spinner(
-                            f"Loading authentication component... (attempt {attempt + 1}/{max_retries})"
-                        ):
-                            time.sleep(wait_time)
-                    else:
+            if is_component_error and attempt < max_retries - 1:
+                # Retry with exponential backoff (longer delays)
+                wait_time = retry_delay * (2**attempt)
+                wait_time = min(wait_time, 15)  # Cap at 15 seconds
+                logger.warning(
+                    f"CookieManager initialization failed (attempt {attempt + 1}/{max_retries}). "
+                    f"Retrying in {wait_time}s... Error: {e}"
+                )
+                # Show a loading message to user
+                if attempt == 0:
+                    with st.spinner(
+                        f"Loading authentication component... (attempt {attempt + 1}/{max_retries})"
+                    ):
                         time.sleep(wait_time)
-                    continue
                 else:
-                    # Final attempt failed or non-component error
-                    logger.error(
-                        f"Failed to initialize authenticator after {attempt + 1} attempts: {e}"
-                    )
-                    if is_component_error:
-                        # Will be handled in login section below
-                        authenticator = None
-                        st.session_state["authenticator"] = None
-                    else:
-                        st.error("**Authentication System Error**")
-                        st.error(f"Failed to initialize authentication: {str(e)}")
-                        logger.exception("Authentication initialization error")
-                        st.stop()
+                    time.sleep(wait_time)
+                continue
+            else:
+                # Final attempt failed or non-component error
+                logger.error(
+                    f"Failed to initialize authenticator after {attempt + 1} attempts: {e}"
+                )
+                if is_component_error:
+                    # Will be handled in login section below
+                    authenticator = None
+                    st.session_state["authenticator"] = None
+                else:
+                    st.error("**Authentication System Error**")
+                    st.error(f"Failed to initialize authentication: {str(e)}")
+                    logger.exception("Authentication initialization error")
+                    st.stop()
 
 # --- LOGIN GUARD ---
 auth_status = st.session_state.get("authentication_status")
@@ -7284,49 +7248,79 @@ if is_super_admin():
                             merged_data = (
                                 previous_streamlit_cache + disk_result_verify[0]
                             )
-                            merged_data = deduplicate_calls(merged_data)
-                            merged_count = len(merged_data)
+                        merged_data = deduplicate_calls(merged_data)
+                        merged_count = len(merged_data)
 
+                        logger.info(
+                            f"Merged result: {merged_count} unique calls (removed {len(previous_streamlit_cache) + len(disk_result_verify[0]) - merged_count} duplicates)"
+                        )
+
+                        # Save merged result to disk
+                        merge_save_succeeded = False
+                        try:
+                            # CRITICAL FIX: Check if disk_result_verify[1] exists before using
+                            verify_errors = (
+                                disk_result_verify[1]
+                                if (
+                                    disk_result_verify
+                                    and len(disk_result_verify) > 1
+                                    and disk_result_verify[1] is not None
+                                )
+                                else []
+                            )
+                            save_cached_data_to_disk(
+                                merged_data,
+                                previous_streamlit_errors
+                                if previous_streamlit_errors
+                                else verify_errors,
+                            )
                             logger.info(
-                                f"Merged result: {merged_count} unique calls (removed {len(previous_streamlit_cache) + len(disk_result_verify[0]) - merged_count} duplicates)"
+                                f"Saved merged cache to disk: {merged_count} calls"
+                            )
+                            merge_save_succeeded = True
+                        except Exception as merge_save_error:
+                            logger.error(
+                                f"CRITICAL: Failed to save merged cache: {merge_save_error}"
+                            )
+                            logger.error(
+                                "Using disk cache without Streamlit cache merge - some data may be lost"
                             )
 
-                            # Save merged result to disk
-                            merge_save_succeeded = False
-                            try:
-                                # CRITICAL FIX: Check if disk_result_verify[1] exists before using
-                                verify_errors = (
-                                    disk_result_verify[1]
-                                    if (
-                                        disk_result_verify
-                                        and len(disk_result_verify) > 1
-                                        and disk_result_verify[1] is not None
-                                    )
-                                    else []
+                        # CRITICAL FIX: Only store merged_data in session state if save succeeded
+                        # If save failed, use disk cache (fallback) to prevent data loss
+                        if merge_save_succeeded:
+                            # Store merged data in session state so it's used after cache clear
+                            st.session_state["_merged_cache_data"] = merged_data
+                            verify_errors = (
+                                disk_result_verify[1]
+                                if (
+                                    disk_result_verify
+                                    and len(disk_result_verify) > 1
+                                    and disk_result_verify[1] is not None
                                 )
-                                save_cached_data_to_disk(
-                                    merged_data,
-                                    previous_streamlit_errors
-                                    if previous_streamlit_errors
-                                    else verify_errors,
+                                else []
+                            )
+                            st.session_state["_merged_cache_errors"] = (
+                                previous_streamlit_errors
+                                if previous_streamlit_errors
+                                else verify_errors
+                            )
+                            # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                            st.session_state["_merged_cache_data_timestamp"] = (
+                                datetime.now().isoformat()
+                            )
+                        else:
+                            # Fallback: use disk cache without merge (save failed, merged_data not on disk)
+                            # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
+                            # Don't use potentially corrupted cache data when verification fails
+                            if (
+                                not verification_failed
+                                and disk_result_verify
+                                and disk_result_verify[0] is not None
+                            ):
+                                st.session_state["_merged_cache_data"] = (
+                                    disk_result_verify[0]
                                 )
-                                logger.info(
-                                    f"Saved merged cache to disk: {merged_count} calls"
-                                )
-                                merge_save_succeeded = True
-                            except Exception as merge_save_error:
-                                logger.error(
-                                    f"CRITICAL: Failed to save merged cache: {merge_save_error}"
-                                )
-                                logger.error(
-                                    "Using disk cache without Streamlit cache merge - some data may be lost"
-                                )
-
-                            # CRITICAL FIX: Only store merged_data in session state if save succeeded
-                            # If save failed, use disk cache (fallback) to prevent data loss
-                            if merge_save_succeeded:
-                                # Store merged data in session state so it's used after cache clear
-                                st.session_state["_merged_cache_data"] = merged_data
                                 verify_errors = (
                                     disk_result_verify[1]
                                     if (
@@ -7337,56 +7331,26 @@ if is_super_admin():
                                     else []
                                 )
                                 st.session_state["_merged_cache_errors"] = (
-                                    previous_streamlit_errors
-                                    if previous_streamlit_errors
-                                    else verify_errors
+                                    verify_errors
                                 )
                                 # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
                                 st.session_state["_merged_cache_data_timestamp"] = (
                                     datetime.now().isoformat()
                                 )
                             else:
-                                # Fallback: use disk cache without merge (save failed, merged_data not on disk)
-                                # CRITICAL FIX: Skip using disk_result_verify entirely if verification failed
-                                # Don't use potentially corrupted cache data when verification fails
-                                if (
-                                    not verification_failed
-                                    and disk_result_verify
-                                    and disk_result_verify[0] is not None
-                                ):
-                                    st.session_state["_merged_cache_data"] = (
-                                        disk_result_verify[0]
-                                    )
-                                    verify_errors = (
-                                        disk_result_verify[1]
-                                        if (
-                                            disk_result_verify
-                                            and len(disk_result_verify) > 1
-                                            and disk_result_verify[1] is not None
-                                        )
-                                        else []
-                                    )
-                                    st.session_state["_merged_cache_errors"] = (
-                                        verify_errors
-                                    )
-                                    # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
-                                    st.session_state["_merged_cache_data_timestamp"] = (
-                                        datetime.now().isoformat()
-                                    )
-                                else:
-                                    logger.error(
-                                        "CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback"
-                                    )
-                                    st.session_state["_merged_cache_data"] = (
-                                        all_calls_merged
-                                    )
-                                    st.session_state["_merged_cache_errors"] = (
-                                        new_errors if new_errors else []
-                                    )
-                                    # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
-                                    st.session_state["_merged_cache_data_timestamp"] = (
-                                        datetime.now().isoformat()
-                                    )
+                                logger.error(
+                                    "CRITICAL: Cannot use disk cache (verification failed or invalid) - using all_calls_merged as fallback"
+                                )
+                                st.session_state["_merged_cache_data"] = (
+                                    all_calls_merged
+                                )
+                                st.session_state["_merged_cache_errors"] = (
+                                    new_errors if new_errors else []
+                                )
+                                # BUG FIX: Store timestamp when _merged_cache_data is set so we can detect stale data
+                                st.session_state["_merged_cache_data_timestamp"] = (
+                                    datetime.now().isoformat()
+                                )
                     else:
                         # disk_result_verify[0] is None - use previous_streamlit_cache only
                         logger.warning(
@@ -7507,14 +7471,14 @@ if is_super_admin():
                 # Update processed keys tracking
                 if "processed_s3_keys" not in st.session_state:
                     st.session_state["processed_s3_keys"] = set()
-                # CRITICAL FIX: Protect against new_calls being None or not iterable
-                if new_calls and isinstance(new_calls, (list, tuple)):
-                    new_keys = {
-                        call.get("_s3_key")
-                        for call in new_calls
-                        if call and call.get("_s3_key")
-                    }
-                    st.session_state["processed_s3_keys"].update(new_keys)
+                    # CRITICAL FIX: Protect against new_calls being None or not iterable
+                    if new_calls and isinstance(new_calls, (list, tuple)):
+                        new_keys = {
+                            call.get("_s3_key")
+                            for call in new_calls
+                            if call and call.get("_s3_key")
+                        }
+                        st.session_state["processed_s3_keys"].update(new_keys)
                 else:
                     logger.warning(
                         f" Cannot update processed keys - new_calls is not iterable: {type(new_calls)}"
@@ -7550,9 +7514,9 @@ if is_super_admin():
                         f" Using existing S3 cache timestamp: {existing_timestamp}"
                     )
                 else:
-                    logger.debug(
+                        logger.debug(
                         " S3 cache timestamp not in session state - will be set on next S3 load"
-                    )
+                        )
 
                 # Clear Streamlit cache to force reload from S3 cache
                 load_all_calls_cached.clear()
@@ -7907,48 +7871,37 @@ try:
                 logger.warning(
                     f"Could not delete merged_errors from session state: {del_error}"
                 )
+        except Exception as e:
+            logger.error(f"Error accessing merged_calls from session state: {e}")
+            call_data = []
+            errors = []
 
-            # Note: Disk cache already has the merged data from refresh, Streamlit cache will update on next access
-            elapsed = time.time() - t0
-            status_text.empty()
+        # Note: Disk cache already has the merged data from refresh, Streamlit cache will update on next access
+        elapsed = time.time() - t0
+        status_text.empty()
+        logger.info(
+            f"Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
+        )
+
+        # CRITICAL: Add validation logging after data load to diagnose crashes
+        if call_data is not None:
             logger.info(
-                f"Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
+                f"VALIDATION: call_data type={type(call_data)}, len={len(call_data) if call_data else 0}"
             )
-
-            # CRITICAL: Add validation logging after data load to diagnose crashes
-            if call_data is not None:
-                logger.info(
-                    f"VALIDATION: call_data type={type(call_data)}, len={len(call_data) if call_data else 0}"
+            if call_data and len(call_data) > 0:
+                first_call_type = type(call_data[0])
+                first_call_keys = (
+                    list(call_data[0].keys())[:5]
+                    if isinstance(call_data[0], dict)
+                    else "N/A"
                 )
-                if call_data and len(call_data) > 0:
-                    first_call_type = type(call_data[0])
-                    first_call_keys = (
-                        list(call_data[0].keys())[:5]
-                        if isinstance(call_data[0], dict)
-                        else "N/A"
-                    )
-                    logger.info(
-                        f"VALIDATION: First call type={first_call_type}, sample_keys={first_call_keys}"
-                    )
-                else:
-                    logger.warning("VALIDATION: call_data is empty list or falsy")
+                logger.info(
+                    f"VALIDATION: First call type={first_call_type}, sample_keys={first_call_keys}"
+                )
             else:
-                logger.warning("VALIDATION: call_data is None after load")
-        except Exception as merged_error:
-            logger.exception(
-                f" CRITICAL: Error accessing merged_calls from session state: {merged_error}"
-            )
-            logger.warning(" Falling back to normal data load path")
-            # Clear merged_calls from session state and reset call_data/errors to None
-            try:
-                if "merged_calls" in st.session_state:
-                    del st.session_state["merged_calls"]
-                if "merged_errors" in st.session_state:
-                    del st.session_state["merged_errors"]
-            except Exception:
-                pass  # Ignore errors clearing session state
-            # Reset to None so else block handles normal load
-            call_data = None
+                logger.warning("VALIDATION: call_data is empty list or falsy")
+        else:
+            logger.warning("VALIDATION: call_data is None after load")
             errors = None
 
     # CRITICAL FIX: Only proceed with normal load if call_data was not successfully loaded
@@ -8342,6 +8295,7 @@ try:
                     logger.warning(
                         f"Error normalizing agent ID in call: {agent_error} - skipping this call"
                     )
+                    # Continue to next call in the loop
                     continue
             # Also check for "Agent" key (capitalized)
             if isinstance(call, dict) and "Agent" in call and "agent" not in call:
@@ -8357,10 +8311,10 @@ try:
                     )
                     continue
 
-        if agent_normalized_count > 0:
-            logger.info(
-                f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
-            )
+    if agent_normalized_count > 0:
+        logger.info(
+            f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
+        )
 except Exception as norm_error:
     logger.exception(f" CRITICAL: Agent normalization failed: {norm_error}")
     logger.warning(
@@ -9542,34 +9496,34 @@ else:
     all_rubric_codes = st.session_state["all_rubric_codes"]
 
 # Display rubric filter UI
-if all_rubric_codes:
-    rubric_filter_type = st.sidebar.radio(
-        "Filter Type",
-        options=["Any Status", "Failed Only", "Passed Only"],
-        index=0,
-        horizontal=True,
-    )
+    if all_rubric_codes:
+        rubric_filter_type = st.sidebar.radio(
+            "Filter Type",
+            options=["Any Status", "Failed Only", "Passed Only"],
+            index=0,
+            horizontal=True,
+        )
 
-    selected_rubric_codes = st.sidebar.multiselect(
-        f"Select Rubric Codes ({rubric_filter_type})",
-        options=all_rubric_codes,
-        default=st.session_state.selected_rubric_codes
-        if st.session_state.selected_rubric_codes
-        else [],
-        help="Show calls that match these rubric codes",
-    )
-    st.session_state.selected_rubric_codes = selected_rubric_codes
-    st.session_state.rubric_filter_type = rubric_filter_type
+        selected_rubric_codes = st.sidebar.multiselect(
+            f"Select Rubric Codes ({rubric_filter_type})",
+            options=all_rubric_codes,
+            default=st.session_state.selected_rubric_codes
+            if st.session_state.selected_rubric_codes
+            else [],
+            help="Show calls that match these rubric codes",
+        )
+        st.session_state.selected_rubric_codes = selected_rubric_codes
+        st.session_state.rubric_filter_type = rubric_filter_type
 
-    # Also collect failed codes for backward compatibility
-    failed_rubric_codes = [code for code in all_rubric_codes]
-    selected_failed_codes = (
-        selected_rubric_codes if rubric_filter_type == "Failed Only" else []
-    )
-else:
-    selected_rubric_codes = []
-    selected_failed_codes = []
-    rubric_filter_type = "Any Status"
+        # Also collect failed codes for backward compatibility
+        failed_rubric_codes = [code for code in all_rubric_codes]
+        selected_failed_codes = (
+            selected_rubric_codes if rubric_filter_type == "Failed Only" else []
+        )
+    else:
+        selected_rubric_codes = []
+        selected_failed_codes = []
+        rubric_filter_type = "Any Status"
 
 # Performance alerts threshold
 st.sidebar.markdown("---")
@@ -9664,7 +9618,7 @@ if selected_rubric_codes:
 
         # Use vectorized apply - much faster than iterrows()
         rubric_mask = filtered_df["Rubric Details"].apply(matches_rubric_filter)
-        filtered_df = filtered_df[rubric_mask].copy()
+    filtered_df = filtered_df[rubric_mask].copy()
 
 # Apply legacy failed rubric codes filter (for backward compatibility) - OPTIMIZED: Use vectorized apply
 if selected_failed_codes:
@@ -9682,7 +9636,7 @@ if selected_failed_codes:
 
         # Use vectorized apply - much faster than iterrows()
         failed_mask = filtered_df["Rubric Details"].apply(matches_failed_filter)
-        filtered_df = filtered_df[failed_mask].copy()
+    filtered_df = filtered_df[failed_mask].copy()
 
 # Calculate overall averages for comparison (from all data, not filtered)
 if show_comparison and user_agent_id:
@@ -10780,11 +10734,6 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                 # Get cached or compute product data
                 product_data = get_cached_computation(cache_key, compute_product_data)
 
-                # Store extract_products_from_row for reuse in trend section
-                st.session_state["_extract_products_from_row"] = (
-                    extract_products_from_row
-                )
-
                 if len(product_data) > 0:
                     product_col1, product_col2 = st.columns(2)
 
@@ -10850,25 +10799,10 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         def compute_call_products():
                             """Compute call products DataFrame with progress indicator"""
                             with st.spinner("Processing product trends..."):
-                                # Get the extraction function from session state or define it
-                                if "_extract_products_from_row" in st.session_state:
-                                    extract_func = st.session_state[
-                                        "_extract_products_from_row"
-                                    ]
-                                else:
-
-                                    def extract_func(row):
-                                        combined_text = " ".join(
-                                            [
-                                                str(row.get("Summary", "") or ""),
-                                                str(row.get("Reason", "") or ""),
-                                                str(row.get("Outcome", "") or ""),
-                                            ]
-                                        )
-                                        return extract_products_from_text(combined_text)
-
                                 # Reuse the product extraction function
-                                product_lists = filtered_df.apply(extract_func, axis=1)
+                                product_lists = filtered_df.apply(
+                                    extract_products_from_row, axis=1
+                                )
                                 call_products = []
                                 call_dates = filtered_df.get("Call Date", [])
                                 for i, (products, call_date) in enumerate(
@@ -10879,15 +10813,15 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                                             call_products.append(
                                                 {"Date": call_date, "Product": product}
                                             )
-                                    # Send heartbeat every 100 rows
-                                    if (i + 1) % 100 == 0:
-                                        send_heartbeat()
-                                return call_products
+                                            # Send heartbeat every 100 rows
+                                            if (i + 1) % 100 == 0:
+                                                send_heartbeat()
+                                        return call_products
 
                         # Get cached or compute call products
                         call_products = get_cached_computation(
                             cache_key_trend, compute_call_products
-                        )
+                                    )
 
                         if len(call_products) > 0:
                             products_df = pd.DataFrame(call_products)
@@ -11146,7 +11080,7 @@ if (
                 # Get cached or compute high-AHT coaching categories
                 high_aht_coaching_categories = get_cached_computation(
                     cache_key_high_aht_coaching, compute_high_aht_coaching
-                )
+                        )
 
             # OPTIMIZED: Calculate rubric code analysis using vectorized operations
             if "Rubric Details" in filtered_df.columns:
@@ -11601,7 +11535,7 @@ if (
                 high_aht_coaching_categories = get_cached_computation(
                     cache_key_high_aht_coaching_analysis,
                     compute_high_aht_coaching_analysis,
-                )
+                        )
 
                 if high_aht_coaching_categories:
                     # Calculate frequencies
@@ -11742,7 +11676,7 @@ if (
                 )
                 high_aht_challenge_categories = get_cached_computation(
                     cache_key_high_aht_challenges, compute_high_aht_challenges
-                )
+                        )
 
                 if high_aht_challenge_categories:
                     from collections import Counter
