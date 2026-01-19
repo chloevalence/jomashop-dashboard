@@ -8620,7 +8620,86 @@ if "speaking_time_per_speaker" in meta_df.columns:
             return total
         return None
 
-    meta_df["Call Duration (s)"] = meta_df.apply(compute_speaking_time, axis=1)
+    # #region agent log
+    try:
+        with open(
+            "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+            "a",
+        ) as f:
+            import json as json_module
+
+            f.write(
+                json_module.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H7",
+                        "location": "streamlit_app_1_3_4.py:8623",
+                        "message": "Starting compute_speaking_time apply",
+                        "data": {"df_rows": len(meta_df)},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
+    try:
+        meta_df["Call Duration (s)"] = meta_df.apply(compute_speaking_time, axis=1)
+        # #region agent log
+        try:
+            with open(
+                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                "a",
+            ) as f:
+                import json as json_module
+
+                f.write(
+                    json_module.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H7",
+                            "location": "streamlit_app_1_3_4.py:8623",
+                            "message": "compute_speaking_time apply completed",
+                            "data": {},
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except:
+            pass
+        # #endregion
+    except Exception as apply_error:
+        logger.error(f"Error computing speaking time: {apply_error}")
+        # #region agent log
+        try:
+            with open(
+                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                "a",
+            ) as f:
+                import json as json_module
+
+                f.write(
+                    json_module.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H7",
+                            "location": "streamlit_app_1_3_4.py:8623",
+                            "message": "compute_speaking_time apply failed",
+                            "data": {"error": str(apply_error)[:200]},
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except:
+            pass
+        # #endregion
+        meta_df["Call Duration (s)"] = None
 else:
     meta_df["Call Duration (s)"] = None
 
@@ -8646,7 +8725,85 @@ if ("Call Date" not in meta_df.columns) or meta_df["Call Date"].isna().all():
         )
         st.stop()
 
-meta_df.dropna(subset=["Call Date"], inplace=True)
+# #region agent log
+try:
+    with open(
+        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+        "a",
+    ) as f:
+        import json as json_module
+
+        f.write(
+            json_module.dumps(
+                {
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "H7",
+                    "location": "streamlit_app_1_3_4.py:8649",
+                    "message": "About to dropna on Call Date",
+                    "data": {"df_rows_before": len(meta_df)},
+                    "timestamp": int(time.time() * 1000),
+                }
+            )
+            + "\n"
+        )
+except:
+    pass
+# #endregion
+try:
+    meta_df.dropna(subset=["Call Date"], inplace=True)
+    # #region agent log
+    try:
+        with open(
+            "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+            "a",
+        ) as f:
+            import json as json_module
+
+            f.write(
+                json_module.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H7",
+                        "location": "streamlit_app_1_3_4.py:8649",
+                        "message": "dropna on Call Date completed",
+                        "data": {"df_rows_after": len(meta_df)},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
+except Exception as dropna_error:
+    logger.error(f"Error dropping NA from Call Date: {dropna_error}")
+    # #region agent log
+    try:
+        with open(
+            "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+            "a",
+        ) as f:
+            import json as json_module
+
+            f.write(
+                json_module.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H7",
+                        "location": "streamlit_app_1_3_4.py:8649",
+                        "message": "dropna on Call Date failed",
+                        "data": {"error": str(dropna_error)[:200]},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
 
 # Normalize agent IDs AFTER column rename (works for both cached and new data)
 # This ensures normalization works regardless of whether data came from cache or fresh load
@@ -8655,7 +8812,87 @@ agent_ids_updated = False
 if "Agent" in meta_df.columns:
     # Store original agent IDs to check if any changed
     original_agents = meta_df["Agent"].copy()
-    meta_df["Agent"] = meta_df["Agent"].apply(normalize_agent_id)
+    # #region agent log
+    try:
+        with open(
+            "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+            "a",
+        ) as f:
+            import json as json_module
+
+            f.write(
+                json_module.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H7",
+                        "location": "streamlit_app_1_3_4.py:8658",
+                        "message": "Starting agent ID normalization apply",
+                        "data": {"df_rows": len(meta_df)},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
+    try:
+        meta_df["Agent"] = meta_df["Agent"].apply(normalize_agent_id)
+        # #region agent log
+        try:
+            with open(
+                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                "a",
+            ) as f:
+                import json as json_module
+
+                f.write(
+                    json_module.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H7",
+                            "location": "streamlit_app_1_3_4.py:8658",
+                            "message": "Agent ID normalization apply completed",
+                            "data": {},
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except:
+            pass
+        # #endregion
+    except Exception as norm_error:
+        logger.error(f"Error normalizing agent IDs: {norm_error}")
+        # #region agent log
+        try:
+            with open(
+                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                "a",
+            ) as f:
+                import json as json_module
+
+                f.write(
+                    json_module.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H7",
+                            "location": "streamlit_app_1_3_4.py:8658",
+                            "message": "Agent ID normalization apply failed",
+                            "data": {"error": str(norm_error)[:200]},
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except:
+            pass
+        # #endregion
+        # Fallback: keep original agent IDs if normalization fails
+        meta_df["Agent"] = original_agents
 
     # Check if any agent IDs were actually changed
     # Count how many actually changed (not just NaN differences)
