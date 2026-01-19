@@ -385,6 +385,9 @@ try:
         save_metrics(metrics)
         st.session_state.session_started = True
         logger.info(f"New session started. Total sessions: {metrics['sessions']}")
+    else:
+        # Session already started - don't log again (prevents repeated logs on reruns)
+        logger.debug("Session already initialized, skipping session start log")
 except (RuntimeError, AttributeError):
     # Streamlit not initialized yet, skip - this is normal during module import
     pass
@@ -6207,94 +6210,108 @@ cookie = st.secrets["cookie"]
 auto_hash = st.secrets.get("auto_hash", False)
 
 # Initialize authenticator with retry logic for CookieManager loading issues
-authenticator = None
-max_retries = 7  # Increased retries for better reliability
-retry_delay = 4  # Increased initial delay
-skip_auth_after_failures = st.session_state.get("skip_auth_after_failures", False)
-
-# Check if user has chosen to skip auth after persistent failures
-if skip_auth_after_failures:
-    logger.warning(
-        "Skipping authentication due to persistent CookieManager failures (user choice)"
-    )
-    authenticator = None
+# CRITICAL FIX: Cache authenticator in session_state to prevent reinitialization on every rerun
+if (
+    "authenticator" in st.session_state
+    and st.session_state["authenticator"] is not None
+):
+    # Use cached authenticator - already initialized
+    authenticator = st.session_state["authenticator"]
+    logger.debug("Using cached authenticator from session_state")
 else:
-    for attempt in range(max_retries):
-        try:
-            # Add progressive delay before each attempt (except first)
-            if attempt > 0:
-                wait_before = retry_delay * (1.5 ** (attempt - 1))
-                logger.info(
-                    f"Waiting {wait_before:.1f}s before authentication attempt {attempt + 1}/{max_retries}"
-                )
-                time.sleep(min(wait_before, 10))  # Cap at 10 seconds
+    # Need to initialize authenticator
+    authenticator = None
+    max_retries = 7  # Increased retries for better reliability
+    retry_delay = 4  # Increased initial delay
+    skip_auth_after_failures = st.session_state.get("skip_auth_after_failures", False)
 
-            authenticator = stauth.Authenticate(
-                credentials,
-                cookie["name"],
-                cookie["key"],
-                cookie["expiry_days"],
-                auto_hash=auto_hash,
-            )
-            # Test if CookieManager actually loaded by checking if we can access it
-            # This helps catch cases where initialization appears to succeed but component isn't ready
+    # Check if user has chosen to skip auth after persistent failures
+    if skip_auth_after_failures:
+        logger.warning(
+            "Skipping authentication due to persistent CookieManager failures (user choice)"
+        )
+        authenticator = None
+        st.session_state["authenticator"] = None
+    else:
+        for attempt in range(max_retries):
             try:
-                # Longer delay to let component fully initialize
-                time.sleep(1.0)
-            except Exception:
-                pass
-            logger.info(
-                f"Authentication component initialized successfully on attempt {attempt + 1}"
-            )
-            break  # Success, exit retry loop
-        except Exception as e:
-            error_msg = str(e).lower()
-            is_component_error = (
-                "cookiemanager" in error_msg
-                or "component" in error_msg
-                or "frontend" in error_msg
-                or "extra_streamlit_components" in error_msg
-                or "trouble loading" in error_msg
-                or "cookie_manager" in error_msg
-                or "cannot assemble" in error_msg
-                or "cookie manager" in error_msg
-                or "frontend assets" in error_msg
-                or "network latency" in error_msg
-                or "proxy settings" in error_msg
-                or "importing a module script failed" in error_msg
-                or "module script failed" in error_msg
-            )
+                # Add progressive delay before each attempt (except first)
+                if attempt > 0:
+                    wait_before = retry_delay * (1.5 ** (attempt - 1))
+                    logger.info(
+                        f"Waiting {wait_before:.1f}s before authentication attempt {attempt + 1}/{max_retries}"
+                    )
+                    time.sleep(min(wait_before, 10))  # Cap at 10 seconds
 
-            if is_component_error and attempt < max_retries - 1:
-                # Retry with exponential backoff (longer delays)
-                wait_time = retry_delay * (2**attempt)
-                wait_time = min(wait_time, 15)  # Cap at 15 seconds
-                logger.warning(
-                    f"CookieManager initialization failed (attempt {attempt + 1}/{max_retries}). "
-                    f"Retrying in {wait_time}s... Error: {e}"
+                authenticator = stauth.Authenticate(
+                    credentials,
+                    cookie["name"],
+                    cookie["key"],
+                    cookie["expiry_days"],
+                    auto_hash=auto_hash,
                 )
-                # Show a loading message to user
-                if attempt == 0:
-                    with st.spinner(
-                        f"Loading authentication component... (attempt {attempt + 1}/{max_retries})"
-                    ):
+                # Test if CookieManager actually loaded by checking if we can access it
+                # This helps catch cases where initialization appears to succeed but component isn't ready
+                try:
+                    # Longer delay to let component fully initialize
+                    time.sleep(1.0)
+                except Exception:
+                    pass
+                logger.info(
+                    f"Authentication component initialized successfully on attempt {attempt + 1}"
+                )
+                # Cache authenticator in session_state to prevent reinitialization on reruns
+                st.session_state["authenticator"] = authenticator
+                break  # Success, exit retry loop
+            except Exception as e:
+                error_msg = str(e).lower()
+                is_component_error = (
+                    "cookiemanager" in error_msg
+                    or "component" in error_msg
+                    or "frontend" in error_msg
+                    or "extra_streamlit_components" in error_msg
+                    or "trouble loading" in error_msg
+                    or "cookie_manager" in error_msg
+                    or "cannot assemble" in error_msg
+                    or "cookie manager" in error_msg
+                    or "frontend assets" in error_msg
+                    or "network latency" in error_msg
+                    or "proxy settings" in error_msg
+                    or "importing a module script failed" in error_msg
+                    or "module script failed" in error_msg
+                )
+
+                if is_component_error and attempt < max_retries - 1:
+                    # Retry with exponential backoff (longer delays)
+                    wait_time = retry_delay * (2**attempt)
+                    wait_time = min(wait_time, 15)  # Cap at 15 seconds
+                    logger.warning(
+                        f"CookieManager initialization failed (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying in {wait_time}s... Error: {e}"
+                    )
+                    # Show a loading message to user
+                    if attempt == 0:
+                        with st.spinner(
+                            f"Loading authentication component... (attempt {attempt + 1}/{max_retries})"
+                        ):
+                            time.sleep(wait_time)
+                    else:
                         time.sleep(wait_time)
+                    continue
                 else:
-                    time.sleep(wait_time)
-                continue
-            else:
-                # Final attempt failed or non-component error
-                logger.error(
-                    f"Failed to initialize authenticator after {attempt + 1} attempts: {e}"
-                )
-                if is_component_error:
-                    # Will be handled in login section below
-                    authenticator = None
-                else:
-                    st.error("**Authentication System Error**")
-                    st.error(f"Failed to initialize authentication: {str(e)}")
-                    logger.exception("Authentication initialization error")
-                    st.stop()
+                    # Final attempt failed or non-component error
+                    logger.error(
+                        f"Failed to initialize authenticator after {attempt + 1} attempts: {e}"
+                    )
+                    if is_component_error:
+                        # Will be handled in login section below
+                        authenticator = None
+                        st.session_state["authenticator"] = None
+                    else:
+                        st.error("**Authentication System Error**")
+                        st.error(f"Failed to initialize authentication: {str(e)}")
+                        logger.exception("Authentication initialization error")
+                        st.stop()
 
 # --- LOGIN GUARD ---
 auth_status = st.session_state.get("authentication_status")
@@ -6334,6 +6351,9 @@ if auth_status is None:
                 if "authenticator_retry_count" not in st.session_state:
                     st.session_state.authenticator_retry_count = 0
                 st.session_state.authenticator_retry_count += 1
+                # Clear cached authenticator to force reinitialization
+                if "authenticator" in st.session_state:
+                    del st.session_state["authenticator"]
                 # Clear skip flag if user wants to retry
                 if "skip_auth_after_failures" in st.session_state:
                     del st.session_state["skip_auth_after_failures"]
@@ -6414,6 +6434,9 @@ if auth_status is None:
                     # Clear session state to force re-initialization
                     if "skip_auth_after_failures" in st.session_state:
                         del st.session_state["skip_auth_after_failures"]
+                    # Clear cached authenticator to force reinitialization
+                    if "authenticator" in st.session_state:
+                        del st.session_state["authenticator"]
                     if "authenticator_retry_count" not in st.session_state:
                         st.session_state.authenticator_retry_count = 0
                     st.session_state.authenticator_retry_count += 1
