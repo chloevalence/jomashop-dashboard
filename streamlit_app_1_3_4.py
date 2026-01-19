@@ -8210,7 +8210,10 @@ try:
                             "data": {
                                 "rows": len(meta_df),
                                 "cols": len(meta_df.columns),
-                                "memory_usage_mb": meta_df.memory_usage(deep=True).sum() / (1024 * 1024) if not meta_df.empty else 0,
+                                "memory_usage_mb": meta_df.memory_usage(deep=True).sum()
+                                / (1024 * 1024)
+                                if not meta_df.empty
+                                else 0,
                             },
                             "timestamp": int(time.time() * 1000),
                         }
