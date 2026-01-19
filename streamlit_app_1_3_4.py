@@ -2657,11 +2657,41 @@ def load_all_calls_cached(cache_version=0):
             pass
         # #endregion
 
-        if load_duration > timeout_seconds:
+        # CRITICAL: Also check for very old stuck loads (more than 5 minutes = likely crashed)
+        # This prevents infinite wait loops when a load crashes or hangs
+        if load_duration > timeout_seconds or load_duration > 300:  # 5 minutes hard limit
             logger.warning(
                 f"Data load has been in progress for {load_duration / 60:.1f} minutes "
-                f"(exceeded {timeout_seconds / 60:.0f} minute timeout), clearing flag and retrying"
+                f"(exceeded timeout), clearing stale flag and retrying"
             )
+            # #region agent log
+            try:
+                with open(
+                    "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                    "a",
+                ) as f:
+                    import json as json_module
+
+                    f.write(
+                        json_module.dumps(
+                            {
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H2,H5",
+                                "location": "streamlit_app_1_3_4.py:2629",
+                                "message": "Clearing stale load_in_progress flag",
+                                "data": {
+                                    "load_duration_seconds": load_duration,
+                                    "reason": "timeout_exceeded",
+                                },
+                                "timestamp": int(time.time() * 1000),
+                            }
+                        )
+                        + "\n"
+                    )
+            except:
+                pass
+            # #endregion
             # Clear the flag and start a new load
             if load_in_progress_key in st.session_state:
                 del st.session_state[load_in_progress_key]
