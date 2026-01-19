@@ -6129,13 +6129,17 @@ def load_new_calls_only():
                 total_files_processed = existing_files_count + processed_count
                 st.session_state["_total_s3_files_count"] = total_s3_files
                 st.session_state["_processed_files_count"] = total_files_processed
-                st.session_state["_remaining_files_count"] = total_s3_files - total_files_processed
+                st.session_state["_remaining_files_count"] = (
+                    total_s3_files - total_files_processed
+                )
                 logger.debug(
                     f" Stored file counts in session state: total={total_s3_files}, processed={total_files_processed}, remaining={total_s3_files - total_files_processed}"
                 )
             except Exception as state_error:
-                logger.warning(f" Could not store file counts in session state: {state_error}")
-            
+                logger.warning(
+                    f" Could not store file counts in session state: {state_error}"
+                )
+
             # CRITICAL FIX: Safely create return tuple to prevent crashes
             error_result = errors if errors else None
             call_count = len(new_calls) if new_calls else 0
@@ -6935,7 +6939,7 @@ if is_super_admin():
                 total_s3_files = st.session_state.get("_total_s3_files_count", 0)
                 processed_files = st.session_state.get("_processed_files_count", 0)
                 remaining_files = st.session_state.get("_remaining_files_count", 0)
-                
+
                 # If session state doesn't have the info, try to calculate from cache metadata
                 if total_s3_files == 0 or processed_files == 0:
                     # Try to get from disk cache metadata
@@ -6951,9 +6955,9 @@ if is_super_admin():
                 logger.warning(f" Could not determine remaining files: {count_error}")
                 # If we can't determine, assume complete (safer default)
                 remaining_files = 0
-            
+
             # Mark cache as complete only if no files remaining, otherwise keep as partial
-            is_complete = (remaining_files == 0)
+            is_complete = remaining_files == 0
             try:
                 save_cached_data_to_disk(
                     all_calls_merged,
@@ -6961,15 +6965,15 @@ if is_super_admin():
                     partial=not is_complete,  # Set partial=True if files remain
                 )
                 if is_complete:
-                    logger.info(f" Marked cache as complete: {len(all_calls_merged)} calls (all {processed_files} files processed)")
+                    logger.info(
+                        f" Marked cache as complete: {len(all_calls_merged)} calls (all {processed_files} files processed)"
+                    )
                 else:
                     logger.info(
                         f" Marked cache as PARTIAL: {len(all_calls_merged)} calls ({processed_files}/{total_s3_files} files processed, {remaining_files} remaining)"
                     )
             except Exception as save_error:
-                logger.error(
-                    f" CRITICAL: Failed to save cache: {save_error}"
-                )
+                logger.error(f" CRITICAL: Failed to save cache: {save_error}")
                 logger.error(
                     "Cache may not be saved correctly - this could cause issues on next refresh"
                 )
