@@ -6376,12 +6376,6 @@ else:
     authenticator = None
 
 # Check if user has chosen to skip auth after persistent failures
-# CRITICAL FIX: Ensure max_retries is defined before use (defensive check)
-if not isinstance(max_retries, int):
-    max_retries = 7
-if not isinstance(retry_delay, (int, float)):
-    retry_delay = 4
-
 if skip_auth_after_failures:
     logger.warning(
         "Skipping authentication due to persistent CookieManager failures (user choice)"
