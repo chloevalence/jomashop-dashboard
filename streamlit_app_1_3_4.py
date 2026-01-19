@@ -450,7 +450,7 @@ def get_df_hash(df):
         # Handle None or empty DataFrame
         if df is None:
             return "none_df"
-        if not hasattr(df, '__len__'):
+        if not hasattr(df, "__len__"):
             return "invalid_df"
         if len(df) == 0:
             return "empty_df"
@@ -465,7 +465,7 @@ def get_df_hash(df):
         except Exception:
             pass  # Logger might not be available
         try:
-            if df is not None and hasattr(df, '__len__'):
+            if df is not None and hasattr(df, "__len__"):
                 return str(hash(str(len(df))))
             return "error_hash"
         except Exception:
@@ -490,7 +490,7 @@ def get_cached_computation(cache_key, compute_func, *args, **kwargs):
         if not hasattr(st, "session_state"):
             # Streamlit not ready, just compute without caching
             return compute_func(*args, **kwargs)
-        
+
         # Try to access session_state to verify it's available
         _ = st.session_state
     except (RuntimeError, AttributeError, NameError):
@@ -499,7 +499,7 @@ def get_cached_computation(cache_key, compute_func, *args, **kwargs):
     except Exception:
         # Any other error accessing Streamlit, compute without caching
         return compute_func(*args, **kwargs)
-    
+
     # Streamlit is ready, try to use caching
     try:
         if cache_key not in st.session_state:
