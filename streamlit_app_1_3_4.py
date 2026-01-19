@@ -2651,7 +2651,36 @@ def load_all_calls_cached(cache_version=0):
                 waited += wait_interval
 
                 # Check if load completed
-                if not st.session_state.get(load_in_progress_key, False):
+                flag_still_set = st.session_state.get(load_in_progress_key, False)
+                # #region agent log
+                try:
+                    with open(
+                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                        "a",
+                    ) as f:
+                        import json as json_module
+
+                        f.write(
+                            json_module.dumps(
+                                {
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H3",
+                                    "location": "streamlit_app_1_3_4.py:2654",
+                                    "message": "Wait loop check",
+                                    "data": {
+                                        "waited": waited,
+                                        "flag_still_set": flag_still_set,
+                                    },
+                                    "timestamp": int(time.time() * 1000),
+                                }
+                            )
+                            + "\n"
+                        )
+                except:
+                    pass
+                # #endregion
+                if not flag_still_set:
                     # Load completed, try to get cached result
                     logger.info("First load completed, retrieving cached data")
                     break
@@ -2777,6 +2806,30 @@ def load_all_calls_cached(cache_version=0):
             return [], []
 
     # Mark load as in progress with timestamp
+    # #region agent log
+    try:
+        with open(
+            "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log", "a"
+        ) as f:
+            import json as json_module
+
+            f.write(
+                json_module.dumps(
+                    {
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "H2,H4",
+                        "location": "streamlit_app_1_3_4.py:2780",
+                        "message": "Setting load_in_progress flag",
+                        "data": {"flag": True, "timestamp": time.time()},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except:
+        pass
+    # #endregion
     st.session_state[load_in_progress_key] = True
     st.session_state[load_start_time_key] = time.time()
     try:
@@ -3007,12 +3060,71 @@ def load_all_calls_cached(cache_version=0):
                 s3_client, s3_bucket = get_s3_client_and_bucket()
                 if s3_client and s3_bucket:
                     try:
+                        # #region agent log
+                        try:
+                            with open(
+                                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                                "a",
+                            ) as f:
+                                import json as json_module
+
+                                f.write(
+                                    json_module.dumps(
+                                        {
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "H1",
+                                            "location": "streamlit_app_1_3_4.py:3006",
+                                            "message": "Starting S3 cache load",
+                                            "data": {
+                                                "bucket": s3_bucket,
+                                                "key": S3_CACHE_KEY,
+                                            },
+                                            "timestamp": int(time.time() * 1000),
+                                        }
+                                    )
+                                    + "\n"
+                                )
+                        except:
+                            pass
+                        # #endregion
                         # CRITICAL: Check file size first to decide loading strategy
                         # Large files (>100MB) need chunked loading to prevent memory issues
                         head_response = s3_client.head_object(
                             Bucket=s3_bucket, Key=S3_CACHE_KEY
                         )
                         file_size = head_response.get("ContentLength", 0)
+                        # #region agent log
+                        try:
+                            with open(
+                                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                                "a",
+                            ) as f:
+                                import json as json_module
+
+                                f.write(
+                                    json_module.dumps(
+                                        {
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "H1",
+                                            "location": "streamlit_app_1_3_4.py:3015",
+                                            "message": "S3 file size check complete",
+                                            "data": {
+                                                "file_size_mb": file_size
+                                                / (1024 * 1024),
+                                                "strategy": "chunked"
+                                                if file_size > 100 * 1024 * 1024
+                                                else "direct",
+                                            },
+                                            "timestamp": int(time.time() * 1000),
+                                        }
+                                    )
+                                    + "\n"
+                                )
+                        except:
+                            pass
+                        # #endregion
 
                         if file_size > 100 * 1024 * 1024:  # > 100MB
                             logger.info(
@@ -3028,6 +3140,33 @@ def load_all_calls_cached(cache_version=0):
                             total_bytes = 0
 
                             try:
+                                # #region agent log
+                                try:
+                                    with open(
+                                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                                        "a",
+                                    ) as f:
+                                        import json as json_module
+
+                                        f.write(
+                                            json_module.dumps(
+                                                {
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "H1",
+                                                    "location": "streamlit_app_1_3_4.py:3031",
+                                                    "message": "Starting chunked streaming",
+                                                    "data": {"chunk_size": chunk_size},
+                                                    "timestamp": int(
+                                                        time.time() * 1000
+                                                    ),
+                                                }
+                                            )
+                                            + "\n"
+                                        )
+                                except:
+                                    pass
+                                # #endregion
                                 for chunk in body.iter_chunks(chunk_size=chunk_size):
                                     chunks.append(chunk)
                                     total_bytes += len(chunk)
@@ -3036,6 +3175,36 @@ def load_all_calls_cached(cache_version=0):
                                         logger.debug(
                                             f" Loading S3 cache: {total_bytes / (1024 * 1024):.1f} MB downloaded..."
                                         )
+                                        # #region agent log
+                                        try:
+                                            with open(
+                                                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                                                "a",
+                                            ) as f:
+                                                import json as json_module
+
+                                                f.write(
+                                                    json_module.dumps(
+                                                        {
+                                                            "sessionId": "debug-session",
+                                                            "runId": "run1",
+                                                            "hypothesisId": "H1",
+                                                            "location": "streamlit_app_1_3_4.py:3035",
+                                                            "message": "Chunked streaming progress",
+                                                            "data": {
+                                                                "total_bytes_mb": total_bytes
+                                                                / (1024 * 1024)
+                                                            },
+                                                            "timestamp": int(
+                                                                time.time() * 1000
+                                                            ),
+                                                        }
+                                                    )
+                                                    + "\n"
+                                                )
+                                        except:
+                                            pass
+                                        # #endregion
                             except Exception as stream_error:
                                 logger.error(
                                     f" Error streaming S3 cache: {stream_error}"
@@ -3044,9 +3213,83 @@ def load_all_calls_cached(cache_version=0):
 
                             # Parse JSON from streamed chunks
                             try:
+                                # #region agent log
+                                try:
+                                    with open(
+                                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                                        "a",
+                                    ) as f:
+                                        import json as json_module
+
+                                        f.write(
+                                            json_module.dumps(
+                                                {
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "H1",
+                                                    "location": "streamlit_app_1_3_4.py:3047",
+                                                    "message": "Starting JSON parse",
+                                                    "data": {
+                                                        "total_chunks": len(chunks),
+                                                        "total_bytes_mb": total_bytes
+                                                        / (1024 * 1024),
+                                                    },
+                                                    "timestamp": int(
+                                                        time.time() * 1000
+                                                    ),
+                                                }
+                                            )
+                                            + "\n"
+                                        )
+                                except:
+                                    pass
+                                # #endregion
                                 s3_cached_data = json.loads(
                                     b"".join(chunks).decode("utf-8")
                                 )
+                                # #region agent log
+                                try:
+                                    with open(
+                                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                                        "a",
+                                    ) as f:
+                                        import json as json_module
+
+                                        f.write(
+                                            json_module.dumps(
+                                                {
+                                                    "sessionId": "debug-session",
+                                                    "runId": "run1",
+                                                    "hypothesisId": "H1",
+                                                    "location": "streamlit_app_1_3_4.py:3050",
+                                                    "message": "JSON parse complete",
+                                                    "data": {
+                                                        "has_call_data": "call_data"
+                                                        in s3_cached_data
+                                                        if isinstance(
+                                                            s3_cached_data, dict
+                                                        )
+                                                        else False,
+                                                        "call_data_len": len(
+                                                            s3_cached_data.get(
+                                                                "call_data", []
+                                                            )
+                                                        )
+                                                        if isinstance(
+                                                            s3_cached_data, dict
+                                                        )
+                                                        else 0,
+                                                    },
+                                                    "timestamp": int(
+                                                        time.time() * 1000
+                                                    ),
+                                                }
+                                            )
+                                            + "\n"
+                                        )
+                                except:
+                                    pass
+                                # #endregion
                                 logger.info(
                                     f" Successfully loaded {file_size / (1024 * 1024):.1f}MB S3 cache using chunked streaming"
                                 )
@@ -3633,6 +3876,34 @@ def load_all_calls_cached(cache_version=0):
                 )
 
             # Clear load in progress flag
+            # #region agent log
+            try:
+                with open(
+                    "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log", "a"
+                ) as f:
+                    import json as json_module
+
+                    f.write(
+                        json_module.dumps(
+                            {
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H4",
+                                "location": "streamlit_app_1_3_4.py:3636",
+                                "message": "Clearing load_in_progress flag - success path",
+                                "data": {
+                                    "final_call_data_len": len(final_call_data)
+                                    if final_call_data
+                                    else 0
+                                },
+                                "timestamp": int(time.time() * 1000),
+                            }
+                        )
+                        + "\n"
+                    )
+            except:
+                pass
+            # #endregion
             if load_in_progress_key in st.session_state:
                 del st.session_state[load_in_progress_key]
 
@@ -3640,6 +3911,33 @@ def load_all_calls_cached(cache_version=0):
             # This ensures both caches are in sync with the most recent data
             return final_call_data, final_errors
         except Exception as e:
+            # #region agent log
+            try:
+                with open(
+                    "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log", "a"
+                ) as f:
+                    import json as json_module
+
+                    f.write(
+                        json_module.dumps(
+                            {
+                                "sessionId": "debug-session",
+                                "runId": "run1",
+                                "hypothesisId": "H4",
+                                "location": "streamlit_app_1_3_4.py:3642",
+                                "message": "Exception in load_all_calls_cached",
+                                "data": {
+                                    "error_type": type(e).__name__,
+                                    "error_msg": str(e)[:200],
+                                },
+                                "timestamp": int(time.time() * 1000),
+                            }
+                        )
+                        + "\n"
+                    )
+            except:
+                pass
+            # #endregion
             elapsed = time.time() - start_time
             logger.exception(
                 f" Error in load_all_calls_cached after {elapsed:.1f} seconds: {e}"
@@ -3654,11 +3952,89 @@ def load_all_calls_cached(cache_version=0):
 
             # Clear load in progress flag and timestamp
             try:
+                # #region agent log
+                try:
+                    with open(
+                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                        "a",
+                    ) as f:
+                        import json as json_module
+
+                        f.write(
+                            json_module.dumps(
+                                {
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H4",
+                                    "location": "streamlit_app_1_3_4.py:3657",
+                                    "message": "Attempting to clear load_in_progress flag - error path",
+                                    "data": {
+                                        "flag_exists": load_in_progress_key
+                                        in st.session_state
+                                    },
+                                    "timestamp": int(time.time() * 1000),
+                                }
+                            )
+                            + "\n"
+                        )
+                except:
+                    pass
+                # #endregion
                 if load_in_progress_key in st.session_state:
                     del st.session_state[load_in_progress_key]
                 if load_start_time_key in st.session_state:
                     del st.session_state[load_start_time_key]
+                # #region agent log
+                try:
+                    with open(
+                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                        "a",
+                    ) as f:
+                        import json as json_module
+
+                        f.write(
+                            json_module.dumps(
+                                {
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H4",
+                                    "location": "streamlit_app_1_3_4.py:3660",
+                                    "message": "Successfully cleared load_in_progress flag - error path",
+                                    "data": {},
+                                    "timestamp": int(time.time() * 1000),
+                                }
+                            )
+                            + "\n"
+                        )
+                except:
+                    pass
+                # #endregion
             except Exception as clear_error:
+                # #region agent log
+                try:
+                    with open(
+                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                        "a",
+                    ) as f:
+                        import json as json_module
+
+                        f.write(
+                            json_module.dumps(
+                                {
+                                    "sessionId": "debug-session",
+                                    "runId": "run1",
+                                    "hypothesisId": "H4",
+                                    "location": "streamlit_app_1_3_4.py:3662",
+                                    "message": "Failed to clear load_in_progress flag",
+                                    "data": {"error": str(clear_error)[:200]},
+                                    "timestamp": int(time.time() * 1000),
+                                }
+                            )
+                            + "\n"
+                        )
+                except:
+                    pass
+                # #endregion
                 logger.warning(f"Failed to clear load progress flags: {clear_error}")
 
             # Try to return disk cache if available as fallback
@@ -4739,7 +5115,9 @@ def load_new_calls_only():
             # Track pagination progress
             page_count = 0
             files_per_page = []
-            is_truncated = False  # CRITICAL: Initialize before loop to prevent NameError
+            is_truncated = (
+                False  # CRITICAL: Initialize before loop to prevent NameError
+            )
             consecutive_empty = 0  # Track consecutive empty pages for early exit
             continuation_token = None
             # Use time module (imported at module level, line 13)
@@ -4920,9 +5298,7 @@ def load_new_calls_only():
                 )
                 import traceback
 
-                logger.error(
-                    f" Cache save error traceback: {traceback.format_exc()}"
-                )
+                logger.error(f" Cache save error traceback: {traceback.format_exc()}")
         else:
             if use_cached_keys:
                 logger.debug(" Skipping cache save - using cached keys")
