@@ -5022,7 +5022,7 @@ def load_new_calls_only():
 
         # Process in smaller batches to reduce lock contention with large cache files
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        import time
+        # Note: time module already imported at module level (line 13) - don't import here to avoid UnboundLocalError
 
         BATCH_SIZE = (
             20  # Process 20 CSV files per batch (matches MAX_FILES_PER_REFRESH)
