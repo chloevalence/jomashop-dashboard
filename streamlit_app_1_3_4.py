@@ -2997,12 +2997,67 @@ def load_all_calls_cached(cache_version=0):
                 s3_client, s3_bucket = get_s3_client_and_bucket()
                 if s3_client and s3_bucket:
                     try:
-                        response = s3_client.get_object(
+                        # CRITICAL: Check file size first to decide loading strategy
+                        # Large files (>100MB) need chunked loading to prevent memory issues
+                        head_response = s3_client.head_object(
                             Bucket=s3_bucket, Key=S3_CACHE_KEY
                         )
-                        s3_cached_data = json.loads(
-                            response["Body"].read().decode("utf-8")
-                        )
+                        file_size = head_response.get("ContentLength", 0)
+                        
+                        if file_size > 100 * 1024 * 1024:  # > 100MB
+                            logger.info(
+                                f" S3 cache file is large ({file_size / (1024*1024):.1f}MB) - using chunked streaming to prevent memory issues"
+                            )
+                            # Use chunked loading for large files
+                            response = s3_client.get_object(
+                                Bucket=s3_bucket, Key=S3_CACHE_KEY
+                            )
+                            body = response["Body"]
+                            chunks = []
+                            chunk_size = 8192  # 8KB chunks
+                            total_bytes = 0
+                            
+                            try:
+                                for chunk in body.iter_chunks(chunk_size=chunk_size):
+                                    chunks.append(chunk)
+                                    total_bytes += len(chunk)
+                                    # Log progress for very large files (every 50MB)
+                                    if total_bytes % (50 * 1024 * 1024) < chunk_size:
+                                        logger.debug(
+                                            f" Loading S3 cache: {total_bytes / (1024*1024):.1f} MB downloaded..."
+                                        )
+                            except Exception as stream_error:
+                                logger.error(
+                                    f" Error streaming S3 cache: {stream_error}"
+                                )
+                                raise
+                            
+                            # Parse JSON from streamed chunks
+                            try:
+                                s3_cached_data = json.loads(
+                                    b"".join(chunks).decode("utf-8")
+                                )
+                                logger.info(
+                                    f" Successfully loaded {file_size / (1024*1024):.1f}MB S3 cache using chunked streaming"
+                                )
+                            except json.JSONDecodeError as json_error:
+                                logger.error(
+                                    f" Failed to parse JSON from S3 cache: {json_error}. "
+                                    f"File may be corrupted or incomplete. File size: {file_size / (1024*1024):.1f}MB"
+                                )
+                                raise
+                        else:
+                            # For smaller files, use direct loading (faster)
+                            logger.debug(
+                                f" S3 cache file is small ({file_size / (1024*1024):.1f}MB) - using direct loading"
+                            )
+                            response = s3_client.get_object(
+                                Bucket=s3_bucket, Key=S3_CACHE_KEY
+                            )
+                            s3_cached_data = json.loads(
+                                response["Body"].read().decode("utf-8")
+                            )
+                        
                         if isinstance(s3_cached_data, dict):
                             s3_cache_result = (
                                 s3_cached_data.get("call_data", []),
@@ -3038,7 +3093,12 @@ def load_all_calls_cached(cache_version=0):
                         else:
                             logger.warning(f" Failed to load from S3 cache: {s3_error}")
                     except Exception as s3_error:
-                        logger.warning(f" Failed to load from S3 cache: {s3_error}")
+                        logger.error(f" Failed to load from S3 cache: {s3_error}")
+                        import traceback
+
+                        logger.error(
+                            f" S3 cache load error traceback: {traceback.format_exc()}"
+                        )
 
         # CRITICAL: If S3 cache exists, check if Streamlit cache is stale
         # (Skip this check if we just deleted caches due to reload_all_triggered)
