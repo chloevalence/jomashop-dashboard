@@ -8894,7 +8894,34 @@ if "Agent" in meta_df.columns:
         pass
     # #endregion
     try:
-        meta_df["Agent"] = meta_df["Agent"].apply(normalize_agent_id)
+        # CRITICAL: Add progress indicator to prevent health check timeouts during slow operations
+        with st.spinner("Normalizing agent IDs..."):
+            meta_df["Agent"] = meta_df["Agent"].apply(normalize_agent_id)
+        # #region agent log
+        try:
+            with open(
+                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                "a",
+            ) as f:
+                import json as json_module
+
+                f.write(
+                    json_module.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H7",
+                            "location": "streamlit_app_1_3_4.py:8658",
+                            "message": "Agent ID normalization apply completed",
+                            "data": {},
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except:
+            pass
+        # #endregion
         # #region agent log
         try:
             with open(
