@@ -3674,20 +3674,24 @@ def load_all_calls_cached(cache_version=0):
                                 logger.info(
                                     f" Successfully loaded {file_size / (1024 * 1024):.1f}MB S3 cache using memory-efficient streaming"
                                 )
-                                
+
                                 # CRITICAL: Extract data immediately and clear parsed dict to free memory
                                 if isinstance(s3_cached_data, dict):
                                     s3_cache_result = (
                                         s3_cached_data.get("call_data", []),
                                         s3_cached_data.get("errors", []),
                                     )
-                                    s3_cache_timestamp = s3_cached_data.get("timestamp", None)
-                                    
+                                    s3_cache_timestamp = s3_cached_data.get(
+                                        "timestamp", None
+                                    )
+
                                     # Clear the parsed dict immediately to free memory
                                     del s3_cached_data
                                     gc.collect()
-                                    logger.debug("Cleared parsed JSON dict after extracting data")
-                                    
+                                    logger.debug(
+                                        "Cleared parsed JSON dict after extracting data"
+                                    )
+
                                     # Process extracted data (same as small file path)
                                     cache_data = (
                                         s3_cache_result[0]
@@ -3696,24 +3700,33 @@ def load_all_calls_cached(cache_version=0):
                                         else []
                                     )
                                     cache_data_len = (
-                                        len(cache_data) if isinstance(cache_data, list) else 0
+                                        len(cache_data)
+                                        if isinstance(cache_data, list)
+                                        else 0
                                     )
                                     logger.info(
                                         f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                                     )
-                                    
+
                                     # Log memory after S3 cache load
-                                    memory_after_s3_load = log_memory_usage("After S3 cache load (large file)")
-                                    if memory_after_s3_load > 0 and memory_after_s3_load > 2500:
+                                    memory_after_s3_load = log_memory_usage(
+                                        "After S3 cache load (large file)"
+                                    )
+                                    if (
+                                        memory_after_s3_load > 0
+                                        and memory_after_s3_load > 2500
+                                    ):
                                         logger.warning(
                                             f"High memory usage after S3 cache load: {memory_after_s3_load:.1f}MB - consider closing other sessions"
                                         )
-                                    
+
                                     # Cache in session state to avoid duplicate loads
                                     st.session_state[s3_cache_key] = s3_cache_result
                                     if s3_cache_timestamp:
-                                        st.session_state[s3_timestamp_key] = s3_cache_timestamp
-                                    
+                                        st.session_state[s3_timestamp_key] = (
+                                            s3_cache_timestamp
+                                        )
+
                                     # Force garbage collection after storing in session state
                                     gc.collect()
                                 else:
@@ -3754,12 +3767,14 @@ def load_all_calls_cached(cache_version=0):
                                 s3_cached_data.get("errors", []),
                             )
                             s3_cache_timestamp = s3_cached_data.get("timestamp", None)
-                            
+
                             # CRITICAL: Clear parsed dict immediately after extracting data to free memory
                             del s3_cached_data
                             gc.collect()
-                            logger.debug("Cleared parsed JSON dict after extracting data (small file path)")
-                            
+                            logger.debug(
+                                "Cleared parsed JSON dict after extracting data (small file path)"
+                            )
+
                             # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
                             cache_data = (
                                 s3_cache_result[0]
@@ -3773,9 +3788,11 @@ def load_all_calls_cached(cache_version=0):
                             logger.info(
                                 f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                             )
-                            
+
                             # Log memory after S3 cache load
-                            memory_after_s3_load = log_memory_usage("After S3 cache load (small file)")
+                            memory_after_s3_load = log_memory_usage(
+                                "After S3 cache load (small file)"
+                            )
                             if memory_after_s3_load > 0 and memory_after_s3_load > 2500:
                                 logger.warning(
                                     f"High memory usage after S3 cache load: {memory_after_s3_load:.1f}MB - consider closing other sessions"
@@ -3785,7 +3802,7 @@ def load_all_calls_cached(cache_version=0):
                             st.session_state[s3_cache_key] = s3_cache_result
                             if s3_cache_timestamp:
                                 st.session_state[s3_timestamp_key] = s3_cache_timestamp
-                            
+
                             # Force garbage collection after storing in session state
                             gc.collect()
                     except ClientError as s3_error:
