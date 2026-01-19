@@ -447,13 +447,23 @@ def get_df_hash(df):
         str: Hash string for use as cache key
     """
     try:
+        # Handle empty DataFrame
+        if df is None or len(df) == 0:
+            return "empty_df"
         # Create a hash based on DataFrame size, columns, and sample of index
         # This is fast and sufficient for cache invalidation
         index_sample = str(df.index.tolist()[:10]) if len(df) > 0 else ""
         return str(hash(str(len(df)) + str(df.columns.tolist()) + index_sample))
-    except Exception:
+    except Exception as e:
         # Fallback to simple hash if anything fails
-        return str(hash(str(len(df))))
+        try:
+            logger.debug(f"Error computing DataFrame hash: {e}")
+        except Exception:
+            pass  # Logger might not be available
+        try:
+            return str(hash(str(len(df)) if df is not None else "empty"))
+        except Exception:
+            return "error_hash"
 
 
 def get_cached_computation(cache_key, compute_func, *args, **kwargs):
@@ -467,9 +477,29 @@ def get_cached_computation(cache_key, compute_func, *args, **kwargs):
     Returns:
         Result from compute_func (cached or newly computed)
     """
-    if cache_key not in st.session_state:
-        st.session_state[cache_key] = compute_func(*args, **kwargs)
-    return st.session_state[cache_key]
+    try:
+        # Check if Streamlit is ready
+        if not hasattr(st, 'session_state'):
+            # Streamlit not ready, just compute without caching
+            return compute_func(*args, **kwargs)
+        
+        if cache_key not in st.session_state:
+            st.session_state[cache_key] = compute_func(*args, **kwargs)
+        return st.session_state[cache_key]
+    except (RuntimeError, AttributeError) as e:
+        # Streamlit not ready or session_state not available
+        try:
+            logger.debug(f"Streamlit not ready for caching, computing directly: {e}")
+        except Exception:
+            pass  # Logger might not be available
+        return compute_func(*args, **kwargs)
+    except Exception as e:
+        # Other error - log and compute directly
+        try:
+            logger.warning(f"Error in get_cached_computation, computing directly: {e}")
+        except Exception:
+            pass  # Logger might not be available
+        return compute_func(*args, **kwargs)
 
 
 def st_pyplot_safe(fig, **kwargs):
