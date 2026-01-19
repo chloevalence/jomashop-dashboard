@@ -2624,8 +2624,10 @@ def load_all_calls_cached(cache_version=0):
         # Check if load has been in progress for too long (timeout after 5 minutes)
         load_start_time = st.session_state.get(load_start_time_key, time.time())
         load_duration = time.time() - load_start_time
-        timeout_seconds = 5 * 60  # 5 minutes (reduced from 30 minutes to detect stuck loads faster)
-        
+        timeout_seconds = (
+            5 * 60
+        )  # 5 minutes (reduced from 30 minutes to detect stuck loads faster)
+
         # #region agent log
         try:
             with open(
@@ -2659,7 +2661,9 @@ def load_all_calls_cached(cache_version=0):
 
         # CRITICAL: Also check for very old stuck loads (more than 5 minutes = likely crashed)
         # This prevents infinite wait loops when a load crashes or hangs
-        if load_duration > timeout_seconds or load_duration > 300:  # 5 minutes hard limit
+        if (
+            load_duration > timeout_seconds or load_duration > 300
+        ):  # 5 minutes hard limit
             logger.warning(
                 f"Data load has been in progress for {load_duration / 60:.1f} minutes "
                 f"(exceeded timeout), clearing stale flag and retrying"
@@ -2705,13 +2709,15 @@ def load_all_calls_cached(cache_version=0):
             # Wait for the first load to complete (max 60 seconds, check every 1 second)
             # This allows time for the full load to complete (typically 30-40 seconds)
             # CRITICAL: If load is already very old (>4 minutes), don't wait - it's likely stuck
-            max_wait = 60.0 if load_duration < 240 else 5.0  # Only wait 5s if load is >4 min old
+            max_wait = (
+                60.0 if load_duration < 240 else 5.0
+            )  # Only wait 5s if load is >4 min old
             wait_interval = 1.0
             waited = 0.0
             while waited < max_wait:
                 time.sleep(wait_interval)
                 waited += wait_interval
-                
+
                 # Re-check load duration - if it's now >5 minutes, break immediately
                 current_load_duration = time.time() - load_start_time
                 if current_load_duration > 300:  # 5 minutes
@@ -2773,7 +2779,10 @@ def load_all_calls_cached(cache_version=0):
                                         "hypothesisId": "H3",
                                         "location": "streamlit_app_1_3_4.py:2660",
                                         "message": "Wait loop calling load_cached_data_from_disk",
-                                        "data": {"waited": waited, "iteration": int(waited / 2)},
+                                        "data": {
+                                            "waited": waited,
+                                            "iteration": int(waited / 2),
+                                        },
                                         "timestamp": int(time.time() * 1000),
                                     }
                                 )
@@ -2803,7 +2812,9 @@ def load_all_calls_cached(cache_version=0):
                                             "message": "load_cached_data_from_disk returned",
                                             "data": {
                                                 "has_result": disk_result is not None,
-                                                "call_count": len(disk_result[0]) if (disk_result and disk_result[0]) else 0,
+                                                "call_count": len(disk_result[0])
+                                                if (disk_result and disk_result[0])
+                                                else 0,
                                             },
                                             "timestamp": int(time.time() * 1000),
                                         }
@@ -8180,6 +8191,35 @@ try:
         logger.info(
             f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
         )
+        # #region agent log
+        try:
+            with open(
+                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                "a",
+            ) as f:
+                import json as json_module
+
+                f.write(
+                    json_module.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H6",
+                            "location": "streamlit_app_1_3_4.py:8192",
+                            "message": "DataFrame created, about to process",
+                            "data": {
+                                "rows": len(meta_df),
+                                "cols": len(meta_df.columns),
+                                "memory_usage_mb": meta_df.memory_usage(deep=True).sum() / (1024 * 1024) if not meta_df.empty else 0,
+                            },
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except:
+            pass
+        # #endregion
     else:
         # Create empty DataFrame with expected structure if no data
         logger.warning("No valid call_data available, creating empty DataFrame")
