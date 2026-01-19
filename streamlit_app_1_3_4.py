@@ -4388,10 +4388,11 @@ def load_new_calls_only():
             f"existing_calls has {len(existing_calls)} calls"
         )
         # DIAGNOSTIC: Check if cache file exists and its size
+        cache_size = 0
         if CACHE_FILE.exists():
             cache_size = CACHE_FILE.stat().st_size
             logger.info(
-                f" DIAGNOSTIC: Cache file exists at {CACHE_FILE}, size: {cache_size} bytes"
+                f" DIAGNOSTIC: Cache file exists at {CACHE_FILE}, size: {cache_size} bytes ({cache_size / (1024*1024):.1f} MB)"
             )
         else:
             logger.info(f" DIAGNOSTIC: Cache file does NOT exist at {CACHE_FILE}")
@@ -4409,47 +4410,103 @@ def load_new_calls_only():
                 f" Built existing_cache_keys: {len(existing_cache_keys)} keys from {len(existing_calls)} calls"
             )
 
-        # Get last_save_time from cache metadata (if available)
-        # CRITICAL FIX: Read from S3 cache (shared source of truth) first, then fall back to local
+        # CRITICAL OPTIMIZATION: Avoid reloading large cache files (>100MB) multiple times
+        # Extract metadata from file header without loading entire JSON
+        cache_metadata = {}
         last_save_time = 0
-
-        # First, try to get last_save_time from S3 cache (shared across all app instances)
-        try:
-            s3_bucket_name = st.secrets["s3"]["bucket_name"]
-            s3_cache_client = boto3.client(
-                "s3",
-                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+        
+        # For large files (>100MB), skip S3 reloads and extract metadata from header only
+        if cache_size > 100 * 1024 * 1024:  # > 100MB
+            logger.info(
+                f" Cache file is large ({cache_size / (1024*1024):.1f} MB) - extracting metadata from header only to avoid reload"
             )
-            response = s3_cache_client.get_object(
-                Bucket=s3_bucket_name, Key=S3_CACHE_KEY
-            )
-            cached_data = json.loads(response["Body"].read().decode("utf-8"))
-            if isinstance(cached_data, dict):
-                last_save_time = cached_data.get("last_save_time", 0)
-                logger.debug(f" Read last_save_time from S3 cache: {last_save_time}")
-        except Exception as s3_error:
-            logger.debug(f" Could not read last_save_time from S3 cache: {s3_error}")
-            # Fall back to local cache below
-            pass
-
-        # Fallback: Read from local disk cache if S3 read failed
-        if not last_save_time and existing_calls and CACHE_FILE.exists():
+            # Try to read just the metadata header from the file (first 20KB) without loading entire JSON
             try:
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    cached_data = json.load(f)
-                if isinstance(cached_data, dict):
-                    last_save_time = cached_data.get("last_save_time", 0)
+                    # Read first chunk to get metadata
+                    first_chunk = f.read(20480)  # 20KB should be enough for metadata
+                    # Find the last_save_time in the first chunk (metadata is usually at start)
+                    import re
+                    match = re.search(r'"last_save_time"\s*:\s*(\d+)', first_chunk)
+                    if match:
+                        last_save_time = int(match.group(1))
+                        logger.debug(
+                            f" Extracted last_save_time from cache file header: {last_save_time}"
+                        )
+            except Exception as header_read_error:
+                logger.debug(
+                    f" Could not read metadata from cache header: {header_read_error}"
+                )
+        else:
+            # For smaller files, try S3 first (shared source of truth), then local disk
+            # First, try to get last_save_time from S3 cache (shared across all app instances)
+            try:
+                s3_bucket_name = st.secrets["s3"]["bucket_name"]
+                # CRITICAL: Use shorter timeout to prevent hanging
+                config = botocore.config.Config(
+                    connect_timeout=10,
+                    read_timeout=30,  # 30s timeout for metadata read
+                    retries={"max_attempts": 1},  # Only 1 retry for metadata
+                )
+                s3_cache_client = boto3.client(
+                    "s3",
+                    aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                    aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                    region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+                    config=config,
+                )
+                # CRITICAL: Use Range request to read only first 20KB for metadata
+                # This avoids downloading entire large file just to get last_save_time
+                response = s3_cache_client.get_object(
+                    Bucket=s3_bucket_name, Key=S3_CACHE_KEY, Range="bytes=0-20479"
+                )
+                metadata_chunk = response["Body"].read().decode("utf-8")
+                import re
+                match = re.search(r'"last_save_time"\s*:\s*(\d+)', metadata_chunk)
+                if match:
+                    last_save_time = int(match.group(1))
                     logger.debug(
-                        f" Read last_save_time from local cache: {last_save_time}"
+                        f" Read last_save_time from S3 cache metadata (Range request): {last_save_time}"
                     )
-            except Exception:
+            except Exception as s3_error:
+                logger.debug(
+                    f" Could not read last_save_time from S3 cache: {s3_error}"
+                )
+                # Fall back to local cache below
                 pass
+
+            # Fallback: Read from local disk cache if S3 read failed (only for small files)
+            if not last_save_time and existing_calls and CACHE_FILE.exists():
+                try:
+                    # For small files, we can read entire JSON, but try header first
+                    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                        first_chunk = f.read(20480)  # Try header first
+                        import re
+                        match = re.search(r'"last_save_time"\s*:\s*(\d+)', first_chunk)
+                        if match:
+                            last_save_time = int(match.group(1))
+                            logger.debug(
+                                f" Extracted last_save_time from local cache header: {last_save_time}"
+                            )
+                        else:
+                            # Fallback: read entire file (only for small files)
+                            f.seek(0)
+                            cached_data = json.load(f)
+                            if isinstance(cached_data, dict):
+                                last_save_time = cached_data.get("last_save_time", 0)
+                                logger.debug(
+                                    f" Read last_save_time from local cache (full load): {last_save_time}"
+                                )
+                except Exception as local_read_error:
+                    logger.debug(
+                        f" Could not read last_save_time from local cache: {local_read_error}"
+                    )
 
         # Also check session state as fallback for last_save_time
         if not last_save_time:
-            last_save_time = getattr(st.session_state, "_last_incremental_save_time", 0)
+            last_save_time = getattr(
+                st.session_state, "_last_incremental_save_time", 0
+            )
 
         # Get already processed keys from disk cache (survives restarts)
         # Also check session state as a fallback
