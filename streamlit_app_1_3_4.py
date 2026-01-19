@@ -12335,6 +12335,7 @@ with st.expander("Coaching Insights", expanded=False):
     if "Coaching Suggestions" in filtered_df.columns:
         # Collect all coaching suggestions - OPTIMIZED: Use vectorized operations instead of iterrows()
         with st.spinner("Collecting coaching suggestions..."):
+
             def extract_coaching(coaching):
                 """Extract coaching suggestions from a row"""
                 if isinstance(coaching, list):
@@ -12342,7 +12343,7 @@ with st.expander("Coaching Insights", expanded=False):
                 elif isinstance(coaching, str) and coaching:
                     return [coaching]
                 return []
-            
+
             # Use vectorized apply - much faster than iterrows()
             coaching_lists = filtered_df["Coaching Suggestions"].apply(extract_coaching)
             # Flatten the list of lists
