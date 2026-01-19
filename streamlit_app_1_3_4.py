@@ -1704,7 +1704,7 @@ def cleanup_pdf_sourced_calls():
                             Bucket=s3_bucket, Key=S3_CACHE_KEY
                         )
                         file_size = head_response.get("ContentLength", 0)
-                        
+
                         if file_size > max_size:
                             logger.info(
                                 f"S3 cache file too large ({file_size / 1024 / 1024:.1f}MB > {max_size / 1024 / 1024:.1f}MB) - skipping S3 cache load for cleanup to prevent corruption. Using disk cache only."
@@ -1737,13 +1737,17 @@ def cleanup_pdf_sourced_calls():
                                     for chunk in body.iter_chunks(chunk_size=8192):
                                         chunks.append(chunk)
                                     # Load complete file - never truncate JSON
-                                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                                    cached_data = json.loads(
+                                        b"".join(chunks).decode("utf-8")
+                                    )
                                     result_queue.put(cached_data)
                                 except Exception as e:
                                     exception_queue.put(e)
 
                             # Start S3 operation in a thread with 5 second timeout
-                            s3_thread = threading.Thread(target=s3_operation, daemon=True)
+                            s3_thread = threading.Thread(
+                                target=s3_operation, daemon=True
+                            )
                             s3_thread.start()
                             s3_thread.join(timeout=5)  # 5 second timeout
 
@@ -1755,13 +1759,17 @@ def cleanup_pdf_sourced_calls():
                                 # Check if it's a ClientError we should handle
                                 e = exception_queue.get()
                                 if isinstance(e, ClientError):
-                                    error_code = e.response.get("Error", {}).get("Code", "")
+                                    error_code = e.response.get("Error", {}).get(
+                                        "Code", ""
+                                    )
                                     if error_code != "NoSuchKey":
                                         logger.warning(
                                             f"Could not load S3 cache for cleanup: {e}"
                                         )
                                 else:
-                                    logger.warning(f"Error loading S3 cache for cleanup: {e}")
+                                    logger.warning(
+                                        f"Error loading S3 cache for cleanup: {e}"
+                                    )
                             elif not result_queue.empty():
                                 # Successfully loaded data
                                 cached_data = result_queue.get()
@@ -1769,7 +1777,9 @@ def cleanup_pdf_sourced_calls():
                                 errors = cached_data.get("errors", [])
                                 cache_timestamp = cached_data.get("timestamp")
                     except ClientError as head_error:
-                        error_code = head_error.response.get("Error", {}).get("Code", "")
+                        error_code = head_error.response.get("Error", {}).get(
+                            "Code", ""
+                        )
                         if error_code == "NoSuchKey":
                             # File doesn't exist, proceed without cache
                             logger.debug("S3 cache file does not exist")
@@ -3003,10 +3013,10 @@ def load_all_calls_cached(cache_version=0):
                             Bucket=s3_bucket, Key=S3_CACHE_KEY
                         )
                         file_size = head_response.get("ContentLength", 0)
-                        
+
                         if file_size > 100 * 1024 * 1024:  # > 100MB
                             logger.info(
-                                f" S3 cache file is large ({file_size / (1024*1024):.1f}MB) - using chunked streaming to prevent memory issues"
+                                f" S3 cache file is large ({file_size / (1024 * 1024):.1f}MB) - using chunked streaming to prevent memory issues"
                             )
                             # Use chunked loading for large files
                             response = s3_client.get_object(
@@ -3016,7 +3026,7 @@ def load_all_calls_cached(cache_version=0):
                             chunks = []
                             chunk_size = 8192  # 8KB chunks
                             total_bytes = 0
-                            
+
                             try:
                                 for chunk in body.iter_chunks(chunk_size=chunk_size):
                                     chunks.append(chunk)
@@ -3024,32 +3034,32 @@ def load_all_calls_cached(cache_version=0):
                                     # Log progress for very large files (every 50MB)
                                     if total_bytes % (50 * 1024 * 1024) < chunk_size:
                                         logger.debug(
-                                            f" Loading S3 cache: {total_bytes / (1024*1024):.1f} MB downloaded..."
+                                            f" Loading S3 cache: {total_bytes / (1024 * 1024):.1f} MB downloaded..."
                                         )
                             except Exception as stream_error:
                                 logger.error(
                                     f" Error streaming S3 cache: {stream_error}"
                                 )
                                 raise
-                            
+
                             # Parse JSON from streamed chunks
                             try:
                                 s3_cached_data = json.loads(
                                     b"".join(chunks).decode("utf-8")
                                 )
                                 logger.info(
-                                    f" Successfully loaded {file_size / (1024*1024):.1f}MB S3 cache using chunked streaming"
+                                    f" Successfully loaded {file_size / (1024 * 1024):.1f}MB S3 cache using chunked streaming"
                                 )
                             except json.JSONDecodeError as json_error:
                                 logger.error(
                                     f" Failed to parse JSON from S3 cache: {json_error}. "
-                                    f"File may be corrupted or incomplete. File size: {file_size / (1024*1024):.1f}MB"
+                                    f"File may be corrupted or incomplete. File size: {file_size / (1024 * 1024):.1f}MB"
                                 )
                                 raise
                         else:
                             # For smaller files, use direct loading (faster)
                             logger.debug(
-                                f" S3 cache file is small ({file_size / (1024*1024):.1f}MB) - using direct loading"
+                                f" S3 cache file is small ({file_size / (1024 * 1024):.1f}MB) - using direct loading"
                             )
                             response = s3_client.get_object(
                                 Bucket=s3_bucket, Key=S3_CACHE_KEY
@@ -3057,7 +3067,7 @@ def load_all_calls_cached(cache_version=0):
                             s3_cached_data = json.loads(
                                 response["Body"].read().decode("utf-8")
                             )
-                        
+
                         if isinstance(s3_cached_data, dict):
                             s3_cache_result = (
                                 s3_cached_data.get("call_data", []),
@@ -4282,7 +4292,7 @@ def load_new_calls_only():
     # Must import BEFORE any uses of time.time() or time.sleep() in the function
     # This ensures Python treats 'time' as a local variable throughout the function
     import time
-    
+
     logger.info(" Starting refresh: Checking for new CSV files...")
     try:
         # OPTIMIZATION: Load cache ONCE at start and reuse throughout refresh
@@ -4452,7 +4462,7 @@ def load_new_calls_only():
         if CACHE_FILE.exists():
             cache_size = CACHE_FILE.stat().st_size
             logger.info(
-                f" DIAGNOSTIC: Cache file exists at {CACHE_FILE}, size: {cache_size} bytes ({cache_size / (1024*1024):.1f} MB)"
+                f" DIAGNOSTIC: Cache file exists at {CACHE_FILE}, size: {cache_size} bytes ({cache_size / (1024 * 1024):.1f} MB)"
             )
         else:
             logger.info(f" DIAGNOSTIC: Cache file does NOT exist at {CACHE_FILE}")
@@ -4474,11 +4484,11 @@ def load_new_calls_only():
         # Extract metadata from file header without loading entire JSON
         cache_metadata = {}
         last_save_time = 0
-        
+
         # For large files (>100MB), skip S3 reloads and extract metadata from header only
         if cache_size > 100 * 1024 * 1024:  # > 100MB
             logger.info(
-                f" Cache file is large ({cache_size / (1024*1024):.1f} MB) - extracting metadata from header only to avoid reload"
+                f" Cache file is large ({cache_size / (1024 * 1024):.1f} MB) - extracting metadata from header only to avoid reload"
             )
             # Try to read just the metadata header from the file (first 20KB) without loading entire JSON
             try:
@@ -4487,6 +4497,7 @@ def load_new_calls_only():
                     first_chunk = f.read(20480)  # 20KB should be enough for metadata
                     # Find the last_save_time in the first chunk (metadata is usually at start)
                     import re
+
                     match = re.search(r'"last_save_time"\s*:\s*(\d+)', first_chunk)
                     if match:
                         last_save_time = int(match.group(1))
@@ -4522,6 +4533,7 @@ def load_new_calls_only():
                 )
                 metadata_chunk = response["Body"].read().decode("utf-8")
                 import re
+
                 match = re.search(r'"last_save_time"\s*:\s*(\d+)', metadata_chunk)
                 if match:
                     last_save_time = int(match.group(1))
@@ -4542,6 +4554,7 @@ def load_new_calls_only():
                     with open(CACHE_FILE, "r", encoding="utf-8") as f:
                         first_chunk = f.read(20480)  # Try header first
                         import re
+
                         match = re.search(r'"last_save_time"\s*:\s*(\d+)', first_chunk)
                         if match:
                             last_save_time = int(match.group(1))
@@ -4564,9 +4577,7 @@ def load_new_calls_only():
 
         # Also check session state as fallback for last_save_time
         if not last_save_time:
-            last_save_time = getattr(
-                st.session_state, "_last_incremental_save_time", 0
-            )
+            last_save_time = getattr(st.session_state, "_last_incremental_save_time", 0)
 
         # Get already processed keys from disk cache (survives restarts)
         # Also check session state as a fallback
@@ -4724,11 +4735,11 @@ def load_new_calls_only():
             # CRITICAL FIX: Manual pagination with timeout protection to prevent hangs
             # Using paginator.paginate() generator can hang indefinitely if S3 API call blocks
             # Manual pagination allows timeout protection per page
-            
+
             # Track pagination progress
             page_count = 0
             files_per_page = []
-            is_truncated = False
+            is_truncated = False  # CRITICAL: Initialize before loop to prevent NameError
             consecutive_empty = 0  # Track consecutive empty pages for early exit
             continuation_token = None
             # Use time module (imported at module level, line 13)
@@ -4752,20 +4763,20 @@ def load_new_calls_only():
                 page_start_time = time.time()
                 page = None
                 page_error = None
-                
+
                 try:
                     import threading
                     import queue
-                    
+
                     page_queue = queue.Queue()
                     error_queue = queue.Queue()
-                    
+
                     def fetch_page():
                         try:
                             params = {
                                 "Bucket": s3_bucket_name,
                                 "Prefix": s3_prefix,
-                                "MaxKeys": 1000
+                                "MaxKeys": 1000,
                             }
                             if continuation_token:
                                 params["ContinuationToken"] = continuation_token
@@ -4773,11 +4784,11 @@ def load_new_calls_only():
                             page_queue.put(response)
                         except Exception as e:
                             error_queue.put(e)
-                    
+
                     page_thread = threading.Thread(target=fetch_page, daemon=True)
                     page_thread.start()
                     page_thread.join(timeout=max_page_time)
-                    
+
                     if page_thread.is_alive():
                         logger.warning(
                             f"Page {page_count + 1} fetch timed out after {max_page_time}s - stopping pagination"
@@ -4789,20 +4800,22 @@ def load_new_calls_only():
                     elif not page_queue.empty():
                         page = page_queue.get()
                     else:
-                        logger.warning(f"No response from page {page_count + 1} fetch - stopping pagination")
+                        logger.warning(
+                            f"No response from page {page_count + 1} fetch - stopping pagination"
+                        )
                         break
-                        
+
                 except Exception as e:
                     logger.error(f"Error fetching page {page_count + 1}: {e}")
                     logger.warning("Stopping pagination due to error")
                     break
-                
+
                 if page is None:
                     break
                 page_count += 1
                 page_file_count = 0
                 page_fetch_time = time.time() - page_start_time
-                
+
                 if page_fetch_time > 10:  # Log slow pages
                     logger.debug(f"Page {page_count} fetch took {page_fetch_time:.1f}s")
 
@@ -4852,11 +4865,7 @@ def load_new_calls_only():
                 )
 
                 # Early exit: if 3+ consecutive empty pages and IsTruncated=False, we're done
-                if (
-                    consecutive_empty >= 3
-                    and total_s3_files > 0
-                    and not is_truncated
-                ):
+                if consecutive_empty >= 3 and total_s3_files > 0 and not is_truncated:
                     logger.info(
                         f" Early exit: Found all CSV files after {page_count} pages (last 3 pages were empty)"
                     )
@@ -4883,22 +4892,42 @@ def load_new_calls_only():
                         logger.debug(
                             f" Processing page {page_count}, no CSV files found yet..."
                         )
-                
+
                 # Check if we should continue pagination
                 if not continuation_token and not is_truncated:
                     # No more pages - break
                     break
 
+        # CRITICAL: Log immediately after pagination loop exits to track progress
+        logger.info(
+            f" Pagination loop exited. Processed {total_s3_files} files from {page_count} pages. IsTruncated={is_truncated}"
+        )
+
         # Cache the CSV file list for next time (skip pagination if cache is fresh)
         if not use_cached_keys and all_s3_keys:
             try:
+                logger.debug(
+                    f" Attempting to cache {len(all_s3_keys)} CSV file keys in session state..."
+                )
                 st.session_state[cache_key] = all_s3_keys
                 st.session_state[cache_timestamp_key] = datetime.now().isoformat()
                 logger.info(
                     f" Cached {len(all_s3_keys)} CSV file keys for future refreshes (TTL: 5 minutes)"
                 )
             except Exception as cache_save_error:
-                logger.debug(f" Could not cache S3 CSV file list: {cache_save_error}")
+                logger.error(
+                    f" ERROR: Could not cache S3 CSV file list: {cache_save_error}"
+                )
+                import traceback
+
+                logger.error(
+                    f" Cache save error traceback: {traceback.format_exc()}"
+                )
+        else:
+            if use_cached_keys:
+                logger.debug(" Skipping cache save - using cached keys")
+            if not all_s3_keys:
+                logger.debug(" Skipping cache save - no S3 keys found")
 
         # Log pagination completion with final IsTruncated status (combined)
         logger.info(
@@ -7171,7 +7200,7 @@ try:
             logger.info(
                 f"Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
             )
-            
+
             # CRITICAL: Add validation logging after data load to diagnose crashes
             if call_data is not None:
                 logger.info(
@@ -7647,7 +7676,7 @@ try:
             logger.info(
                 f"Filtered call_data to {len(call_data)} dict items before DataFrame creation"
             )
-        
+
         meta_df = pd.DataFrame(call_data)
         logger.info(
             f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
@@ -7674,7 +7703,9 @@ except Exception as df_error:
             logger.error("Could not inspect sample call structure")
     # Fallback to empty DataFrame to prevent complete app crash
     meta_df = pd.DataFrame()
-    logger.warning("Using empty DataFrame as fallback - app will continue but no data will be displayed")
+    logger.warning(
+        "Using empty DataFrame as fallback - app will continue but no data will be displayed"
+    )
 
 # --- ANONYMIZATION FUNCTIONS ---
 # Note: is_anonymous_user is already defined earlier in the code
