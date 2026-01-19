@@ -12333,14 +12333,22 @@ with st.expander("Coaching Insights", expanded=False):
     st.subheader("Coaching Insights")
 
     if "Coaching Suggestions" in filtered_df.columns:
-        # Collect all coaching suggestions
-        all_coaching = []
-        for idx, row in filtered_df.iterrows():
-            coaching = row.get("Coaching Suggestions", [])
-            if isinstance(coaching, list):
-                all_coaching.extend([c for c in coaching if c and str(c).strip()])
-            elif isinstance(coaching, str) and coaching:
-                all_coaching.append(coaching)
+        # Collect all coaching suggestions - OPTIMIZED: Use vectorized operations instead of iterrows()
+        with st.spinner("Collecting coaching suggestions..."):
+            def extract_coaching(coaching):
+                """Extract coaching suggestions from a row"""
+                if isinstance(coaching, list):
+                    return [c for c in coaching if c and str(c).strip()]
+                elif isinstance(coaching, str) and coaching:
+                    return [coaching]
+                return []
+            
+            # Use vectorized apply - much faster than iterrows()
+            coaching_lists = filtered_df["Coaching Suggestions"].apply(extract_coaching)
+            # Flatten the list of lists
+            all_coaching = []
+            for coaching_list in coaching_lists:
+                all_coaching.extend(coaching_list)
 
         if all_coaching:
             from collections import Counter
