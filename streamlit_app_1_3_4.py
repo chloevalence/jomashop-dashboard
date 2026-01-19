@@ -564,6 +564,83 @@ def log_memory_usage(operation_name, before_mb=None):
         return 0.0
 
 
+def check_json_flag_in_stream(body, flag_key, operation_name="Flag check", max_bytes=65536):
+    """Check for a boolean flag in JSON file by reading only the beginning.
+    
+    This function reads only the first max_bytes (64KB default) of a JSON file
+    to check for a specific flag, avoiding loading the entire large file into memory.
+    
+    Args:
+        body: S3 response body stream (has iter_chunks method)
+        flag_key: The key to check for in the JSON (e.g., "cache_cleaned_pdf_calls")
+        operation_name: Name for logging purposes
+        max_bytes: Maximum bytes to read (default 64KB should be enough for metadata)
+        
+    Returns:
+        bool: True if flag exists and is True, False otherwise
+    """
+    memory_before = log_memory_usage(f"{operation_name} - start")
+    
+    try:
+        # Read only the first max_bytes to find the flag
+        chunks = []
+        total_bytes = 0
+        chunk_size = 8192
+        
+        for chunk in body.iter_chunks(chunk_size=chunk_size):
+            chunks.append(chunk)
+            total_bytes += len(chunk)
+            # Stop early once we have enough bytes to find top-level metadata
+            if total_bytes >= max_bytes:
+                break
+        
+        # Join chunks and decode
+        if not chunks:
+            log_memory_usage(f"{operation_name} - no data", memory_before)
+            return False
+        
+        joined_bytes = b"".join(chunks)
+        # Clear chunks immediately
+        chunks.clear()
+        del chunks
+        gc.collect()
+        
+        # Decode to string
+        json_start = joined_bytes.decode("utf-8", errors="ignore")
+        del joined_bytes
+        gc.collect()
+        
+        # Search for the flag key in the JSON string (simple text search is faster)
+        # Look for pattern: "flag_key": true (or "flag_key":false)
+        flag_pattern = f'"{flag_key}"'
+        flag_pos = json_start.find(flag_pattern)
+        
+        if flag_pos == -1:
+            # Flag key not found in the beginning - likely not set
+            log_memory_usage(f"{operation_name} - flag not found", memory_before)
+            del json_start
+            gc.collect()
+            return False
+        
+        # Found the flag key, check if it's set to true
+        # Look for ": true" or ":true" after the key
+        after_key = json_start[flag_pos + len(flag_pattern):flag_pos + len(flag_pattern) + 10]
+        flag_value = ":true" in after_key or ": true" in after_key
+        
+        # Clear memory
+        del json_start
+        gc.collect()
+        
+        log_memory_usage(f"{operation_name} - complete", memory_before)
+        return flag_value
+        
+    except Exception as e:
+        log_memory_usage(f"{operation_name} - ERROR", memory_before)
+        logger.warning(f"Error checking flag in stream: {e}")
+        # On error, assume flag is not set (safe default)
+        return False
+
+
 def parse_json_streaming(body, operation_name="JSON parsing"):
     """Parse JSON from a stream using memory-efficient parsing.
 
@@ -1925,15 +2002,18 @@ def cleanup_pdf_sourced_calls():
                 pass
 
         # Check S3 cache if disk check didn't find flag
+        # CRITICAL: Use lightweight flag check instead of loading entire file
         if not cleanup_performed:
             s3_client, s3_bucket = get_s3_client_and_bucket()
             if s3_client and s3_bucket:
                 try:
                     response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
                     body = response["Body"]
-                    cached_data = parse_json_streaming(body, "Cleanup flag check")
-                    if cached_data.get(cleanup_flag_key, False):
-                        cleanup_performed = True
+                    # Only read first 64KB to check flag - avoids loading 248MB file
+                    cleanup_performed = check_json_flag_in_stream(
+                        body, cleanup_flag_key, "Cleanup flag check"
+                    )
+                    if cleanup_performed:
                         logger.info(
                             "Cache cleanup already performed (found flag in S3 cache)"
                         )
