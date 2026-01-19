@@ -2621,10 +2621,41 @@ def load_all_calls_cached(cache_version=0):
     load_start_time_key = "_data_load_start_time"
 
     if st.session_state.get(load_in_progress_key, False):
-        # Check if load has been in progress for too long (timeout after 30 minutes)
+        # Check if load has been in progress for too long (timeout after 5 minutes)
         load_start_time = st.session_state.get(load_start_time_key, time.time())
         load_duration = time.time() - load_start_time
-        timeout_seconds = 30 * 60  # 30 minutes
+        timeout_seconds = 5 * 60  # 5 minutes (reduced from 30 minutes to detect stuck loads faster)
+        
+        # #region agent log
+        try:
+            with open(
+                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                "a",
+            ) as f:
+                import json as json_module
+
+                f.write(
+                    json_module.dumps(
+                        {
+                            "sessionId": "debug-session",
+                            "runId": "run1",
+                            "hypothesisId": "H2,H5",
+                            "location": "streamlit_app_1_3_4.py:2623",
+                            "message": "Detected load_in_progress flag set",
+                            "data": {
+                                "load_duration_seconds": load_duration,
+                                "load_start_time": load_start_time,
+                                "timeout_seconds": timeout_seconds,
+                                "exceeded_timeout": load_duration > timeout_seconds,
+                            },
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except:
+            pass
+        # #endregion
 
         if load_duration > timeout_seconds:
             logger.warning(
@@ -2687,9 +2718,62 @@ def load_all_calls_cached(cache_version=0):
 
                 # Check for cache availability periodically (every 2 seconds)
                 if int(waited) % 2 == 0:
+                    # #region agent log
+                    try:
+                        with open(
+                            "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                            "a",
+                        ) as f:
+                            import json as json_module
+
+                            f.write(
+                                json_module.dumps(
+                                    {
+                                        "sessionId": "debug-session",
+                                        "runId": "run1",
+                                        "hypothesisId": "H3",
+                                        "location": "streamlit_app_1_3_4.py:2660",
+                                        "message": "Wait loop calling load_cached_data_from_disk",
+                                        "data": {"waited": waited, "iteration": int(waited / 2)},
+                                        "timestamp": int(time.time() * 1000),
+                                    }
+                                )
+                                + "\n"
+                            )
+                    except:
+                        pass
+                    # #endregion
                     # Try disk cache
                     try:
                         disk_result = load_cached_data_from_disk()
+                        # #region agent log
+                        try:
+                            with open(
+                                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
+                                "a",
+                            ) as f:
+                                import json as json_module
+
+                                f.write(
+                                    json_module.dumps(
+                                        {
+                                            "sessionId": "debug-session",
+                                            "runId": "run1",
+                                            "hypothesisId": "H3",
+                                            "location": "streamlit_app_1_3_4.py:2664",
+                                            "message": "load_cached_data_from_disk returned",
+                                            "data": {
+                                                "has_result": disk_result is not None,
+                                                "call_count": len(disk_result[0]) if (disk_result and disk_result[0]) else 0,
+                                            },
+                                            "timestamp": int(time.time() * 1000),
+                                        }
+                                    )
+                                    + "\n"
+                                )
+                        except:
+                            pass
+                        # #endregion
                         if disk_result and disk_result[0] and len(disk_result[0]) > 0:
                             migrated = migrate_old_cache_format(disk_result[0])
                             logger.info(
