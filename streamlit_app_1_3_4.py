@@ -9357,7 +9357,9 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("###  Rubric Code Filters")
 
 # Collect all rubric codes (both pass and fail) - OPTIMIZED: Cache in session state and use vectorized operations
-if "all_rubric_codes" not in st.session_state or st.session_state.get("_rubric_codes_df_hash") != hash(str(len(meta_df))):
+if "all_rubric_codes" not in st.session_state or st.session_state.get(
+    "_rubric_codes_df_hash"
+) != hash(str(len(meta_df))):
     # Recompute if not cached or if DataFrame size changed
     all_rubric_codes = set()
     if "Rubric Details" in meta_df.columns:
@@ -9367,13 +9369,13 @@ if "all_rubric_codes" not in st.session_state or st.session_state.get("_rubric_c
                 if isinstance(rubric_details, dict):
                     return set(rubric_details.keys())
                 return set()
-            
+
             # Apply to all rows at once (vectorized)
             code_sets = meta_df["Rubric Details"].apply(extract_rubric_codes)
             # Union all sets
             for code_set in code_sets:
                 all_rubric_codes.update(code_set)
-        
+
         all_rubric_codes = sorted(list(all_rubric_codes))
         st.session_state["all_rubric_codes"] = all_rubric_codes
         st.session_state["_rubric_codes_df_hash"] = hash(str(len(meta_df)))
@@ -9488,6 +9490,7 @@ if search_text:
 # Apply enhanced rubric code filter - OPTIMIZED: Use vectorized apply instead of iterrows()
 if selected_rubric_codes:
     with st.spinner("Filtering by rubric codes..."):
+
         def matches_rubric_filter(rubric_details):
             if not isinstance(rubric_details, dict):
                 return False
@@ -9503,7 +9506,7 @@ if selected_rubric_codes:
                         elif rubric_filter_type == "Passed Only" and status == "pass":
                             return True
             return False
-        
+
         # Use vectorized apply - much faster than iterrows()
         rubric_mask = filtered_df["Rubric Details"].apply(matches_rubric_filter)
         filtered_df = filtered_df[rubric_mask].copy()
@@ -9511,6 +9514,7 @@ if selected_rubric_codes:
 # Apply legacy failed rubric codes filter (for backward compatibility) - OPTIMIZED: Use vectorized apply
 if selected_failed_codes:
     with st.spinner("Filtering by failed rubric codes..."):
+
         def matches_failed_filter(rubric_details):
             if not isinstance(rubric_details, dict):
                 return False
@@ -9520,7 +9524,7 @@ if selected_failed_codes:
                     if isinstance(details, dict) and details.get("status") == "Fail":
                         return True
             return False
-        
+
         # Use vectorized apply - much faster than iterrows()
         failed_mask = filtered_df["Rubric Details"].apply(matches_failed_filter)
         filtered_df = filtered_df[failed_mask].copy()
