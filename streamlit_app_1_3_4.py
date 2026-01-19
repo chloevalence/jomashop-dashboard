@@ -564,76 +564,80 @@ def log_memory_usage(operation_name, before_mb=None):
         return 0.0
 
 
-def check_json_flag_in_stream(body, flag_key, operation_name="Flag check", max_bytes=65536):
+def check_json_flag_in_stream(
+    body, flag_key, operation_name="Flag check", max_bytes=65536
+):
     """Check for a boolean flag in JSON file by reading only the beginning.
-    
+
     This function reads only the first max_bytes (64KB default) of a JSON file
     to check for a specific flag, avoiding loading the entire large file into memory.
-    
+
     Args:
         body: S3 response body stream (has iter_chunks method)
         flag_key: The key to check for in the JSON (e.g., "cache_cleaned_pdf_calls")
         operation_name: Name for logging purposes
         max_bytes: Maximum bytes to read (default 64KB should be enough for metadata)
-        
+
     Returns:
         bool: True if flag exists and is True, False otherwise
     """
     memory_before = log_memory_usage(f"{operation_name} - start")
-    
+
     try:
         # Read only the first max_bytes to find the flag
         chunks = []
         total_bytes = 0
         chunk_size = 8192
-        
+
         for chunk in body.iter_chunks(chunk_size=chunk_size):
             chunks.append(chunk)
             total_bytes += len(chunk)
             # Stop early once we have enough bytes to find top-level metadata
             if total_bytes >= max_bytes:
                 break
-        
+
         # Join chunks and decode
         if not chunks:
             log_memory_usage(f"{operation_name} - no data", memory_before)
             return False
-        
+
         joined_bytes = b"".join(chunks)
         # Clear chunks immediately
         chunks.clear()
         del chunks
         gc.collect()
-        
+
         # Decode to string
         json_start = joined_bytes.decode("utf-8", errors="ignore")
         del joined_bytes
         gc.collect()
-        
+
         # Search for the flag key in the JSON string (simple text search is faster)
         # Look for pattern: "flag_key": true (or "flag_key":false)
         flag_pattern = f'"{flag_key}"'
         flag_pos = json_start.find(flag_pattern)
-        
+
         if flag_pos == -1:
             # Flag key not found in the beginning - likely not set
             log_memory_usage(f"{operation_name} - flag not found", memory_before)
             del json_start
             gc.collect()
             return False
-        
+
         # Found the flag key, check if it's set to true
         # Look for ": true" or ":true" after the key
-        after_key = json_start[flag_pos + len(flag_pattern):flag_pos + len(flag_pattern) + 10]
+        after_key = json_start[
+            flag_pos + len(flag_pattern) : flag_pos + len(flag_pattern) + 10
+        ]
         flag_value = ":true" in after_key or ": true" in after_key
-        
+
         # Clear memory
         del json_start
         gc.collect()
-        
+
         log_memory_usage(f"{operation_name} - complete", memory_before)
         return flag_value
-        
+
     except Exception as e:
         log_memory_usage(f"{operation_name} - ERROR", memory_before)
         logger.warning(f"Error checking flag in stream: {e}")
@@ -3670,6 +3674,52 @@ def load_all_calls_cached(cache_version=0):
                                 logger.info(
                                     f" Successfully loaded {file_size / (1024 * 1024):.1f}MB S3 cache using memory-efficient streaming"
                                 )
+                                
+                                # CRITICAL: Extract data immediately and clear parsed dict to free memory
+                                if isinstance(s3_cached_data, dict):
+                                    s3_cache_result = (
+                                        s3_cached_data.get("call_data", []),
+                                        s3_cached_data.get("errors", []),
+                                    )
+                                    s3_cache_timestamp = s3_cached_data.get("timestamp", None)
+                                    
+                                    # Clear the parsed dict immediately to free memory
+                                    del s3_cached_data
+                                    gc.collect()
+                                    logger.debug("Cleared parsed JSON dict after extracting data")
+                                    
+                                    # Process extracted data (same as small file path)
+                                    cache_data = (
+                                        s3_cache_result[0]
+                                        if len(s3_cache_result) > 0
+                                        and s3_cache_result[0] is not None
+                                        else []
+                                    )
+                                    cache_data_len = (
+                                        len(cache_data) if isinstance(cache_data, list) else 0
+                                    )
+                                    logger.info(
+                                        f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
+                                    )
+                                    
+                                    # Log memory after S3 cache load
+                                    memory_after_s3_load = log_memory_usage("After S3 cache load (large file)")
+                                    if memory_after_s3_load > 0 and memory_after_s3_load > 2500:
+                                        logger.warning(
+                                            f"High memory usage after S3 cache load: {memory_after_s3_load:.1f}MB - consider closing other sessions"
+                                        )
+                                    
+                                    # Cache in session state to avoid duplicate loads
+                                    st.session_state[s3_cache_key] = s3_cache_result
+                                    if s3_cache_timestamp:
+                                        st.session_state[s3_timestamp_key] = s3_cache_timestamp
+                                    
+                                    # Force garbage collection after storing in session state
+                                    gc.collect()
+                                else:
+                                    # Invalid data structure
+                                    s3_cache_result = ([], [])
+                                    s3_cache_timestamp = None
                             except MemoryError as mem_error:
                                 logger.error(
                                     f" Memory exhaustion while loading large S3 cache ({file_size / (1024 * 1024):.1f}MB): {mem_error}"
@@ -3704,6 +3754,12 @@ def load_all_calls_cached(cache_version=0):
                                 s3_cached_data.get("errors", []),
                             )
                             s3_cache_timestamp = s3_cached_data.get("timestamp", None)
+                            
+                            # CRITICAL: Clear parsed dict immediately after extracting data to free memory
+                            del s3_cached_data
+                            gc.collect()
+                            logger.debug("Cleared parsed JSON dict after extracting data (small file path)")
+                            
                             # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
                             cache_data = (
                                 s3_cache_result[0]
@@ -3717,11 +3773,21 @@ def load_all_calls_cached(cache_version=0):
                             logger.info(
                                 f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                             )
+                            
+                            # Log memory after S3 cache load
+                            memory_after_s3_load = log_memory_usage("After S3 cache load (small file)")
+                            if memory_after_s3_load > 0 and memory_after_s3_load > 2500:
+                                logger.warning(
+                                    f"High memory usage after S3 cache load: {memory_after_s3_load:.1f}MB - consider closing other sessions"
+                                )
 
                             # Cache in session state to avoid duplicate loads
                             st.session_state[s3_cache_key] = s3_cache_result
                             if s3_cache_timestamp:
                                 st.session_state[s3_timestamp_key] = s3_cache_timestamp
+                            
+                            # Force garbage collection after storing in session state
+                            gc.collect()
                     except ClientError as s3_error:
                         error_code = s3_error.response.get("Error", {}).get("Code", "")
                         if error_code == "NoSuchKey":
