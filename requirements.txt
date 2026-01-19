@@ -9,4 +9,5 @@ openpyxl
 xlsxwriter
 boto3
 pdfplumber
+psutil
 

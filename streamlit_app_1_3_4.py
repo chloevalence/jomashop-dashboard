@@ -38,6 +38,15 @@ except ImportError as e:
 
 
 import warnings
+import gc
+
+# Try to import psutil for memory monitoring
+try:
+    import psutil
+
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
 
 # File locking imports (platform-specific)
 try:
@@ -504,6 +513,143 @@ def get_df_hash(df):
         except Exception:
             pass
         return "error_hash"
+
+
+def get_memory_usage_mb():
+    """Get current memory usage in MB.
+
+    Returns:
+        float: Memory usage in megabytes, or 0.0 if unable to determine
+    """
+    try:
+        if HAS_PSUTIL:
+            import os
+
+            process = psutil.Process(os.getpid())
+            mem_info = process.memory_info()
+            return mem_info.rss / (1024 * 1024)  # Convert bytes to MB
+        else:
+            return 0.0  # Return 0 if psutil not available
+    except Exception:
+        return 0.0
+
+
+def log_memory_usage(operation_name, before_mb=None):
+    """Log memory usage before and after an operation.
+
+    Args:
+        operation_name: Name of the operation being performed
+        before_mb: Memory usage before operation (if None, will measure current)
+
+    Returns:
+        float: Current memory usage in MB (to pass as before_mb for next call)
+    """
+    try:
+        current_mb = get_memory_usage_mb()
+        if before_mb is not None:
+            delta_mb = current_mb - before_mb
+            logger.info(
+                f"Memory usage [{operation_name}]: {current_mb:.1f}MB (delta: {delta_mb:+.1f}MB)"
+            )
+            # Warn if memory increased significantly
+            if delta_mb > 500:
+                logger.warning(
+                    f"Large memory increase during {operation_name}: {delta_mb:.1f}MB"
+                )
+        else:
+            logger.info(f"Memory usage [{operation_name}]: {current_mb:.1f}MB")
+        return current_mb
+    except Exception:
+        # Silently fail if memory monitoring isn't available
+        return 0.0
+
+
+def parse_json_streaming(body, operation_name="JSON parsing"):
+    """Parse JSON from a stream using memory-efficient parsing.
+
+    Accumulates chunks but clears intermediate data structures immediately
+    after parsing to minimize memory usage.
+
+    Args:
+        body: S3 response body stream (has iter_chunks method)
+        operation_name: Name for logging purposes
+
+    Returns:
+        dict: Parsed JSON data
+
+    Raises:
+        json.JSONDecodeError: If JSON parsing fails
+        MemoryError: If memory allocation fails
+    """
+    memory_before = log_memory_usage(f"{operation_name} - start")
+
+    try:
+        # Accumulate chunks with progress logging
+        chunks = []
+        chunk_size = 8192
+        total_bytes = 0
+
+        try:
+            for chunk in body.iter_chunks(chunk_size=chunk_size):
+                chunks.append(chunk)
+                total_bytes += len(chunk)
+                # Log progress for very large files (every 50MB)
+                if total_bytes % (50 * 1024 * 1024) < chunk_size:
+                    current_mem = log_memory_usage(f"{operation_name} - progress")
+                    logger.debug(
+                        f" {operation_name}: {total_bytes / (1024 * 1024):.1f} MB downloaded (memory: {current_mem:.1f}MB)..."
+                    )
+        except Exception as stream_error:
+            logger.error(f" Error streaming data: {stream_error}")
+            raise
+
+        # Parse JSON from chunks - clear chunks immediately after to free memory
+        try:
+            # Join chunks into bytes
+            joined_bytes = b"".join(chunks)
+            # CRITICAL: Clear chunks list immediately to free memory
+            chunks.clear()
+            del chunks
+            # Force garbage collection to release memory immediately
+            gc.collect()
+
+            # Decode bytes to string
+            json_string = joined_bytes.decode("utf-8")
+            # Clear joined_bytes immediately
+            del joined_bytes
+            gc.collect()
+
+            # Parse JSON
+            s3_cached_data = json.loads(json_string)
+            # Clear json_string immediately
+            del json_string
+            # Force garbage collection after parsing
+            gc.collect()
+
+            log_memory_usage(f"{operation_name} - after parsing", memory_before)
+            return s3_cached_data
+
+        except json.JSONDecodeError as json_error:
+            logger.error(
+                f" Failed to parse JSON: {json_error}. "
+                f"Total bytes received: {total_bytes / (1024 * 1024):.1f}MB"
+            )
+            raise
+        except MemoryError as mem_error:
+            log_memory_usage(f"{operation_name} - MEMORY ERROR", memory_before)
+            logger.error(
+                f" Memory error during {operation_name}: {mem_error}. "
+                f"Total bytes: {total_bytes / (1024 * 1024):.1f}MB"
+            )
+            raise
+    except MemoryError as mem_error:
+        log_memory_usage(f"{operation_name} - MEMORY ERROR", memory_before)
+        logger.error(f" Memory exhaustion during {operation_name}: {mem_error}")
+        raise
+    except Exception as e:
+        log_memory_usage(f"{operation_name} - ERROR", memory_before)
+        logger.error(f" Unexpected error during {operation_name}: {e}")
+        raise
 
 
 def get_cached_computation(cache_key, compute_func, *args, **kwargs):
@@ -1785,10 +1931,7 @@ def cleanup_pdf_sourced_calls():
                 try:
                     response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
                     body = response["Body"]
-                    chunks = []
-                    for chunk in body.iter_chunks(chunk_size=8192):
-                        chunks.append(chunk)
-                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                    cached_data = parse_json_streaming(body, "Cleanup flag check")
                     if cached_data.get(cleanup_flag_key, False):
                         cleanup_performed = True
                         logger.info(
@@ -1879,12 +2022,9 @@ def cleanup_pdf_sourced_calls():
                                     body = response["Body"]
                                     # CRITICAL: Load ENTIRE file, don't truncate mid-JSON
                                     # We already checked size, so it's safe to load completely
-                                    chunks = []
-                                    for chunk in body.iter_chunks(chunk_size=8192):
-                                        chunks.append(chunk)
-                                    # Load complete file - never truncate JSON
-                                    cached_data = json.loads(
-                                        b"".join(chunks).decode("utf-8")
+                                    # Use memory-efficient streaming parser
+                                    cached_data = parse_json_streaming(
+                                        body, "Thread S3 cache load"
                                     )
                                     result_queue.put(cached_data)
                                 except Exception as e:
@@ -2209,19 +2349,9 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
 
                 # Stream download instead of loading all at once to prevent memory issues
                 body = response["Body"]
-                chunks = []
-                chunk_size = 8192  # 8KB chunks
-                total_bytes = 0
-
+                # Use memory-efficient streaming parser
                 try:
-                    for chunk in body.iter_chunks(chunk_size=chunk_size):
-                        chunks.append(chunk)
-                        total_bytes += len(chunk)
-                        # Log progress for large files (every 1MB)
-                        if total_bytes % (1024 * 1024) < chunk_size:
-                            logger.debug(
-                                f" Loading cache from S3: {total_bytes / (1024 * 1024):.1f} MB downloaded..."
-                            )
+                    cached_data = parse_json_streaming(body, "S3 cache load (retry)")
                 except Exception as stream_error:
                     logger.warning(
                         f" Error streaming cache from S3: {stream_error}, will retry..."
@@ -2230,10 +2360,6 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                         time.sleep(retry_delay * (attempt + 1))
                         continue
                     raise
-
-                # Parse JSON from streamed chunks
-                try:
-                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
                 except json.JSONDecodeError as json_error:
                     logger.error(
                         f" Failed to parse JSON from S3 cache: {json_error}. "
@@ -2669,12 +2795,9 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                     existing_response = s3_check_client.get_object(
                         Bucket=s3_bucket, Key=S3_CACHE_KEY
                     )
-                    # Stream download for existing cache check
+                    # Stream download for existing cache check using memory-efficient parser
                     body = existing_response["Body"]
-                    chunks = []
-                    for chunk in body.iter_chunks(chunk_size=8192):
-                        chunks.append(chunk)
-                    existing_data = json.loads(b"".join(chunks).decode("utf-8"))
+                    existing_data = parse_json_streaming(body, "Existing cache check")
                     existing_is_partial = existing_data.get("partial", False)
                     existing_call_data = existing_data.get("call_data", [])
                     existing_count = len(existing_call_data)
@@ -3368,6 +3491,19 @@ def load_all_calls_cached(cache_version=0):
 
             # Load from S3 if we don't have a valid session cache
             if s3_cache_result is None:
+                # Check memory before loading large cache files
+                current_mem = get_memory_usage_mb()
+                if current_mem > 0:  # Only if psutil is available
+                    # Warn if memory usage is already high (>2GB)
+                    if current_mem > 2048:
+                        logger.warning(
+                            f"High memory usage detected ({current_mem:.1f}MB) before cache load - this may cause memory issues"
+                        )
+                    # Log memory status
+                    logger.info(
+                        f"Memory usage before S3 cache load: {current_mem:.1f}MB"
+                    )
+
                 s3_client, s3_bucket = get_s3_client_and_bucket()
                 if s3_client and s3_bucket:
                     try:
@@ -3439,175 +3575,35 @@ def load_all_calls_cached(cache_version=0):
 
                         if file_size > 100 * 1024 * 1024:  # > 100MB
                             logger.info(
-                                f" S3 cache file is large ({file_size / (1024 * 1024):.1f}MB) - using chunked streaming to prevent memory issues"
+                                f" S3 cache file is large ({file_size / (1024 * 1024):.1f}MB) - using memory-efficient streaming to prevent memory issues"
                             )
-                            # Use chunked loading for large files
-                            response = s3_client.get_object(
-                                Bucket=s3_bucket, Key=S3_CACHE_KEY
-                            )
-                            body = response["Body"]
-                            chunks = []
-                            chunk_size = 8192  # 8KB chunks
-                            total_bytes = 0
-
+                            # Use memory-efficient chunked loading for large files
                             try:
-                                # #region agent log
-                                try:
-                                    with open(
-                                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
-                                        "a",
-                                    ) as f:
-                                        import json as json_module
-
-                                        f.write(
-                                            json_module.dumps(
-                                                {
-                                                    "sessionId": "debug-session",
-                                                    "runId": "run1",
-                                                    "hypothesisId": "H1",
-                                                    "location": "streamlit_app_1_3_4.py:3031",
-                                                    "message": "Starting chunked streaming",
-                                                    "data": {"chunk_size": chunk_size},
-                                                    "timestamp": int(
-                                                        time.time() * 1000
-                                                    ),
-                                                }
-                                            )
-                                            + "\n"
-                                        )
-                                except Exception:
-                                    pass
-                                # #endregion
-                                for chunk in body.iter_chunks(chunk_size=chunk_size):
-                                    chunks.append(chunk)
-                                    total_bytes += len(chunk)
-                                    # Log progress for very large files (every 50MB)
-                                    if total_bytes % (50 * 1024 * 1024) < chunk_size:
-                                        logger.debug(
-                                            f" Loading S3 cache: {total_bytes / (1024 * 1024):.1f} MB downloaded..."
-                                        )
-                                        # #region agent log
-                                        try:
-                                            with open(
-                                                "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
-                                                "a",
-                                            ) as f:
-                                                import json as json_module
-
-                                                f.write(
-                                                    json_module.dumps(
-                                                        {
-                                                            "sessionId": "debug-session",
-                                                            "runId": "run1",
-                                                            "hypothesisId": "H1",
-                                                            "location": "streamlit_app_1_3_4.py:3035",
-                                                            "message": "Chunked streaming progress",
-                                                            "data": {
-                                                                "total_bytes_mb": total_bytes
-                                                                / (1024 * 1024)
-                                                            },
-                                                            "timestamp": int(
-                                                                time.time() * 1000
-                                                            ),
-                                                        }
-                                                    )
-                                                    + "\n"
-                                                )
-                                        except Exception:
-                                            pass
-                                        # #endregion
-                            except Exception as stream_error:
+                                response = s3_client.get_object(
+                                    Bucket=s3_bucket, Key=S3_CACHE_KEY
+                                )
+                                body = response["Body"]
+                                # Use memory-efficient parsing function
+                                s3_cached_data = parse_json_streaming(
+                                    body, "S3 cache load (large file)"
+                                )
+                                logger.info(
+                                    f" Successfully loaded {file_size / (1024 * 1024):.1f}MB S3 cache using memory-efficient streaming"
+                                )
+                            except MemoryError as mem_error:
                                 logger.error(
-                                    f" Error streaming S3 cache: {stream_error}"
+                                    f" Memory exhaustion while loading large S3 cache ({file_size / (1024 * 1024):.1f}MB): {mem_error}"
                                 )
                                 raise
-
-                            # Parse JSON from streamed chunks
-                            try:
-                                # #region agent log
-                                try:
-                                    with open(
-                                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
-                                        "a",
-                                    ) as f:
-                                        import json as json_module
-
-                                        f.write(
-                                            json_module.dumps(
-                                                {
-                                                    "sessionId": "debug-session",
-                                                    "runId": "run1",
-                                                    "hypothesisId": "H1",
-                                                    "location": "streamlit_app_1_3_4.py:3047",
-                                                    "message": "Starting JSON parse",
-                                                    "data": {
-                                                        "total_chunks": len(chunks),
-                                                        "total_bytes_mb": total_bytes
-                                                        / (1024 * 1024),
-                                                    },
-                                                    "timestamp": int(
-                                                        time.time() * 1000
-                                                    ),
-                                                }
-                                            )
-                                            + "\n"
-                                        )
-                                except Exception:
-                                    pass
-                                # #endregion
-                                s3_cached_data = json.loads(
-                                    b"".join(chunks).decode("utf-8")
-                                )
-                                # #region agent log
-                                try:
-                                    with open(
-                                        "/Users/Chloe/Downloads/jomashop-dashboard/.cursor/debug.log",
-                                        "a",
-                                    ) as f:
-                                        import json as json_module
-
-                                        f.write(
-                                            json_module.dumps(
-                                                {
-                                                    "sessionId": "debug-session",
-                                                    "runId": "run1",
-                                                    "hypothesisId": "H1",
-                                                    "location": "streamlit_app_1_3_4.py:3050",
-                                                    "message": "JSON parse complete",
-                                                    "data": {
-                                                        "has_call_data": "call_data"
-                                                        in s3_cached_data
-                                                        if isinstance(
-                                                            s3_cached_data, dict
-                                                        )
-                                                        else False,
-                                                        "call_data_len": len(
-                                                            s3_cached_data.get(
-                                                                "call_data", []
-                                                            )
-                                                        )
-                                                        if isinstance(
-                                                            s3_cached_data, dict
-                                                        )
-                                                        else 0,
-                                                    },
-                                                    "timestamp": int(
-                                                        time.time() * 1000
-                                                    ),
-                                                }
-                                            )
-                                            + "\n"
-                                        )
-                                except Exception:
-                                    pass
-                                # #endregion
-                                logger.info(
-                                    f" Successfully loaded {file_size / (1024 * 1024):.1f}MB S3 cache using chunked streaming"
-                                )
                             except json.JSONDecodeError as json_error:
                                 logger.error(
                                     f" Failed to parse JSON from S3 cache: {json_error}. "
                                     f"File may be corrupted or incomplete. File size: {file_size / (1024 * 1024):.1f}MB"
+                                )
+                                raise
+                            except Exception as stream_error:
+                                logger.error(
+                                    f" Error streaming S3 cache: {stream_error}"
                                 )
                                 raise
                         else:
@@ -8240,6 +8236,32 @@ try:
 
                     # Clear loading messages
                     loading_placeholder.empty()
+                except MemoryError:
+                    logger.exception("Memory exhaustion during data loading")
+                    loading_placeholder.empty()
+                    status_text.empty()
+                    current_mem = log_memory_usage("Memory error")
+                    st.error(" **Memory Exhaustion Error**")
+                    st.error(
+                        "The application ran out of memory while loading data. This can happen with very large datasets."
+                    )
+                    st.error(f"**Memory usage:** {current_mem:.1f}MB")
+                    st.warning(" **Possible Causes:**")
+                    st.warning("1. Cache file is too large (>250MB)")
+                    st.warning("2. Multiple sessions running simultaneously")
+                    st.warning("3. System has limited available memory")
+                    st.info(" **Solutions:**")
+                    st.info(
+                        "1. **Close other browser tabs/windows** using this dashboard"
+                    )
+                    st.info("2. **Refresh the page** to retry with fresh memory")
+                    st.info("3. **Restart the Streamlit server** if possible")
+                    st.info(
+                        "4. If you're an admin, consider splitting large cache files into smaller chunks"
+                    )
+                    # Force garbage collection to free some memory
+                    gc.collect()
+                    st.stop()
                 except TimeoutError:
                     logger.exception("Timeout during data loading")
                     loading_placeholder.empty()
@@ -8267,23 +8289,39 @@ try:
                     logger.exception("Error during data loading")
                     loading_placeholder.empty()
                     status_text.empty()
-                    st.error(" **Error Loading Data**")
-                    st.error(f"**Error:** {str(e)}")
-                    st.error("The app may be trying to load too many files at once.")
-                    st.info(" **Try this:**")
-                    st.info(
-                        "1. **Refresh the page** - if cache exists, it will load instantly"
-                    )
-                    st.info(
-                        "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
-                    )
-                    st.info("3. Wait a few minutes and refresh the page")
-                    st.info("4. Check the terminal/logs for detailed errors")
-                    with st.expander("Show full error details"):
-                        import traceback
+                    # Check if it's a memory-related error
+                    error_str = str(e).lower()
+                    if "memory" in error_str or "out of memory" in error_str:
+                        current_mem = log_memory_usage("Memory error during load")
+                        st.error(" **Memory Error During Data Loading**")
+                        st.error(f"**Error:** {str(e)}")
+                        st.error(f"**Memory usage:** {current_mem:.1f}MB")
+                        st.info(" **Try this:**")
+                        st.info(
+                            "1. **Close other browser tabs/windows** using this dashboard"
+                        )
+                        st.info("2. **Refresh the page** to retry")
+                        st.info("3. **Wait a few minutes** and try again")
+                    else:
+                        st.error(" **Error Loading Data**")
+                        st.error(f"**Error:** {str(e)}")
+                        st.error(
+                            "The app may be trying to load too many files at once."
+                        )
+                        st.info(" **Try this:**")
+                        st.info(
+                            "1. **Refresh the page** - if cache exists, it will load instantly"
+                        )
+                        st.info(
+                            "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
+                        )
+                        st.info("3. Wait a few minutes and refresh the page")
+                        st.info("4. Check the terminal/logs for detailed errors")
+                        with st.expander("Show full error details"):
+                            import traceback
 
-                        st.code(traceback.format_exc())
-                    st.stop()
+                            st.code(traceback.format_exc())
+                        st.stop()
 
         # Clear progress after loading (only if progress_placeholder was created)
         was_processing = st.session_state.csv_processing_progress.get("total", 0) > 0
@@ -8448,6 +8486,9 @@ except Exception as norm_error:
 # Wrap in try/except to prevent crashes during DataFrame creation
 try:
     if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        # Monitor memory before DataFrame creation
+        memory_before_df = log_memory_usage("DataFrame creation - start")
+
         # CRITICAL: Validate that call_data contains dicts before creating DataFrame
         # Sample first few items to ensure they're dicts
         sample_size = min(5, len(call_data))
@@ -8464,10 +8505,39 @@ try:
                 f"Filtered call_data to {len(call_data)} dict items before DataFrame creation"
             )
 
-        meta_df = pd.DataFrame(call_data)
-        logger.info(
-            f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
-        )
+        # Create DataFrame with memory-efficient approach
+        try:
+            meta_df = pd.DataFrame(call_data)
+            logger.info(
+                f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
+            )
+
+            # Log memory usage after DataFrame creation
+            memory_after_df = log_memory_usage(
+                "DataFrame creation - complete", memory_before_df
+            )
+
+            # Note: call_data may still be referenced elsewhere, so we don't explicitly delete it
+            # Garbage collection will handle it when it goes out of scope
+            # Force garbage collection to help free memory
+            gc.collect()
+            logger.debug(
+                "Forced garbage collection after DataFrame creation to free memory"
+            )
+
+        except MemoryError as mem_error:
+            memory_after_error = log_memory_usage(
+                "DataFrame creation - MEMORY ERROR", memory_before_df
+            )
+            calls_count = len(call_data) if call_data else 0
+            logger.error(
+                f"Memory exhaustion during DataFrame creation: {mem_error}. "
+                f"Calls: {calls_count}, Memory before: {memory_before_df:.1f}MB, after error: {memory_after_error:.1f}MB"
+            )
+            # Force garbage collection on memory error to try to free some memory
+            gc.collect()
+            # Re-raise to be caught by outer exception handler
+            raise
         # #region agent log
         try:
             with open(
@@ -8522,6 +8592,12 @@ except Exception as df_error:
             logger.error("Could not inspect sample call structure")
     # Fallback to empty DataFrame to prevent complete app crash
     meta_df = pd.DataFrame()
+    # Check if the error was a MemoryError
+    if isinstance(df_error, MemoryError):
+        log_memory_usage("DataFrame creation - MEMORY ERROR (fallback)")
+        logger.error(
+            f"Memory exhaustion prevented DataFrame creation. Memory error: {df_error}"
+        )
     logger.warning(
         "Using empty DataFrame as fallback - app will continue but no data will be displayed"
     )
