@@ -6353,7 +6353,12 @@ auto_hash = st.secrets.get("auto_hash", False)
 # Initialize authenticator with retry logic for CookieManager loading issues
 # CRITICAL FIX: Cache authenticator in session_state to prevent reinitialization on every rerun
 # Check if user has chosen to skip auth after persistent failures (check before if/else)
-skip_auth_after_failures = st.session_state.get("skip_auth_after_failures", False)
+# CRITICAL FIX: Ensure variable is always defined, even if session_state is not available
+try:
+    skip_auth_after_failures = st.session_state.get("skip_auth_after_failures", False)
+except (RuntimeError, AttributeError):
+    # Streamlit not initialized or session_state not available
+    skip_auth_after_failures = False
 
 if (
     "authenticator" in st.session_state
