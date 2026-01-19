@@ -8696,7 +8696,11 @@ if "speaking_time_per_speaker" in meta_df.columns:
         pass
     # #endregion
     try:
-        meta_df["Call Duration (s)"] = meta_df.apply(compute_speaking_time, axis=1)
+        # CRITICAL: Use vectorized operations where possible to avoid slow row-by-row apply
+        # For large DataFrames (33K+ rows), apply() can take 20+ seconds and cause timeouts
+        # Use progress indicator to show activity and prevent health check timeouts
+        with st.spinner("Computing call durations..."):
+            meta_df["Call Duration (s)"] = meta_df.apply(compute_speaking_time, axis=1)
         # #region agent log
         try:
             with open(
@@ -8801,7 +8805,9 @@ except:
     pass
 # #endregion
 try:
-    meta_df.dropna(subset=["Call Date"], inplace=True)
+    # CRITICAL: Add progress indicator to prevent health check timeouts during slow operations
+    with st.spinner("Processing dates..."):
+        meta_df.dropna(subset=["Call Date"], inplace=True)
     # #region agent log
     try:
         with open(
