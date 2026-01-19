@@ -6376,25 +6376,29 @@ else:
     authenticator = None
 
 # Check if user has chosen to skip auth after persistent failures
-# CRITICAL FIX: Ensure max_retries and retry_delay are defined before use (defensive check)
-# This handles edge cases where variables might not be in scope due to execution path issues
+# CRITICAL FIX: Ensure max_retries and retry_delay are always defined before use
+# Use globals().setdefault() to set variables unconditionally without checking
+# This avoids any NameError issues even if variables are somehow not in scope
+globals().setdefault("max_retries", 7)
+globals().setdefault("retry_delay", 4)
+
+# Ensure they are valid integers/floats and assign to local variables
+# Get from globals safely to avoid NameError
+max_retries_val = globals().get("max_retries", 7)
 try:
-    _ = max_retries  # Test if variable exists
-except NameError:
-    max_retries = 7  # Define if missing
-try:
-    _ = retry_delay  # Test if variable exists
-except NameError:
-    retry_delay = 4  # Define if missing
-# Ensure they are valid integers/floats
-try:
-    max_retries = int(max_retries) if max_retries is not None else 7
+    max_retries = int(max_retries_val) if max_retries_val is not None else 7
 except (TypeError, ValueError):
     max_retries = 7
+# Ensure it's also in globals
+globals()["max_retries"] = max_retries
+
+retry_delay_val = globals().get("retry_delay", 4)
 try:
-    retry_delay = float(retry_delay) if retry_delay is not None else 4
+    retry_delay = float(retry_delay_val) if retry_delay_val is not None else 4
 except (TypeError, ValueError):
     retry_delay = 4
+# Ensure it's also in globals
+globals()["retry_delay"] = retry_delay
 
 if skip_auth_after_failures:
     logger.warning(
