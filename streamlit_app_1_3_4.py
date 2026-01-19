@@ -6352,6 +6352,9 @@ auto_hash = st.secrets.get("auto_hash", False)
 
 # Initialize authenticator with retry logic for CookieManager loading issues
 # CRITICAL FIX: Cache authenticator in session_state to prevent reinitialization on every rerun
+# Check if user has chosen to skip auth after persistent failures (check before if/else)
+skip_auth_after_failures = st.session_state.get("skip_auth_after_failures", False)
+
 if (
     "authenticator" in st.session_state
     and st.session_state["authenticator"] is not None
@@ -6364,7 +6367,6 @@ else:
     authenticator = None
     max_retries = 7  # Increased retries for better reliability
     retry_delay = 4  # Increased initial delay
-    skip_auth_after_failures = st.session_state.get("skip_auth_after_failures", False)
 
 # Check if user has chosen to skip auth after persistent failures
 if skip_auth_after_failures:
