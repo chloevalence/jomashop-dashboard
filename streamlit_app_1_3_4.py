@@ -2704,12 +2704,21 @@ def load_all_calls_cached(cache_version=0):
             )
             # Wait for the first load to complete (max 60 seconds, check every 1 second)
             # This allows time for the full load to complete (typically 30-40 seconds)
-            max_wait = 60.0
+            # CRITICAL: If load is already very old (>4 minutes), don't wait - it's likely stuck
+            max_wait = 60.0 if load_duration < 240 else 5.0  # Only wait 5s if load is >4 min old
             wait_interval = 1.0
             waited = 0.0
             while waited < max_wait:
                 time.sleep(wait_interval)
                 waited += wait_interval
+                
+                # Re-check load duration - if it's now >5 minutes, break immediately
+                current_load_duration = time.time() - load_start_time
+                if current_load_duration > 300:  # 5 minutes
+                    logger.warning(
+                        f"Load has been stuck for {current_load_duration / 60:.1f} minutes - breaking wait loop early"
+                    )
+                    break
 
                 # Check if load completed
                 flag_still_set = st.session_state.get(load_in_progress_key, False)
