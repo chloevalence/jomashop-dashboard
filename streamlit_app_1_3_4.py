@@ -437,6 +437,41 @@ def send_heartbeat(force=False):
         pass
 
 
+def get_df_hash(df):
+    """Get hash of DataFrame for cache key.
+
+    Args:
+        df: pandas DataFrame
+
+    Returns:
+        str: Hash string for use as cache key
+    """
+    try:
+        # Create a hash based on DataFrame size, columns, and sample of index
+        # This is fast and sufficient for cache invalidation
+        index_sample = str(df.index.tolist()[:10]) if len(df) > 0 else ""
+        return str(hash(str(len(df)) + str(df.columns.tolist()) + index_sample))
+    except Exception:
+        # Fallback to simple hash if anything fails
+        return str(hash(str(len(df))))
+
+
+def get_cached_computation(cache_key, compute_func, *args, **kwargs):
+    """Get cached result or compute and cache it.
+
+    Args:
+        cache_key: Unique key for this computation
+        compute_func: Function to compute the result if not cached
+        *args, **kwargs: Arguments to pass to compute_func
+
+    Returns:
+        Result from compute_func (cached or newly computed)
+    """
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = compute_func(*args, **kwargs)
+    return st.session_state[cache_key]
+
+
 def st_pyplot_safe(fig, **kwargs):
     """Display matplotlib figure in Streamlit and automatically close it to prevent memory leaks.
 
@@ -1185,6 +1220,9 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                             # CRITICAL: This append MUST be inside the row loop to process all rows
                             all_calls.append(parsed_data)
                             rows_added += 1
+                        # Send heartbeat every 100 rows to prevent health check timeout
+                        if rows_processed % 100 == 0:
+                            send_heartbeat()
                     except Exception as e:
                         error_msg = (
                             f"Error parsing row {idx + 1} in {filename}: {str(e)}"
@@ -5703,13 +5741,18 @@ def load_new_calls_only():
 
                 # Process each row
                 csv_calls = []
+                rows_processed = 0
                 for idx, row in df.iterrows():
+                    rows_processed += 1
                     try:
                         parsed_data = parse_csv_row(row, filename)
                         if parsed_data:
                             # _id and _s3_key are already set in parse_csv_row based on call_id
                             # No need to override them here - each row should have unique _id
                             csv_calls.append(parsed_data)
+                        # Send heartbeat every 100 rows to prevent health check timeout
+                        if rows_processed % 100 == 0:
+                            send_heartbeat()
                     except Exception as e:
                         error_msg = (
                             f"Error parsing row {idx + 1} in {filename}: {str(e)}"
@@ -10654,9 +10697,12 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                 or "Reason" in filtered_df.columns
                 or "Outcome" in filtered_df.columns
             ):
-                # Combine text from all three fields for product extraction
-                product_data = []
-                for idx, row in filtered_df.iterrows():
+                # OPTIMIZED: Use vectorized apply and caching instead of iterrows()
+                df_hash = get_df_hash(filtered_df)
+                cache_key = f"product_data_{df_hash}"
+
+                def extract_products_from_row(row):
+                    """Extract products from a single row"""
                     combined_text = " ".join(
                         [
                             str(row.get("Summary", "") or ""),
@@ -10664,8 +10710,31 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             str(row.get("Outcome", "") or ""),
                         ]
                     )
-                    products = extract_products_from_text(combined_text)
-                    product_data.extend(products)
+                    return extract_products_from_text(combined_text)
+
+                def compute_product_data():
+                    """Compute product data with progress indicator"""
+                    with st.spinner("Extracting products from call data..."):
+                        # Use vectorized apply - much faster than iterrows()
+                        product_lists = filtered_df.apply(
+                            extract_products_from_row, axis=1
+                        )
+                        # Flatten list of lists
+                        product_data = []
+                        for i, products in enumerate(product_lists):
+                            product_data.extend(products)
+                            # Send heartbeat every 100 rows
+                            if (i + 1) % 100 == 0:
+                                send_heartbeat()
+                        return product_data
+
+                # Get cached or compute product data
+                product_data = get_cached_computation(cache_key, compute_product_data)
+
+                # Store extract_products_from_row for reuse in trend section
+                st.session_state["_extract_products_from_row"] = (
+                    extract_products_from_row
+                )
 
                 if len(product_data) > 0:
                     product_col1, product_col2 = st.columns(2)
@@ -10726,23 +10795,50 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                     # Trend over time
                     if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
                         st.write("**Product Mentions Over Time**")
-                        # Create a DataFrame with products per call
-                        call_products = []
-                        for idx, row in filtered_df.iterrows():
-                            combined_text = " ".join(
-                                [
-                                    str(row.get("Summary", "") or ""),
-                                    str(row.get("Reason", "") or ""),
-                                    str(row.get("Outcome", "") or ""),
-                                ]
-                            )
-                            products = extract_products_from_text(combined_text)
-                            call_date = row.get("Call Date")
-                            if call_date and len(products) > 0:
-                                for product in products:
-                                    call_products.append(
-                                        {"Date": call_date, "Product": product}
-                                    )
+                        # OPTIMIZED: Use cached product data and vectorized operations
+                        cache_key_trend = f"call_products_{df_hash}"
+
+                        def compute_call_products():
+                            """Compute call products DataFrame with progress indicator"""
+                            with st.spinner("Processing product trends..."):
+                                # Get the extraction function from session state or define it
+                                if "_extract_products_from_row" in st.session_state:
+                                    extract_func = st.session_state[
+                                        "_extract_products_from_row"
+                                    ]
+                                else:
+
+                                    def extract_func(row):
+                                        combined_text = " ".join(
+                                            [
+                                                str(row.get("Summary", "") or ""),
+                                                str(row.get("Reason", "") or ""),
+                                                str(row.get("Outcome", "") or ""),
+                                            ]
+                                        )
+                                        return extract_products_from_text(combined_text)
+
+                                # Reuse the product extraction function
+                                product_lists = filtered_df.apply(extract_func, axis=1)
+                                call_products = []
+                                call_dates = filtered_df.get("Call Date", [])
+                                for i, (products, call_date) in enumerate(
+                                    zip(product_lists, call_dates)
+                                ):
+                                    if call_date and len(products) > 0:
+                                        for product in products:
+                                            call_products.append(
+                                                {"Date": call_date, "Product": product}
+                                            )
+                                    # Send heartbeat every 100 rows
+                                    if (i + 1) % 100 == 0:
+                                        send_heartbeat()
+                                return call_products
+
+                        # Get cached or compute call products
+                        call_products = get_cached_computation(
+                            cache_key_trend, compute_call_products
+                        )
 
                         if len(call_products) > 0:
                             products_df = pd.DataFrame(call_products)
@@ -10964,35 +11060,81 @@ if (
                 return "Other"
 
             # Calculate data needed for insights (quick calculation)
-            # Calculate coaching categories for high-AHT calls
+            # OPTIMIZED: Calculate coaching categories for high-AHT calls using vectorized operations
             if "Coaching Suggestions" in filtered_df.columns:
-                for idx, row in long_aht_calls.iterrows():
-                    coaching = row.get("Coaching Suggestions", [])
+                df_hash = get_df_hash(long_aht_calls)
+                cache_key_high_aht_coaching = f"high_aht_coaching_{df_hash}"
+
+                def extract_coaching_categories(coaching):
+                    """Extract and categorize coaching suggestions from a row"""
+                    categories = []
                     if isinstance(coaching, list):
                         for item in coaching:
                             if item:
-                                high_aht_coaching_categories.append(
-                                    categorize_text(item, "coaching")
-                                )
+                                categories.append(categorize_text(item, "coaching"))
                     elif coaching:
-                        high_aht_coaching_categories.append(
-                            categorize_text(coaching, "coaching")
-                        )
+                        categories.append(categorize_text(coaching, "coaching"))
+                    return categories
 
-            # Calculate rubric code analysis
+                def compute_high_aht_coaching():
+                    """Compute high-AHT coaching categories with progress indicator"""
+                    with st.spinner(
+                        "Categorizing coaching suggestions for high-AHT calls..."
+                    ):
+                        # Use vectorized apply - much faster than iterrows()
+                        coaching_lists = long_aht_calls["Coaching Suggestions"].apply(
+                            extract_coaching_categories
+                        )
+                        # Flatten list of lists
+                        categories = []
+                        for i, cat_list in enumerate(coaching_lists):
+                            categories.extend(cat_list)
+                            # Send heartbeat every 100 rows
+                            if (i + 1) % 100 == 0:
+                                send_heartbeat()
+                        return categories
+
+                # Get cached or compute high-AHT coaching categories
+                high_aht_coaching_categories = get_cached_computation(
+                    cache_key_high_aht_coaching, compute_high_aht_coaching
+                )
+
+            # OPTIMIZED: Calculate rubric code analysis using vectorized operations
             if "Rubric Details" in filtered_df.columns:
-                for idx, row in filtered_df.iterrows():
+                df_hash = get_df_hash(filtered_df)
+                cache_key_rubric_aht = f"rubric_aht_analysis_{df_hash}_{aht_threshold}"
+
+                def analyze_rubric_row(row):
+                    """Analyze rubric details for a single row"""
                     aht = row.get("Call Duration (min)", None)
                     if pd.isna(aht):
-                        continue
+                        return {}
 
                     rubric_details = row.get("Rubric Details", {})
+                    row_analysis = {}
+
                     if isinstance(rubric_details, dict):
                         for code, details in rubric_details.items():
                             if (
                                 isinstance(details, dict)
                                 and details.get("status") == "Fail"
                             ):
+                                row_analysis[code] = {
+                                    "aht": aht,
+                                    "is_high_aht": aht >= aht_threshold,
+                                }
+                    return row_analysis
+
+                def compute_rubric_aht_analysis():
+                    """Compute rubric AHT analysis with progress indicator"""
+                    with st.spinner("Analyzing rubric codes and AHT..."):
+                        # Use vectorized apply - much faster than iterrows()
+                        analysis_lists = filtered_df.apply(analyze_rubric_row, axis=1)
+
+                        # Aggregate results
+                        rubric_code_aht_analysis = {}
+                        for i, row_analysis in enumerate(analysis_lists):
+                            for code, data in row_analysis.items():
                                 if code not in rubric_code_aht_analysis:
                                     rubric_code_aht_analysis[code] = {
                                         "total_fails": 0,
@@ -11002,13 +11144,24 @@ if (
                                     }
 
                                 rubric_code_aht_analysis[code]["total_fails"] += 1
-                                rubric_code_aht_analysis[code]["aht_sum"] += aht
+                                rubric_code_aht_analysis[code]["aht_sum"] += data["aht"]
                                 rubric_code_aht_analysis[code]["aht_count"] += 1
 
-                                if aht >= aht_threshold:
+                                if data["is_high_aht"]:
                                     rubric_code_aht_analysis[code][
                                         "high_aht_fails"
                                     ] += 1
+
+                            # Send heartbeat every 100 rows
+                            if (i + 1) % 100 == 0:
+                                send_heartbeat()
+
+                        return rubric_code_aht_analysis
+
+                # Get cached or compute rubric AHT analysis
+                rubric_code_aht_analysis = get_cached_computation(
+                    cache_key_rubric_aht, compute_rubric_aht_analysis
+                )
 
             # --- Actionable Insights Summary (moved to top) ---
             st.markdown("###  Actionable Insights")
@@ -11337,36 +11490,69 @@ if (
             if "Coaching Suggestions" in filtered_df.columns:
                 st.write("**Coaching Suggestions Analysis: High AHT vs All Calls**")
 
-                # Categorize coaching suggestions for all calls
-                all_coaching_categories = []
-                high_aht_coaching_categories = []  # Reset for this analysis
-                for idx, row in filtered_df.iterrows():
-                    coaching = row.get("Coaching Suggestions", [])
-                    if isinstance(coaching, list):
-                        for item in coaching:
-                            if item:
-                                all_coaching_categories.append(
-                                    categorize_text(item, "coaching")
-                                )
-                    elif coaching:
-                        all_coaching_categories.append(
-                            categorize_text(coaching, "coaching")
-                        )
+                # OPTIMIZED: Use vectorized operations and caching
+                df_hash_all = get_df_hash(filtered_df)
+                df_hash_high_aht = get_df_hash(long_aht_calls)
+                cache_key_all_coaching = f"all_coaching_{df_hash_all}"
+                cache_key_high_aht_coaching_analysis = (
+                    f"high_aht_coaching_analysis_{df_hash_high_aht}"
+                )
 
-                # Categorize coaching suggestions for high-AHT calls
-                high_aht_coaching_categories = []
-                for idx, row in long_aht_calls.iterrows():
-                    coaching = row.get("Coaching Suggestions", [])
+                def extract_coaching_categories(coaching):
+                    """Extract and categorize coaching suggestions from a row"""
+                    categories = []
                     if isinstance(coaching, list):
                         for item in coaching:
                             if item:
-                                high_aht_coaching_categories.append(
-                                    categorize_text(item, "coaching")
-                                )
+                                categories.append(categorize_text(item, "coaching"))
                     elif coaching:
-                        high_aht_coaching_categories.append(
-                            categorize_text(coaching, "coaching")
+                        categories.append(categorize_text(coaching, "coaching"))
+                    return categories
+
+                def compute_all_coaching():
+                    """Compute all coaching categories with progress indicator"""
+                    with st.spinner(
+                        "Categorizing coaching suggestions for all calls..."
+                    ):
+                        # Use vectorized apply - much faster than iterrows()
+                        coaching_lists = filtered_df["Coaching Suggestions"].apply(
+                            extract_coaching_categories
                         )
+                        # Flatten list of lists
+                        categories = []
+                        for i, cat_list in enumerate(coaching_lists):
+                            categories.extend(cat_list)
+                            # Send heartbeat every 100 rows
+                            if (i + 1) % 100 == 0:
+                                send_heartbeat()
+                        return categories
+
+                def compute_high_aht_coaching_analysis():
+                    """Compute high-AHT coaching categories with progress indicator"""
+                    with st.spinner(
+                        "Categorizing coaching suggestions for high-AHT calls..."
+                    ):
+                        # Use vectorized apply - much faster than iterrows()
+                        coaching_lists = long_aht_calls["Coaching Suggestions"].apply(
+                            extract_coaching_categories
+                        )
+                        # Flatten list of lists
+                        categories = []
+                        for i, cat_list in enumerate(coaching_lists):
+                            categories.extend(cat_list)
+                            # Send heartbeat every 100 rows
+                            if (i + 1) % 100 == 0:
+                                send_heartbeat()
+                        return categories
+
+                # Get cached or compute coaching categories
+                all_coaching_categories = get_cached_computation(
+                    cache_key_all_coaching, compute_all_coaching
+                )
+                high_aht_coaching_categories = get_cached_computation(
+                    cache_key_high_aht_coaching_analysis,
+                    compute_high_aht_coaching_analysis,
+                )
 
                 if high_aht_coaching_categories:
                     # Calculate frequencies
@@ -11467,22 +11653,47 @@ if (
             if "Challenges" in filtered_df.columns:
                 st.write("**Challenges Analysis: High AHT vs All Calls**")
 
-                # Categorize challenges
-                all_challenge_categories = []
-                for idx, row in filtered_df.iterrows():
-                    challenge = row.get("Challenges", "")
-                    if challenge and pd.notna(challenge):
-                        all_challenge_categories.append(
-                            categorize_text(challenge, "challenge")
-                        )
+                # OPTIMIZED: Categorize challenges using vectorized operations
+                df_hash_all = get_df_hash(filtered_df)
+                df_hash_high_aht = get_df_hash(long_aht_calls)
+                cache_key_all_challenges = f"all_challenges_{df_hash_all}"
+                cache_key_high_aht_challenges = (
+                    f"high_aht_challenges_{df_hash_high_aht}"
+                )
 
-                high_aht_challenge_categories = []
-                for idx, row in long_aht_calls.iterrows():
-                    challenge = row.get("Challenges", "")
+                def categorize_challenge(challenge):
+                    """Categorize a single challenge"""
                     if challenge and pd.notna(challenge):
-                        high_aht_challenge_categories.append(
-                            categorize_text(challenge, "challenge")
+                        return categorize_text(challenge, "challenge")
+                    return None
+
+                def compute_all_challenges():
+                    """Compute all challenge categories with progress indicator"""
+                    with st.spinner("Categorizing challenges for all calls..."):
+                        # Use vectorized apply - much faster than iterrows()
+                        categories = filtered_df["Challenges"].apply(
+                            categorize_challenge
                         )
+                        # Filter out None values
+                        return [cat for cat in categories if cat is not None]
+
+                def compute_high_aht_challenges():
+                    """Compute high-AHT challenge categories with progress indicator"""
+                    with st.spinner("Categorizing challenges for high-AHT calls..."):
+                        # Use vectorized apply - much faster than iterrows()
+                        categories = long_aht_calls["Challenges"].apply(
+                            categorize_challenge
+                        )
+                        # Filter out None values
+                        return [cat for cat in categories if cat is not None]
+
+                # Get cached or compute challenge categories
+                all_challenge_categories = get_cached_computation(
+                    cache_key_all_challenges, compute_all_challenges
+                )
+                high_aht_challenge_categories = get_cached_computation(
+                    cache_key_high_aht_challenges, compute_high_aht_challenges
+                )
 
                 if high_aht_challenge_categories:
                     from collections import Counter
@@ -11674,16 +11885,34 @@ with st.expander("QA Score Trends Over Time", expanded=False):
 with st.expander("Rubric Code Analysis", expanded=False):
     st.subheader("Rubric Code Analysis")
     if "Rubric Details" in filtered_df.columns:
-        # Collect all rubric code statistics
-        code_stats = {}
-        for idx, row in filtered_df.iterrows():
+        # OPTIMIZED: Collect all rubric code statistics using vectorized operations
+        df_hash = get_df_hash(filtered_df)
+        cache_key_code_stats = f"code_stats_{df_hash}"
+
+        def analyze_rubric_stats(row):
+            """Analyze rubric details for statistics collection"""
             rubric_details = row.get("Rubric Details", {})
+            row_stats = {}
+
             if isinstance(rubric_details, dict):
                 for code, details in rubric_details.items():
                     if isinstance(details, dict):
                         status = details.get("status", "N/A")
                         note = details.get("note", "")
+                        row_stats[code] = {"status": status, "note": note}
 
+            return row_stats
+
+        def compute_code_stats():
+            """Compute rubric code statistics with progress indicator"""
+            with st.spinner("Collecting rubric code statistics..."):
+                # Use vectorized apply - much faster than iterrows()
+                stats_lists = filtered_df.apply(analyze_rubric_stats, axis=1)
+
+                # Aggregate results
+                code_stats = {}
+                for i, row_stats in enumerate(stats_lists):
+                    for code, data in row_stats.items():
                         if code not in code_stats:
                             code_stats[code] = {
                                 "total": 0,
@@ -11694,14 +11923,26 @@ with st.expander("Rubric Code Analysis", expanded=False):
                             }
 
                         code_stats[code]["total"] += 1
+                        status = data["status"]
                         if status == "Pass":
                             code_stats[code]["pass"] += 1
                         elif status == "Fail":
                             code_stats[code]["fail"] += 1
-                        if note:
-                            code_stats[code]["fail_notes"].append(note)
                         elif status == "N/A":
                             code_stats[code]["na"] += 1
+
+                        note = data["note"]
+                        if note:
+                            code_stats[code]["fail_notes"].append(note)
+
+                    # Send heartbeat every 100 rows
+                    if (i + 1) % 100 == 0:
+                        send_heartbeat()
+
+                return code_stats
+
+        # Get cached or compute code statistics
+        code_stats = get_cached_computation(cache_key_code_stats, compute_code_stats)
 
         if code_stats:
             rubric_analysis = pd.DataFrame(
@@ -13274,27 +13515,60 @@ with analytics_tab3:
     st.markdown("### Most Common Failure Reasons")
 
     if "Rubric Details" in filtered_df.columns:
-        # Collect all failed rubric codes with their frequencies
-        failure_reasons = {}
-        for idx, row in filtered_df.iterrows():
+        # OPTIMIZED: Collect all failed rubric codes using vectorized operations
+        df_hash = get_df_hash(filtered_df)
+        cache_key_failure_reasons = f"failure_reasons_{df_hash}"
+
+        def analyze_failure_reasons(row):
+            """Analyze rubric details for failure reasons"""
             rubric_details = row.get("Rubric Details", {})
+            call_id = row.get("Call ID", "")
+            row_failures = {}
+
             if isinstance(rubric_details, dict):
                 for code, details in rubric_details.items():
                     if (
                         isinstance(details, dict)
                         and details.get("status", "").lower() == "fail"
                     ):
+                        note = details.get("note", "")
+                        row_failures[code] = {"call_id": call_id, "note": note}
+
+            return row_failures
+
+        def compute_failure_reasons():
+            """Compute failure reasons with progress indicator"""
+            with st.spinner("Collecting failed rubric codes..."):
+                # Use vectorized apply - much faster than iterrows()
+                failure_lists = filtered_df.apply(analyze_failure_reasons, axis=1)
+
+                # Aggregate results
+                failure_reasons = {}
+                for i, row_failures in enumerate(failure_lists):
+                    for code, data in row_failures.items():
                         if code not in failure_reasons:
                             failure_reasons[code] = {
                                 "count": 0,
                                 "calls": set(),
                                 "notes": [],
                             }
+
                         failure_reasons[code]["count"] += 1
-                        failure_reasons[code]["calls"].add(row.get("Call ID", ""))
-                        note = details.get("note", "")
+                        failure_reasons[code]["calls"].add(data["call_id"])
+                        note = data["note"]
                         if note and note not in failure_reasons[code]["notes"]:
                             failure_reasons[code]["notes"].append(note)
+
+                    # Send heartbeat every 100 rows
+                    if (i + 1) % 100 == 0:
+                        send_heartbeat()
+
+                return failure_reasons
+
+        # Get cached or compute failure reasons
+        failure_reasons = get_cached_computation(
+            cache_key_failure_reasons, compute_failure_reasons
+        )
 
         if failure_reasons:
             # Sort by frequency
