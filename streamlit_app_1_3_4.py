@@ -3775,6 +3775,9 @@ def load_all_calls_cached(cache_version=0):
                                             f"High memory usage after S3 cache load: {memory_after_s3_load:.1f}MB - consider closing other sessions"
                                         )
 
+                                    # Send heartbeat immediately after S3 cache load completes
+                                    send_heartbeat(force=True)
+
                                     # Cache in session state to avoid duplicate loads
                                     st.session_state[s3_cache_key] = s3_cache_result
                                     if s3_cache_timestamp:
@@ -3784,6 +3787,9 @@ def load_all_calls_cached(cache_version=0):
 
                                     # Force garbage collection after storing in session state
                                     gc.collect()
+                                    
+                                    # Send heartbeat after storing in session state
+                                    send_heartbeat()
                                 else:
                                     # Invalid data structure
                                     s3_cache_result = ([], [])
@@ -3853,6 +3859,9 @@ def load_all_calls_cached(cache_version=0):
                                     f"High memory usage after S3 cache load: {memory_after_s3_load:.1f}MB - consider closing other sessions"
                                 )
 
+                            # Send heartbeat immediately after S3 cache load completes
+                            send_heartbeat(force=True)
+
                             # Cache in session state to avoid duplicate loads
                             st.session_state[s3_cache_key] = s3_cache_result
                             if s3_cache_timestamp:
@@ -3860,6 +3869,9 @@ def load_all_calls_cached(cache_version=0):
 
                             # Force garbage collection after storing in session state
                             gc.collect()
+                            
+                            # Send heartbeat after storing in session state
+                            send_heartbeat()
                     except ClientError as s3_error:
                         error_code = s3_error.response.get("Error", {}).get("Code", "")
                         if error_code == "NoSuchKey":
@@ -8258,6 +8270,10 @@ try:
                 call_data, errors = load_all_calls_cached()
                 elapsed = time.time() - t0
                 status_text.empty()
+                
+                # Send heartbeat after data loading completes, before DataFrame creation
+                send_heartbeat(force=True)
+                
                 logger.info(
                     f" Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
                 )
@@ -8763,6 +8779,10 @@ except Exception as norm_error:
 # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
 # Handle None, empty list, or invalid types safely
 # Wrap in try/except to prevent crashes during DataFrame creation
+
+# Send heartbeat before DataFrame creation validation starts
+send_heartbeat(force=True)
+
 try:
     if call_data and isinstance(call_data, list) and len(call_data) > 0:
         # Monitor memory before DataFrame creation
