@@ -5499,12 +5499,6 @@ is_admin = is_regular_admin()
 
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
-# Note about data loading
-st.sidebar.info(
-    "ℹ️ **Data Loading**: Only the last 30 days of calls are loaded by default to optimize memory usage. "
-    "Use the 'Load All Data (Full Dataset)' button below to load the complete dataset."
-)
-
 # Show view mode
 if is_anonymous_user:
     st.sidebar.info(" Anonymous View: De-identified Data")
