@@ -9972,8 +9972,12 @@ if (
                         "Avg_QA_Score": 0.0,
                     }
                 )
-                # Use markdown table to avoid width calculation issues
-                st.markdown(agent_aht_analysis.to_markdown(index=False))
+                # Display as sortable dataframe
+                st.dataframe(
+                    agent_aht_analysis,
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
             # --- Root Cause Analysis: Coaching Suggestions & Challenges ---
             st.markdown("---")
@@ -10191,8 +10195,12 @@ if (
                     coaching_df["Difference"] = coaching_df["Difference"].astype(str)
                     # Reset index and fill NaN values
                     coaching_df = coaching_df.reset_index(drop=True).fillna("")
-                    # Use markdown table to avoid width calculation issues
-                    st.markdown(coaching_df.to_markdown(index=False))
+                    # Display as sortable dataframe
+                    st.dataframe(
+                        coaching_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
                     # Visualization
                     col_coach1, col_coach2 = st.columns(2)
@@ -10315,8 +10323,12 @@ if (
                     challenge_df["Difference"] = challenge_df["Difference"].astype(str)
                     # Reset index and fill NaN values
                     challenge_df = challenge_df.reset_index(drop=True).fillna("")
-                    # Use markdown table to avoid width calculation issues
-                    st.markdown(challenge_df.to_markdown(index=False))
+                    # Display as sortable dataframe
+                    st.dataframe(
+                        challenge_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
             # --- Rubric Code Correlation with AHT ---
             st.markdown("---")
@@ -10584,8 +10596,12 @@ with st.expander("Rubric Code Analysis", expanded=False):
                     "Most_Common_Fail_Reason": "",
                 }
             )
-            # Use markdown table to avoid width calculation issues
-            st.markdown(top_failed_display.to_markdown(index=False))
+            # Display as sortable dataframe
+            st.dataframe(
+                top_failed_display,
+                use_container_width=True,
+                hide_index=True,
+            )
 
             # Category-level analysis
             if code_stats:
@@ -11874,8 +11890,12 @@ with st.expander("Individual Call Details", expanded=False):
                     rubric_df["Note"] = rubric_df["Note"].astype(str)
                     # Reset index and fill NaN values
                     rubric_df = rubric_df.reset_index(drop=True).fillna("")
-                    # Display as markdown table to avoid Streamlit dataframe issues
-                    st.markdown(rubric_df.to_markdown(index=False))
+                    # Display as sortable dataframe
+                    st.dataframe(
+                        rubric_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
                     # Export individual call report
                     st.markdown("---")
@@ -12149,8 +12169,12 @@ with analytics_tab1:
                         "WoW Count Change": "0",
                     }
                 )
-                # Use markdown table to avoid width calculation issues
-                st.markdown(wow_display.to_markdown(index=False))
+                # Display as sortable dataframe
+                st.dataframe(
+                    wow_display,
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
             with wow_col2:
                 st.write("**Pass Rate Week-over-Week**")
@@ -12229,8 +12253,12 @@ with analytics_tab2:
                 improvement_df[col] = improvement_df[col].astype(str)
             # Reset index and fill NaN values
             improvement_df = improvement_df.reset_index(drop=True).fillna("")
-            # Use markdown table to avoid width calculation issues
-            st.markdown(improvement_df.to_markdown(index=False))
+            # Display as sortable dataframe
+            st.dataframe(
+                improvement_df,
+                use_container_width=True,
+                hide_index=True,
+            )
 
             # Show trend chart for selected agents
             selected_agents_trend = st.multiselect(
@@ -12328,8 +12356,12 @@ with analytics_tab3:
                         failure_df[col] = failure_df[col].astype(float)
                 # Reset index and fill NaN values
                 failure_df = failure_df.reset_index(drop=True).fillna("")
-                # Use markdown table to avoid width calculation issues
-                st.markdown(failure_df.to_markdown(index=False))
+                # Display as sortable dataframe
+                st.dataframe(
+                    failure_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
             with failure_col2:
                 st.write("**Failure Distribution**")
