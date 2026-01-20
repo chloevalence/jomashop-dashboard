@@ -3040,6 +3040,95 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
         raise  # Re-raise so callers know save failed
 
 
+def filter_calls_by_date(call_data, max_days, load_all_data_flag=False):
+    """Filter calls to last N days to reduce memory usage.
+
+    Args:
+        call_data: List of call dictionaries
+        max_days: Number of days to keep (e.g., 30 for last 30 days), or None to skip filtering
+        load_all_data_flag: If True, bypasses filtering and returns all calls
+
+    Returns:
+        Filtered list of calls, or original list if max_days is None or load_all_data_flag is True
+    """
+    if not call_data or max_days is None or load_all_data_flag:
+        return call_data
+
+    # Calculate cutoff date
+    cutoff_date = datetime.now() - timedelta(days=max_days)
+    cutoff_date = cutoff_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    original_count = len(call_data)
+    filtered_calls = []
+    last_heartbeat_time = time.time()
+
+    logger.info(
+        f"Filtering calls to last {max_days} days (cutoff: {cutoff_date.date()})"
+    )
+
+    for idx, call in enumerate(call_data):
+        # Send heartbeat every 1000 calls or every 2 seconds
+        if (idx + 1) % 1000 == 0 or time.time() - last_heartbeat_time >= 2:
+            try:
+                send_heartbeat()
+            except Exception:
+                pass
+            last_heartbeat_time = time.time()
+
+        # Try to get call_date from various possible field names
+        call_date = None
+        if isinstance(call, dict):
+            # Try different date field names
+            for date_field in ["call_date", "Call Date", "date", "Date"]:
+                if date_field in call:
+                    date_val = call[date_field]
+                    if date_val:
+                        try:
+                            # Handle different date formats
+                            if isinstance(date_val, datetime):
+                                call_date = date_val
+                            elif isinstance(date_val, str):
+                                # Try parsing common date formats
+                                for fmt in [
+                                    "%Y-%m-%d",
+                                    "%Y%m%d",
+                                    "%m/%d/%Y",
+                                    "%d/%m/%Y",
+                                ]:
+                                    try:
+                                        call_date = datetime.strptime(
+                                            date_val[:10], fmt
+                                        )
+                                        break
+                                    except ValueError:
+                                        continue
+                            elif isinstance(date_val, date):
+                                call_date = datetime.combine(
+                                    date_val, datetime.min.time()
+                                )
+                            break
+                        except Exception:
+                            continue
+
+        # Include call if:
+        # 1. Has a date and it's >= cutoff_date, OR
+        # 2. Has no date (include to be safe - might be recent)
+        if call_date is None or call_date >= cutoff_date:
+            filtered_calls.append(call)
+
+    filtered_count = original_count - len(filtered_calls)
+
+    if filtered_count > 0:
+        logger.info(
+            f"Filtered calls: {original_count} → {len(filtered_calls)} calls "
+            f"(removed {filtered_count} calls older than {max_days} days)"
+        )
+    else:
+        logger.info(f"All {original_count} calls are within last {max_days} days")
+
+    return filtered_calls
+
+
 # Cached wrapper - uses both Streamlit cache (fast) and disk cache (persistent, survives restarts)
 # First load will take time, subsequent loads will be instant
 # Use "Refresh New Data" button when new CSV files are added to S3 - it only loads new files (PDFs are ignored)
@@ -3768,14 +3857,44 @@ def load_all_calls_cached(cache_version=0):
                                         and s3_cache_result[0] is not None
                                         else []
                                     )
+
+                                    # CRITICAL: Filter calls by date IMMEDIATELY after extraction to prevent memory doubling
+                                    # Filter before storing in cache_data to avoid having both original and filtered lists in memory
+                                    load_all_data = st.session_state.get(
+                                        "load_all_data", False
+                                    )
+                                    if (
+                                        cache_data
+                                        and isinstance(cache_data, list)
+                                        and len(cache_data) > 0
+                                    ):
+                                        original_count = len(cache_data)
+                                        cache_data = filter_calls_by_date(
+                                            cache_data, MAX_DAYS_TO_LOAD, load_all_data
+                                        )
+                                        # Clear the load_all_data flag after filtering
+                                        if "load_all_data" in st.session_state:
+                                            del st.session_state["load_all_data"]
+                                        # Force garbage collection to free memory from original list
+                                        del original_count
+                                        gc.collect()
+
                                     cache_data_len = (
                                         len(cache_data)
                                         if isinstance(cache_data, list)
                                         else 0
                                     )
-                                    logger.info(
-                                        f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
-                                    )
+                                    if (
+                                        MAX_DAYS_TO_LOAD is not None
+                                        and not load_all_data
+                                    ):
+                                        logger.info(
+                                            f" Loaded from S3 cache (source of truth): {cache_data_len} calls (filtered to last {MAX_DAYS_TO_LOAD} days) (timestamp: {s3_cache_timestamp})"
+                                        )
+                                    else:
+                                        logger.info(
+                                            f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
+                                        )
 
                                     # Log memory after S3 cache load
                                     memory_after_s3_load = log_memory_usage(
@@ -3857,12 +3976,37 @@ def load_all_calls_cached(cache_version=0):
                                 and s3_cache_result[0] is not None
                                 else []
                             )
+
+                            # CRITICAL: Filter calls by date IMMEDIATELY after extraction to prevent memory doubling
+                            # Filter before storing in cache_data to avoid having both original and filtered lists in memory
+                            load_all_data = st.session_state.get("load_all_data", False)
+                            if (
+                                cache_data
+                                and isinstance(cache_data, list)
+                                and len(cache_data) > 0
+                            ):
+                                original_count = len(cache_data)
+                                cache_data = filter_calls_by_date(
+                                    cache_data, MAX_DAYS_TO_LOAD, load_all_data
+                                )
+                                # Clear the load_all_data flag after filtering
+                                if "load_all_data" in st.session_state:
+                                    del st.session_state["load_all_data"]
+                                # Force garbage collection to free memory from original list
+                                del original_count
+                                gc.collect()
+
                             cache_data_len = (
                                 len(cache_data) if isinstance(cache_data, list) else 0
                             )
-                            logger.info(
-                                f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
-                            )
+                            if MAX_DAYS_TO_LOAD is not None and not load_all_data:
+                                logger.info(
+                                    f" Loaded from S3 cache (source of truth): {cache_data_len} calls (filtered to last {MAX_DAYS_TO_LOAD} days) (timestamp: {s3_cache_timestamp})"
+                                )
+                            else:
+                                logger.info(
+                                    f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
+                                )
 
                             # Log memory after S3 cache load
                             memory_after_s3_load = log_memory_usage(
@@ -4402,103 +4546,8 @@ def load_all_calls_cached(cache_version=0):
             # Migration removed - no longer needed
             # Old cache format migration was removed as it's no longer required
 
-            # Filter calls by date if MAX_DAYS_TO_LOAD is set (to reduce memory usage)
-            if (
-                final_call_data
-                and len(final_call_data) > 0
-                and MAX_DAYS_TO_LOAD is not None
-            ):
-                # Check if user requested to load all data (bypasses date filter)
-                load_all_data = st.session_state.get("load_all_data", False)
-
-                if not load_all_data:
-                    # Calculate cutoff date
-                    cutoff_date = datetime.now() - timedelta(days=MAX_DAYS_TO_LOAD)
-                    cutoff_date = cutoff_date.replace(
-                        hour=0, minute=0, second=0, microsecond=0
-                    )
-
-                    original_count = len(final_call_data)
-                    filtered_calls = []
-                    last_heartbeat_time = time.time()
-
-                    logger.info(
-                        f"Filtering calls to last {MAX_DAYS_TO_LOAD} days (cutoff: {cutoff_date.date()})"
-                    )
-
-                    for idx, call in enumerate(final_call_data):
-                        # Send heartbeat every 1000 calls or every 2 seconds
-                        if (
-                            idx + 1
-                        ) % 1000 == 0 or time.time() - last_heartbeat_time >= 2:
-                            try:
-                                send_heartbeat()
-                            except Exception:
-                                pass
-                            last_heartbeat_time = time.time()
-
-                        # Try to get call_date from various possible field names
-                        call_date = None
-                        if isinstance(call, dict):
-                            # Try different date field names
-                            for date_field in [
-                                "call_date",
-                                "Call Date",
-                                "date",
-                                "Date",
-                            ]:
-                                if date_field in call:
-                                    date_val = call[date_field]
-                                    if date_val:
-                                        try:
-                                            # Handle different date formats
-                                            if isinstance(date_val, datetime):
-                                                call_date = date_val
-                                            elif isinstance(date_val, str):
-                                                # Try parsing common date formats
-                                                for fmt in [
-                                                    "%Y-%m-%d",
-                                                    "%Y%m%d",
-                                                    "%m/%d/%Y",
-                                                    "%d/%m/%Y",
-                                                ]:
-                                                    try:
-                                                        call_date = datetime.strptime(
-                                                            date_val[:10], fmt
-                                                        )
-                                                        break
-                                                    except ValueError:
-                                                        continue
-                                            elif isinstance(date_val, date):
-                                                call_date = datetime.combine(
-                                                    date_val, datetime.min.time()
-                                                )
-                                            break
-                                        except Exception:
-                                            continue
-
-                        # Include call if:
-                        # 1. Has a date and it's >= cutoff_date, OR
-                        # 2. Has no date (include to be safe - might be recent)
-                        if call_date is None or call_date >= cutoff_date:
-                            filtered_calls.append(call)
-
-                    final_call_data = filtered_calls
-                    filtered_count = original_count - len(final_call_data)
-
-                    if filtered_count > 0:
-                        logger.info(
-                            f"Filtered calls: {original_count} → {len(final_call_data)} calls "
-                            f"(removed {filtered_count} calls older than {MAX_DAYS_TO_LOAD} days)"
-                        )
-                    else:
-                        logger.info(
-                            f"All {original_count} calls are within last {MAX_DAYS_TO_LOAD} days"
-                        )
-
-                    # Clear the load_all_data flag after filtering
-                    if "load_all_data" in st.session_state:
-                        del st.session_state["load_all_data"]
+            # Date filtering is now done IMMEDIATELY after extracting data from parsed JSON
+            # (at lines 3765 and 3855) to prevent memory doubling. No need to filter here.
 
             # CRITICAL FIX: Store loaded data in session state BEFORE clearing load_in_progress flag
             # This allows concurrent requests to immediately access the data
