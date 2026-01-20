@@ -666,13 +666,14 @@ def parse_json_streaming(body, operation_name="JSON parsing"):
 
     try:
         # Accumulate chunks with progress logging
-        chunks = []
+        # OPTIMIZATION: Use BytesIO buffer instead of list to reduce memory overhead
+        data_buffer = io.BytesIO()
         chunk_size = 8192
         total_bytes = 0
 
         try:
             for chunk in body.iter_chunks(chunk_size=chunk_size):
-                chunks.append(chunk)
+                data_buffer.write(chunk)
                 total_bytes += len(chunk)
                 # Log progress for very large files (every 50MB)
                 if total_bytes % (50 * 1024 * 1024) < chunk_size:
@@ -684,13 +685,13 @@ def parse_json_streaming(body, operation_name="JSON parsing"):
             logger.error(f" Error streaming data: {stream_error}")
             raise
 
-        # Parse JSON from chunks - clear chunks immediately after to free memory
+        # Parse JSON from buffer - clear buffer immediately after to free memory
         try:
-            # Join chunks into bytes
-            joined_bytes = b"".join(chunks)
-            # CRITICAL: Clear chunks list immediately to free memory
-            chunks.clear()
-            del chunks
+            # Get bytes from buffer
+            joined_bytes = data_buffer.getvalue()
+            # CRITICAL: Close and clear buffer immediately to free memory
+            data_buffer.close()
+            del data_buffer
             # Force garbage collection to release memory immediately
             gc.collect()
 
@@ -3832,7 +3833,7 @@ def load_all_calls_cached(cache_version=0):
                             if memory_after_s3_load > 0 and memory_after_s3_load > 2500:
                                 logger.warning(
                                     f"High memory usage after S3 cache load: {memory_after_s3_load:.1f}MB - consider closing other sessions"
-                            )
+                                )
 
                             # Cache in session state to avoid duplicate loads
                             st.session_state[s3_cache_key] = s3_cache_result
@@ -8801,18 +8802,22 @@ try:
                         logger.debug(
                             "Cleared call_data from _s3_cache_result to free memory after DataFrame creation"
                         )
-                
+
                 # Also clear _merged_cache_data if it exists
                 if "_merged_cache_data" in st.session_state:
                     del st.session_state["_merged_cache_data"]
-                    logger.debug("Cleared _merged_cache_data to free memory after DataFrame creation")
+                    logger.debug(
+                        "Cleared _merged_cache_data to free memory after DataFrame creation"
+                    )
             except Exception as clear_error:
                 logger.debug(f"Could not clear session state cache: {clear_error}")
-            
+
             # CRITICAL: Clear local call_data variable to free memory
             # Set to empty list to help garbage collector
             call_data = []
-            logger.debug("Cleared local call_data variable to free memory after DataFrame creation")
+            logger.debug(
+                "Cleared local call_data variable to free memory after DataFrame creation"
+            )
 
             # CRITICAL: Force aggressive garbage collection after DataFrame creation
             # This helps free memory from intermediate structures
@@ -8829,31 +8834,87 @@ try:
                 logger.info(
                     f"Final memory usage after DataFrame creation: {final_mem:.1f}MB"
                 )
-            
-            # OPTIMIZATION: Optimize DataFrame memory usage by converting object dtypes to category
-            # This can reduce memory usage by 50-90% for string columns with repeated values
+
+            # OPTIMIZATION: Optimize DataFrame memory usage with multiple strategies
+            # This can reduce memory usage by 30-70% overall
             try:
                 memory_before_optimization = get_memory_usage_mb()
-                object_columns = meta_df.select_dtypes(include=['object']).columns
+                
+                # Strategy 1: Convert object columns to category (more aggressive threshold)
+                object_columns = meta_df.select_dtypes(include=["object"]).columns
                 if len(object_columns) > 0:
-                    logger.debug(f"Optimizing {len(object_columns)} object columns to reduce memory usage")
+                    logger.debug(
+                        f"Optimizing {len(object_columns)} object columns to reduce memory usage"
+                    )
                     for col in object_columns:
                         try:
                             # Convert to category if it has repeated values (memory efficient)
-                            # Only convert if unique values are less than 50% of total (worth it)
+                            # Lower threshold to 30% (more aggressive) for better memory savings
                             unique_ratio = meta_df[col].nunique() / len(meta_df)
-                            if unique_ratio < 0.5 and meta_df[col].nunique() > 0:
-                                meta_df[col] = meta_df[col].astype('category')
-                                logger.debug(f"Converted {col} to category (unique ratio: {unique_ratio:.2f})")
+                            if unique_ratio < 0.3 and meta_df[col].nunique() > 0:
+                                meta_df[col] = meta_df[col].astype("category")
+                                logger.debug(
+                                    f"Converted {col} to category (unique ratio: {unique_ratio:.2f})"
+                                )
                         except Exception as col_error:
                             # Skip columns that can't be converted (e.g., mixed types)
-                            logger.debug(f"Could not convert {col} to category: {col_error}")
-                    
-                    memory_after_optimization = get_memory_usage_mb()
-                    if memory_after_optimization > 0 and memory_before_optimization > 0:
-                        memory_saved = memory_before_optimization - memory_after_optimization
-                        if memory_saved > 0:
-                            logger.info(f"DataFrame dtype optimization saved {memory_saved:.1f}MB")
+                            logger.debug(
+                                f"Could not convert {col} to category: {col_error}"
+                            )
+                
+                # Strategy 2: Downcast numeric types to smaller dtypes
+                # int64 -> int32/int16/int8, float64 -> float32
+                numeric_columns = meta_df.select_dtypes(include=["int64", "float64"]).columns
+                if len(numeric_columns) > 0:
+                    logger.debug(
+                        f"Downcasting {len(numeric_columns)} numeric columns to reduce memory usage"
+                    )
+                    for col in numeric_columns:
+                        try:
+                            col_min = meta_df[col].min()
+                            col_max = meta_df[col].max()
+                            
+                            if meta_df[col].dtype == "int64":
+                                # Downcast integers
+                                if col_min >= -128 and col_max <= 127:
+                                    meta_df[col] = meta_df[col].astype("int8")
+                                    logger.debug(f"Downcasted {col} to int8")
+                                elif col_min >= -32768 and col_max <= 32767:
+                                    meta_df[col] = meta_df[col].astype("int16")
+                                    logger.debug(f"Downcasted {col} to int16")
+                                elif col_min >= -2147483648 and col_max <= 2147483647:
+                                    meta_df[col] = meta_df[col].astype("int32")
+                                    logger.debug(f"Downcasted {col} to int32")
+                            elif meta_df[col].dtype == "float64":
+                                # Downcast floats to float32 (saves 50% memory)
+                                meta_df[col] = meta_df[col].astype("float32")
+                                logger.debug(f"Downcasted {col} to float32")
+                        except Exception as col_error:
+                            # Skip columns that can't be downcast
+                            logger.debug(
+                                f"Could not downcast {col}: {col_error}"
+                            )
+                
+                # Strategy 3: Optimize boolean columns (if any)
+                bool_columns = meta_df.select_dtypes(include=["bool"]).columns
+                if len(bool_columns) > 0:
+                    for col in bool_columns:
+                        try:
+                            # Convert bool to int8 (smaller than bool in some cases)
+                            meta_df[col] = meta_df[col].astype("int8")
+                            logger.debug(f"Converted {col} from bool to int8")
+                        except Exception:
+                            pass
+
+                memory_after_optimization = get_memory_usage_mb()
+                if memory_after_optimization > 0 and memory_before_optimization > 0:
+                    memory_saved = (
+                        memory_before_optimization - memory_after_optimization
+                    )
+                    if memory_saved > 0:
+                        logger.info(
+                            f"DataFrame dtype optimization saved {memory_saved:.1f}MB"
+                        )
             except Exception as opt_error:
                 logger.debug(f"Could not optimize DataFrame dtypes: {opt_error}")
 
