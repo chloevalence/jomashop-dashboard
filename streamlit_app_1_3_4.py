@@ -4228,6 +4228,10 @@ def classify_trajectory(df, agent=None):
     slope = calculate_trend_slope(dates, scores)
     volatility = scores.std()
 
+    # Calculate current and projected scores (needed for all trajectory types)
+    last_score = scores.iloc[-1]
+    projected_score = last_score + (slope * 7)  # Project 7 days ahead
+
     # Classify trajectory
     if volatility > 15:
         trajectory = "volatile"
@@ -4237,10 +4241,6 @@ def classify_trajectory(df, agent=None):
         trajectory = "declining"
     else:
         trajectory = "stable"
-
-        # Projected score if trend continues
-        last_score = scores.iloc[-1]
-        projected_score = last_score + (slope * 7)  # Project 7 days ahead
 
     return {
         "trajectory": trajectory,
