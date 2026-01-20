@@ -7413,7 +7413,7 @@ if not dates:
 
 # Remember last filter settings
 if "last_date_preset" not in st.session_state:
-    st.session_state.last_date_preset = "All Time"
+    st.session_state.last_date_preset = "Last 30 Days"
 if "last_date_range" not in st.session_state:
     st.session_state.last_date_range = None
 if "last_agents" not in st.session_state:
@@ -7471,7 +7471,7 @@ preset_option = st.sidebar.selectbox(
     )
     if st.session_state.last_date_preset
     in ["All Time", "This Week", "Last 7 Days", "Last 30 Days", "Custom"]
-    else 0,
+    else 3,  # Default to "Last 30 Days" (index 3) to match data loading default
 )
 
 if preset_option != "Custom":
