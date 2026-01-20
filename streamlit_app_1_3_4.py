@@ -8814,7 +8814,7 @@ try:
             if current_mem_before_df > 0 and current_mem_before_df > 2000:
                 logger.warning(
                     f"High memory usage ({current_mem_before_df:.1f}MB) before DataFrame creation - may cause issues"
-                )
+            )
 
             meta_df = pd.DataFrame(call_data)
             logger.info(
@@ -8891,7 +8891,26 @@ try:
                 memory_before_optimization = get_memory_usage_mb()
 
                 # Strategy 1: Convert object columns to category (more aggressive threshold)
+                # Exclude date columns and columns used for min/max operations
                 object_columns = meta_df.select_dtypes(include=["object"]).columns
+                # Exclude columns that look like dates or are commonly used for min/max
+                date_related_columns = [
+                    "Call Date",
+                    "call_date",
+                    "date",
+                    "Date",
+                    "timestamp",
+                    "Timestamp",
+                ]
+                # Filter out date-related columns
+                object_columns = [
+                    col
+                    for col in object_columns
+                    if col not in date_related_columns
+                    and not col.lower().endswith("_date")
+                    and not col.lower().endswith("date")
+                ]
+                
                 if len(object_columns) > 0:
                     logger.debug(
                         f"Optimizing {len(object_columns)} object columns to reduce memory usage"
