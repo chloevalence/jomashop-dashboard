@@ -7498,7 +7498,7 @@ if "current_date_range_start" not in st.session_state:
 if "current_date_range_end" not in st.session_state:
     st.session_state.current_date_range_end = None
 if "date_range_mode" not in st.session_state:
-    st.session_state.date_range_mode = "Last Week"  # Default to Last Week
+    st.session_state.date_range_mode = "Last Month"  # Default to Last Month (30 days)
 
 st.sidebar.markdown("### 📆 Date Range")
 
@@ -7511,7 +7511,7 @@ date_range_mode = st.sidebar.radio(
     )
     if st.session_state.date_range_mode
     in ["Last Week", "Last Month", "Pick Your Dates"]
-    else 0,
+    else 1,  # Default to "Last Month" (index 1)
     help="Choose how to select your date range",
 )
 st.session_state.date_range_mode = date_range_mode
@@ -7625,17 +7625,17 @@ else:  # Pick Your Dates
             max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS),
             max(dates),
         )
-    
+
     # Use a key to force update when we need to reset the date input
     date_input_key = f"date_picker_{st.session_state.get('_date_picker_key', 0)}"
-    
+
     custom_input = st.sidebar.date_input(
         "Pick Your Dates",
         value=default_date_range,
         help=f"⚠️ Maximum {MAX_DATE_RANGE_DAYS} days allowed. Selecting more will be automatically adjusted.",
         key=date_input_key,
     )
-    
+
     if isinstance(custom_input, tuple) and len(custom_input) == 2:
         selected_dates = custom_input
         # Check and enforce 30-day maximum
@@ -7653,7 +7653,9 @@ else:  # Pick Your Dates
             )
             st.session_state.last_date_range = selected_dates
             # Force date input to update by incrementing key
-            st.session_state._date_picker_key = st.session_state.get("_date_picker_key", 0) + 1
+            st.session_state._date_picker_key = (
+                st.session_state.get("_date_picker_key", 0) + 1
+            )
             st.rerun()  # Rerun to update the date input with corrected value
         else:
             st.session_state.last_date_range = selected_dates  # Save selection
