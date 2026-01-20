@@ -75,6 +75,11 @@ except Exception:
 # --- Configuration: Limit for faster testing (set to None to load all files) ---
 MAX_FILES_FOR_TESTING = None  # Set to None to disable limit
 
+# --- Configuration: Limit calls by date to reduce memory usage ---
+# Set to number of days (e.g., 30 for last 30 days) or None to load all calls
+# Loading only recent calls significantly reduces memory from ~1.5GB to ~100-200MB
+MAX_DAYS_TO_LOAD = 30  # Load only calls from last 30 days
+
 # --- Logging Setup ---
 log_dir = Path("logs")
 try:
@@ -4397,6 +4402,104 @@ def load_all_calls_cached(cache_version=0):
             # Migration removed - no longer needed
             # Old cache format migration was removed as it's no longer required
 
+            # Filter calls by date if MAX_DAYS_TO_LOAD is set (to reduce memory usage)
+            if (
+                final_call_data
+                and len(final_call_data) > 0
+                and MAX_DAYS_TO_LOAD is not None
+            ):
+                # Check if user requested to load all data (bypasses date filter)
+                load_all_data = st.session_state.get("load_all_data", False)
+
+                if not load_all_data:
+                    # Calculate cutoff date
+                    cutoff_date = datetime.now() - timedelta(days=MAX_DAYS_TO_LOAD)
+                    cutoff_date = cutoff_date.replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+
+                    original_count = len(final_call_data)
+                    filtered_calls = []
+                    last_heartbeat_time = time.time()
+
+                    logger.info(
+                        f"Filtering calls to last {MAX_DAYS_TO_LOAD} days (cutoff: {cutoff_date.date()})"
+                    )
+
+                    for idx, call in enumerate(final_call_data):
+                        # Send heartbeat every 1000 calls or every 2 seconds
+                        if (
+                            idx + 1
+                        ) % 1000 == 0 or time.time() - last_heartbeat_time >= 2:
+                            try:
+                                send_heartbeat()
+                            except Exception:
+                                pass
+                            last_heartbeat_time = time.time()
+
+                        # Try to get call_date from various possible field names
+                        call_date = None
+                        if isinstance(call, dict):
+                            # Try different date field names
+                            for date_field in [
+                                "call_date",
+                                "Call Date",
+                                "date",
+                                "Date",
+                            ]:
+                                if date_field in call:
+                                    date_val = call[date_field]
+                                    if date_val:
+                                        try:
+                                            # Handle different date formats
+                                            if isinstance(date_val, datetime):
+                                                call_date = date_val
+                                            elif isinstance(date_val, str):
+                                                # Try parsing common date formats
+                                                for fmt in [
+                                                    "%Y-%m-%d",
+                                                    "%Y%m%d",
+                                                    "%m/%d/%Y",
+                                                    "%d/%m/%Y",
+                                                ]:
+                                                    try:
+                                                        call_date = datetime.strptime(
+                                                            date_val[:10], fmt
+                                                        )
+                                                        break
+                                                    except ValueError:
+                                                        continue
+                                            elif isinstance(date_val, date):
+                                                call_date = datetime.combine(
+                                                    date_val, datetime.min.time()
+                                                )
+                                            break
+                                        except Exception:
+                                            continue
+
+                        # Include call if:
+                        # 1. Has a date and it's >= cutoff_date, OR
+                        # 2. Has no date (include to be safe - might be recent)
+                        if call_date is None or call_date >= cutoff_date:
+                            filtered_calls.append(call)
+
+                    final_call_data = filtered_calls
+                    filtered_count = original_count - len(final_call_data)
+
+                    if filtered_count > 0:
+                        logger.info(
+                            f"Filtered calls: {original_count} → {len(final_call_data)} calls "
+                            f"(removed {filtered_count} calls older than {MAX_DAYS_TO_LOAD} days)"
+                        )
+                    else:
+                        logger.info(
+                            f"All {original_count} calls are within last {MAX_DAYS_TO_LOAD} days"
+                        )
+
+                    # Clear the load_all_data flag after filtering
+                    if "load_all_data" in st.session_state:
+                        del st.session_state["load_all_data"]
+
             # CRITICAL FIX: Store loaded data in session state BEFORE clearing load_in_progress flag
             # This allows concurrent requests to immediately access the data
             if final_call_data and len(final_call_data) > 0:
@@ -6995,6 +7098,24 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### Load Data & Sections")
 st.sidebar.info("💡 Load data and sections on-demand to save memory")
 
+# Load All Data button (bypasses date filter)
+if MAX_DAYS_TO_LOAD is not None:
+    st.sidebar.markdown("---")
+    if st.sidebar.button(
+        "📦 Load All Data (Full Dataset)",
+        help=f"Load all calls (bypasses {MAX_DAYS_TO_LOAD}-day limit). Warning: Uses ~1.5GB memory.",
+        type="secondary",
+    ):
+        st.session_state["load_all_data"] = True
+        # Clear cache to force reload
+        if "load_all_calls_cached" in globals():
+            load_all_calls_cached.clear()
+        st.rerun()
+    st.sidebar.caption(
+        f"Currently loading last {MAX_DAYS_TO_LOAD} days only (~100-200MB). "
+        "Click above to load full dataset (~1.5GB)."
+    )
+
 # Initialize lazy loading flags
 if "lazy_load_data" not in st.session_state:
     st.session_state.lazy_load_data = False
@@ -8531,6 +8652,8 @@ try:
                                 )
                             else:
                                 call_data, errors = result
+                                # Send heartbeat immediately after S3 load completes
+                                send_heartbeat(force=True)
                     except Exception as load_exception:
                         # CRITICAL FIX: Catch any exception during load and provide safe fallback
                         logger.exception(
@@ -8549,6 +8672,9 @@ try:
                     logger.info(
                         f"Data loaded. Got {len(call_data) if call_data else 0} calls"
                     )
+
+                    # Send heartbeat after logging (additional safety)
+                    send_heartbeat()
 
                     # Clear loading messages
                     loading_placeholder.empty()
@@ -8748,13 +8874,9 @@ except Exception as e:
     st.stop()
 
 # LAZY LOADING: Only create DataFrame when user clicks "Load Data" button
-# Store call_data in session state for later use (without processing)
-if call_data and isinstance(call_data, list) and len(call_data) > 0:
-    if "_call_data_for_df" not in st.session_state:
-        st.session_state["_call_data_for_df"] = call_data
-        logger.info(
-            f"Stored {len(call_data)} calls in session state for lazy DataFrame creation"
-        )
+# Don't store call_data in session state immediately - access directly from return value
+# This avoids memory overhead of storing large list in session state
+# We'll store it only when user clicks "Load Data"
 
 # Check if user has requested DataFrame creation
 if not st.session_state.get("lazy_load_data", False):
@@ -8770,10 +8892,17 @@ if not st.session_state.get("lazy_load_data", False):
 # Send heartbeat before DataFrame creation validation starts
 send_heartbeat(force=True)
 
-# Get call_data from session state if available, otherwise use the variable
-if "_call_data_for_df" in st.session_state:
-    call_data = st.session_state["_call_data_for_df"]
-    logger.info(f"Using call_data from session state: {len(call_data)} calls")
+# Get call_data - use from return value (not stored in session state to save memory)
+# Store in session state now only when user clicks "Load Data" (for deduplication/normalization)
+if call_data and isinstance(call_data, list) and len(call_data) > 0:
+    # Store now for deduplication/normalization (only when user explicitly requests it)
+    st.session_state["_call_data_for_df"] = call_data
+    logger.info(f"Stored {len(call_data)} calls in session state for processing")
+else:
+    # Try to get from session state as fallback
+    if "_call_data_for_df" in st.session_state:
+        call_data = st.session_state["_call_data_for_df"]
+        logger.info(f"Using call_data from session state: {len(call_data)} calls")
 
 # CRITICAL: Deduplicate calls BEFORE normalization and DataFrame creation
 # This was deferred from load_all_calls_cached() to prevent crash after S3 load
