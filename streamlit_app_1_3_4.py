@@ -18,6 +18,8 @@ import logging
 import shutil
 from pathlib import Path
 from contextlib import contextmanager
+import threading
+import queue
 from utils import (
     log_audit_event,
     check_session_timeout,
@@ -6620,7 +6622,9 @@ try:
                     if not st.session_state.get("_load_all_data_for_date_range", False):
                         if call_data and MAX_DAYS_TO_LOAD is not None:
                             original_count = len(call_data)
-                            call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
+                            call_data = filter_calls_by_date(
+                                call_data, MAX_DAYS_TO_LOAD
+                            )
                             filtered_count = len(call_data)
                             if filtered_count < original_count:
                                 logger.info(
@@ -6676,7 +6680,9 @@ try:
                     if not st.session_state.get("_load_all_data_for_date_range", False):
                         if call_data and MAX_DAYS_TO_LOAD is not None:
                             original_count = len(call_data)
-                            call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
+                            call_data = filter_calls_by_date(
+                                call_data, MAX_DAYS_TO_LOAD
+                            )
                             filtered_count = len(call_data)
                             if filtered_count < original_count:
                                 logger.info(
@@ -6744,24 +6750,102 @@ try:
                     def timeout_handler(signum, frame):
                         raise TimeoutError("Data loading timed out after 5 minutes")
 
+                    # Cycling loading messages
+                    loading_messages = [
+                        "Importing a small mountain of calls…",
+                        "Scoring the customer's vibe…",
+                        "Annotating the chaos…",
+                        "Crunching the numbers…",
+                    ]
+                    
                     # Try to load with better error visibility
                     loading_placeholder = st.empty()
-                    with loading_placeholder.container():
-                        st.spinner(
-                            "Loading PDFs from S3... This may take a few minutes for large datasets."
-                        )
-
+                    
                     # Use cache_version to force cache refresh when refresh completes
                     cache_version = st.session_state.get("_cache_version", 0)
-                    call_data, errors = load_all_calls_cached(
-                        cache_version=cache_version
-                    )
+                    
+                    # Set up threading for loading with message updates
+                    result_queue = queue.Queue()
+                    exception_queue = queue.Queue()
+                    message_queue = queue.Queue()
+                    stop_flag = threading.Event()
+                    
+                    def load_data_thread():
+                        """Load data in a separate thread"""
+                        try:
+                            result = load_all_calls_cached(cache_version=cache_version)
+                            result_queue.put(result)
+                        except Exception as e:
+                            exception_queue.put(e)
+                    
+                    def message_cycling_thread():
+                        """Cycle through loading messages"""
+                        message_idx = 0
+                        start_time = time.time()
+                        while not stop_flag.is_set():
+                            current_time = time.time()
+                            elapsed = current_time - start_time
+                            # Change message every 2 seconds
+                            message_idx = int(elapsed / 2) % len(loading_messages)
+                            message_queue.put(message_idx)
+                            time.sleep(0.5)  # Check every 0.5 seconds
+                    
+                    # Start threads
+                    load_thread = threading.Thread(target=load_data_thread, daemon=True)
+                    message_thread = threading.Thread(target=message_cycling_thread, daemon=True)
+                    
+                    load_thread.start()
+                    message_thread.start()
+                    
+                    # Display cycling messages while loading
+                    last_message_idx = -1
+                    while load_thread.is_alive():
+                        # Update message if changed
+                        try:
+                            message_idx = message_queue.get_nowait()
+                            if message_idx != last_message_idx:
+                                loading_placeholder.markdown(
+                                    f'<div style="text-align: center; padding: 20px;">'
+                                    f'<div style="font-size: 18px; color: #1f77b4;">{loading_messages[message_idx]}</div>'
+                                    f'<div style="margin-top: 10px;">⏳</div>'
+                                    f'</div>',
+                                    unsafe_allow_html=True
+                                )
+                                last_message_idx = message_idx
+                        except queue.Empty:
+                            pass
+                        
+                        time.sleep(0.2)  # Small delay to avoid busy waiting
+                    
+                    # Stop message thread
+                    stop_flag.set()
+                    
+                    # Wait for load thread to finish
+                    load_thread.join(timeout=1.0)
+                    
+                    # Check for exceptions
+                    try:
+                        exception = exception_queue.get_nowait()
+                        raise exception
+                    except queue.Empty:
+                        pass
+                    
+                    # Get result
+                    try:
+                        call_data, errors = result_queue.get(timeout=0.1)
+                    except queue.Empty:
+                        # Fallback: load directly if thread failed
+                        call_data, errors = load_all_calls_cached(
+                            cache_version=cache_version
+                        )
                     # CRITICAL: Apply 30-day filter to prevent memory issues
                     # Unless user has requested a specific date range that requires all data
                     if not st.session_state.get("_load_all_data_for_date_range", False):
                         if call_data and MAX_DAYS_TO_LOAD is not None:
                             original_count = len(call_data)
-                            call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
+                            call_data = filter_calls_by_date(
+                                call_data, MAX_DAYS_TO_LOAD
+                            )
                             filtered_count = len(call_data)
                             if filtered_count < original_count:
                                 logger.info(
