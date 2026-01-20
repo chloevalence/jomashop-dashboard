@@ -54,6 +54,7 @@ MAX_FILES_FOR_TESTING = None  # Set to None to disable limit
 # --- Configuration: Limit calls by date to reduce memory usage ---
 # Set to number of days (e.g., 30 for last 30 days) or None to load all calls
 # Loading only recent calls significantly reduces memory from ~1.5GB to ~100-200MB
+# This can be overridden by session state if user selects a date range outside loaded data
 MAX_DAYS_TO_LOAD = 30  # Load only calls from last 30 days
 
 
@@ -1968,14 +1969,22 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
             cached_errors = st.session_state.get("_last_load_errors", [])
 
         # CRITICAL: Apply date filtering even to cached data (in case cache was created before filtering was added)
-        if cached_data and MAX_DAYS_TO_LOAD is not None:
+        # Unless user has requested a specific date range that requires all data
+        effective_max_days = None
+        if st.session_state.get("_load_all_data_for_date_range", False):
+            # User selected a date range outside loaded data - don't filter cached data
+            effective_max_days = None
+        elif MAX_DAYS_TO_LOAD is not None:
+            effective_max_days = MAX_DAYS_TO_LOAD
+        
+        if cached_data and effective_max_days is not None:
             original_count = len(cached_data)
-            cached_data = filter_calls_by_date(cached_data, MAX_DAYS_TO_LOAD)
+            cached_data = filter_calls_by_date(cached_data, effective_max_days)
             filtered_count = len(cached_data)
             if filtered_count < original_count:
                 logger.info(
                     f"Filtered session cache from {original_count} to {filtered_count} calls "
-                    f"(last {MAX_DAYS_TO_LOAD} days only)"
+                    f"(last {effective_max_days} days only)"
                 )
                 # Update session state with filtered data
                 st.session_state[s3_cache_key] = (cached_data, cached_errors)
@@ -3032,16 +3041,24 @@ def load_all_calls_cached(cache_version=0):
                             )
 
                             # CRITICAL: Filter calls to last 30 days BEFORE storing in session state
-                            if cache_data and MAX_DAYS_TO_LOAD is not None:
+                            # Check if user requested a date range that requires all data
+                            effective_max_days = None
+                            if st.session_state.get("_load_all_data_for_date_range", False):
+                                # User selected a date range outside loaded data - don't filter
+                                effective_max_days = None
+                            elif MAX_DAYS_TO_LOAD is not None:
+                                effective_max_days = MAX_DAYS_TO_LOAD
+                            
+                            if cache_data and effective_max_days is not None:
                                 original_count = len(cache_data)
                                 filtered_cache_data = filter_calls_by_date(
-                                    cache_data, MAX_DAYS_TO_LOAD
+                                    cache_data, effective_max_days
                                 )
                                 filtered_count = len(filtered_cache_data)
                                 if filtered_count < original_count:
                                     logger.info(
                                         f"Filtered S3 cache from {original_count} to {filtered_count} calls "
-                                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                                        f"(last {effective_max_days} days only)"
                                     )
                                     # Update s3_cache_result with filtered data
                                     s3_cache_result = (
@@ -3532,16 +3549,25 @@ def load_all_calls_cached(cache_version=0):
             )
 
             # Filter calls to last 30 days if MAX_DAYS_TO_LOAD is set
-            if final_call_data and MAX_DAYS_TO_LOAD is not None:
+            # Unless user has requested a specific date range that requires all data
+            effective_max_days = None
+            if st.session_state.get("_load_all_data_for_date_range", False):
+                # User selected a date range outside loaded data - load all data
+                effective_max_days = None
+                logger.info("Loading all data to satisfy requested date range")
+            elif MAX_DAYS_TO_LOAD is not None:
+                effective_max_days = MAX_DAYS_TO_LOAD
+            
+            if final_call_data and effective_max_days is not None:
                 original_count = len(final_call_data)
                 final_call_data = filter_calls_by_date(
-                    final_call_data, MAX_DAYS_TO_LOAD
+                    final_call_data, effective_max_days
                 )
                 filtered_count = len(final_call_data)
                 if filtered_count < original_count:
                     logger.info(
                         f"Filtered {original_count} calls to {filtered_count} calls "
-                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                        f"(last {effective_max_days} days only)"
                     )
 
             # CRITICAL: Ensure cache is saved after full load completes
@@ -3579,16 +3605,25 @@ def load_all_calls_cached(cache_version=0):
                 final_call_data = migrate_old_cache_format(final_call_data)
 
             # Filter calls to last 30 days if MAX_DAYS_TO_LOAD is set
-            if final_call_data and MAX_DAYS_TO_LOAD is not None:
+            # Unless user has requested a specific date range that requires all data
+            effective_max_days = None
+            if st.session_state.get("_load_all_data_for_date_range", False):
+                # User selected a date range outside loaded data - load all data
+                effective_max_days = None
+                logger.info("Loading all data to satisfy requested date range")
+            elif MAX_DAYS_TO_LOAD is not None:
+                effective_max_days = MAX_DAYS_TO_LOAD
+            
+            if final_call_data and effective_max_days is not None:
                 original_count = len(final_call_data)
                 final_call_data = filter_calls_by_date(
-                    final_call_data, MAX_DAYS_TO_LOAD
+                    final_call_data, effective_max_days
                 )
                 filtered_count = len(final_call_data)
                 if filtered_count < original_count:
                     logger.info(
                         f"Filtered {original_count} calls to {filtered_count} calls "
-                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                        f"(last {effective_max_days} days only)"
                     )
 
             # CRITICAL FIX: Store loaded data in session state BEFORE clearing load_in_progress flag
@@ -6856,6 +6891,23 @@ try:
         # Handle None, empty list, or invalid types safely
         meta_df = pd.DataFrame(call_data)
 
+        # Check if we loaded data for a requested date range and verify it covers the range
+        if st.session_state.get("_load_all_data_for_date_range", False):
+            requested_range = st.session_state.get("_requested_date_range", None)
+            if requested_range and len(meta_df) > 0:
+                # Check if the loaded data now covers the requested range
+                if "Call Date" in meta_df.columns or "call_date" in meta_df.columns:
+                    date_col = "Call Date" if "Call Date" in meta_df.columns else "call_date"
+                    loaded_dates = pd.to_datetime(meta_df[date_col], errors="coerce").dt.date.dropna()
+                    if len(loaded_dates) > 0:
+                        loaded_min = loaded_dates.min()
+                        loaded_max = loaded_dates.max()
+                        req_start, req_end = requested_range
+                        if loaded_min <= req_start and loaded_max >= req_end:
+                            # Data now covers the requested range - clear the flag
+                            st.session_state["_load_all_data_for_date_range"] = False
+                            logger.info(f"Successfully loaded data covering requested date range {req_start} to {req_end}")
+
         # Convert call_date to datetime if it's not already (before column rename)
         if "call_date" in meta_df.columns:
             # If call_date is already datetime, keep it; otherwise try to parse
@@ -7487,22 +7539,34 @@ else:
 # Extract start_date and end_date from selected_dates (works for both preset and custom)
 start_date, end_date = selected_dates
 
-# Check if selected date range is outside loaded data range
+# Check if selected date range is outside loaded data range and trigger reload if needed
 available_min_date = min(dates) if dates else None
 available_max_date = max(dates) if dates else None
 if available_min_date and available_max_date:
     if start_date < available_min_date or end_date > available_max_date:
-        date_range_warning = []
-        if start_date < available_min_date:
-            date_range_warning.append(f"start date ({start_date}) is before the earliest loaded data ({available_min_date})")
-        if end_date > available_max_date:
-            date_range_warning.append(f"end date ({end_date}) is after the latest loaded data ({available_max_date})")
-        if date_range_warning:
-            st.sidebar.warning(
-                f"⚠️ **Date Range Warning:** Your selected {' and '.join(date_range_warning)}. "
-                f"Only data from {available_min_date} to {available_max_date} is currently loaded. "
-                "To view data outside this range, use the 'Reload ALL Data' button (admin only) or select a date range within the loaded data."
+        # Selected date range is outside loaded data - need to load more data
+        # Check if we've already triggered a reload for this date range
+        last_reload_date_range = st.session_state.get("_last_reload_date_range", None)
+        current_date_range = (start_date, end_date)
+        
+        if last_reload_date_range != current_date_range:
+            # This is a new date range that requires more data
+            # Set flag to load all data (not just last 30 days)
+            st.session_state["_load_all_data_for_date_range"] = True
+            st.session_state["_requested_date_range"] = current_date_range
+            st.session_state["_last_reload_date_range"] = current_date_range
+            
+            # Clear existing data caches to force reload
+            if "merged_calls" in st.session_state:
+                del st.session_state["merged_calls"]
+            if "s3_cache_result" in st.session_state:
+                del st.session_state["s3_cache_result"]
+            
+            st.sidebar.info(
+                f"📅 **Loading data for selected date range:** {start_date} to {end_date}. "
+                "This may take a moment..."
             )
+            st.rerun()
 
 # Agent filter (only for admin view)
 if not user_agent_id:
