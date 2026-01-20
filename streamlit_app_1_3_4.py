@@ -7536,12 +7536,15 @@ else:
         st.session_state.last_date_range
         if st.session_state.last_date_range
         and isinstance(st.session_state.last_date_range, tuple)
-        else (max(min(dates), (max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS))), max(dates))
+        else (
+            max(min(dates), (max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS))),
+            max(dates),
+        )
     )
     custom_input = st.sidebar.date_input(
         f"Select Date Range (max {MAX_DATE_RANGE_DAYS} days)",
         value=default_date_range,
-        help=f"Maximum date range is {MAX_DATE_RANGE_DAYS} days to prevent memory issues"
+        help=f"Maximum date range is {MAX_DATE_RANGE_DAYS} days to prevent memory issues",
     )
     if isinstance(custom_input, tuple) and len(custom_input) == 2:
         selected_dates = custom_input
@@ -7554,7 +7557,7 @@ else:
             )
             selected_dates = (
                 selected_dates[1] - timedelta(days=MAX_DATE_RANGE_DAYS),
-                selected_dates[1]
+                selected_dates[1],
             )
         st.session_state.last_date_range = selected_dates  # Save selection
     elif isinstance(custom_input, date):
@@ -7795,7 +7798,15 @@ st.sidebar.markdown("### 📅 Additional Filters")
 if "last_selected_days" not in st.session_state:
     st.session_state.last_selected_days = []
 
-day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+day_names = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
 default_days = (
     st.session_state.last_selected_days
     if st.session_state.last_selected_days
@@ -7825,14 +7836,26 @@ st.session_state.last_time_range = time_range
 
 # AHT/Duration filter (if column exists)
 selected_aht_range = None
-if "AHT" in meta_df.columns or "Average Handle Time" in meta_df.columns or "Duration" in meta_df.columns:
-    aht_col = "AHT" if "AHT" in meta_df.columns else ("Average Handle Time" if "Average Handle Time" in meta_df.columns else "Duration")
+if (
+    "AHT" in meta_df.columns
+    or "Average Handle Time" in meta_df.columns
+    or "Duration" in meta_df.columns
+):
+    aht_col = (
+        "AHT"
+        if "AHT" in meta_df.columns
+        else (
+            "Average Handle Time"
+            if "Average Handle Time" in meta_df.columns
+            else "Duration"
+        )
+    )
     if not meta_df[aht_col].isna().all():
         aht_min = float(meta_df[aht_col].min())
         aht_max = float(meta_df[aht_col].max())
         if "last_aht_range" not in st.session_state:
             st.session_state.last_aht_range = (aht_min, aht_max)
-        
+
         default_aht_range = (
             st.session_state.last_aht_range
             if st.session_state.last_aht_range
@@ -8002,7 +8025,9 @@ if selected_failed_codes:
 # Apply Day of Week filter
 if selected_days and len(selected_days) < len(day_names):
     if "Call Date" in filtered_df.columns:
-        filtered_df["DayOfWeek"] = pd.to_datetime(filtered_df["Call Date"]).dt.day_name()
+        filtered_df["DayOfWeek"] = pd.to_datetime(
+            filtered_df["Call Date"]
+        ).dt.day_name()
         filtered_df = filtered_df[filtered_df["DayOfWeek"].isin(selected_days)].copy()
         filtered_df = filtered_df.drop(columns=["DayOfWeek"], errors="ignore")
 
@@ -8011,13 +8036,22 @@ if time_range and (time_range[0] > 0 or time_range[1] < 23):
     if "Call Date" in filtered_df.columns:
         filtered_df["Hour"] = pd.to_datetime(filtered_df["Call Date"]).dt.hour
         filtered_df = filtered_df[
-            (filtered_df["Hour"] >= time_range[0]) & (filtered_df["Hour"] <= time_range[1])
+            (filtered_df["Hour"] >= time_range[0])
+            & (filtered_df["Hour"] <= time_range[1])
         ].copy()
         filtered_df = filtered_df.drop(columns=["Hour"], errors="ignore")
 
 # Apply AHT/Duration filter
 if selected_aht_range:
-    aht_col = "AHT" if "AHT" in filtered_df.columns else ("Average Handle Time" if "Average Handle Time" in filtered_df.columns else "Duration")
+    aht_col = (
+        "AHT"
+        if "AHT" in filtered_df.columns
+        else (
+            "Average Handle Time"
+            if "Average Handle Time" in filtered_df.columns
+            else "Duration"
+        )
+    )
     if aht_col in filtered_df.columns:
         filtered_df = filtered_df[
             (filtered_df[aht_col] >= selected_aht_range[0])
@@ -8029,7 +8063,9 @@ if selected_products:
     if "Product" in filtered_df.columns:
         filtered_df = filtered_df[filtered_df["Product"].isin(selected_products)].copy()
     elif "Category" in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df["Category"].isin(selected_products)].copy()
+        filtered_df = filtered_df[
+            filtered_df["Category"].isin(selected_products)
+        ].copy()
 
 # Calculate overall averages for comparison (from all data, not filtered)
 if show_comparison and user_agent_id:
