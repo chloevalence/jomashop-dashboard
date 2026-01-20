@@ -7678,9 +7678,9 @@ if date_range_mode == "Last Week":
     with col2:
         st.sidebar.markdown(
             f'<div style="text-align: center; font-size: 0.9em; padding: 0.3em 0;">'
-            f'<strong>{week_start.strftime("%m/%d")} to {week_end.strftime("%m/%d")}</strong>'
-            f'</div>',
-            unsafe_allow_html=True
+            f"<strong>{week_start.strftime('%m/%d')} to {week_end.strftime('%m/%d')}</strong>"
+            f"</div>",
+            unsafe_allow_html=True,
         )
     with col3:
         if st.button("▶", help="Go forward one week", use_container_width=True):
@@ -7724,9 +7724,9 @@ elif date_range_mode == "Last Month":
     with col2:
         st.sidebar.markdown(
             f'<div style="text-align: center; font-size: 0.9em; padding: 0.3em 0;">'
-            f'<strong>{month_start.strftime("%m/%d")} to {month_end.strftime("%m/%d")}</strong>'
-            f'</div>',
-            unsafe_allow_html=True
+            f"<strong>{month_start.strftime('%m/%d')} to {month_end.strftime('%m/%d')}</strong>"
+            f"</div>",
+            unsafe_allow_html=True,
         )
     with col3:
         if st.button("▶", help="Go forward one month", use_container_width=True):
@@ -9135,8 +9135,12 @@ if not user_agent_id:
                 "Avg_Call_Duration": 0.0,
             }
         )
-        # Use markdown table to avoid width calculation issues
-        st.markdown(agent_perf_display.to_markdown(index=False))
+        # Display as sortable dataframe
+        st.dataframe(
+            agent_perf_display,
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
         agent_performance = agent_performance.sort_values(
             "Avg_QA_Score", ascending=False
@@ -9153,8 +9157,12 @@ if not user_agent_id:
         agent_performance = agent_performance.round(1)
         # Reset index and fill NaN values
         agent_performance = agent_performance.reset_index(drop=True).fillna("")
-        # Use markdown table to avoid width calculation issues
-        st.markdown(agent_performance.to_markdown(index=False))
+        # Display as sortable dataframe
+        st.dataframe(
+            agent_performance,
+            use_container_width=True,
+            hide_index=True,
+        )
 
 # --- At-Risk Agent Detection (Predictive Analytics) ---
 if not user_agent_id:  # Admin view only
