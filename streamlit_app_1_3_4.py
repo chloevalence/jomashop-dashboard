@@ -6581,6 +6581,18 @@ try:
         del st.session_state["merged_calls"]
         if "merged_errors" in st.session_state:
             del st.session_state["merged_errors"]
+        # CRITICAL: Apply 30-day filter to prevent memory issues
+        # Unless user has requested a specific date range that requires all data
+        if not st.session_state.get("_load_all_data_for_date_range", False):
+            if call_data and MAX_DAYS_TO_LOAD is not None:
+                original_count = len(call_data)
+                call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
+                filtered_count = len(call_data)
+                if filtered_count < original_count:
+                    logger.info(
+                        f"Filtered merged calls from {original_count} to {filtered_count} calls "
+                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                    )
         # Note: Disk cache already has the merged data from refresh, Streamlit cache will update on next access
         elapsed = time.time() - t0
         status_text.empty()
@@ -6603,6 +6615,18 @@ try:
                         if (disk_result and disk_result[1] is not None)
                         else []
                     )
+                    # CRITICAL: Apply 30-day filter to prevent memory issues
+                    # Unless user has requested a specific date range that requires all data
+                    if not st.session_state.get("_load_all_data_for_date_range", False):
+                        if call_data and MAX_DAYS_TO_LOAD is not None:
+                            original_count = len(call_data)
+                            call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
+                            filtered_count = len(call_data)
+                            if filtered_count < original_count:
+                                logger.info(
+                                    f"Filtered disk cache from {original_count} to {filtered_count} calls "
+                                    f"(last {MAX_DAYS_TO_LOAD} days only)"
+                                )
                     logger.info(
                         f" Using disk cache during refresh: {len(call_data)} calls"
                     )
@@ -6647,6 +6671,18 @@ try:
                 if cached_data and len(cached_data) >= 100:
                     call_data = cached_data
                     errors = cached_errors
+                    # CRITICAL: Apply 30-day filter to prevent memory issues
+                    # Unless user has requested a specific date range that requires all data
+                    if not st.session_state.get("_load_all_data_for_date_range", False):
+                        if call_data and MAX_DAYS_TO_LOAD is not None:
+                            original_count = len(call_data)
+                            call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
+                            filtered_count = len(call_data)
+                            if filtered_count < original_count:
+                                logger.info(
+                                    f"Filtered session cache from {original_count} to {filtered_count} calls "
+                                    f"(last {MAX_DAYS_TO_LOAD} days only)"
+                                )
                     elapsed = time.time() - t0
                     status_text.empty()
                     logger.info(
@@ -6720,6 +6756,18 @@ try:
                     call_data, errors = load_all_calls_cached(
                         cache_version=cache_version
                     )
+                    # CRITICAL: Apply 30-day filter to prevent memory issues
+                    # Unless user has requested a specific date range that requires all data
+                    if not st.session_state.get("_load_all_data_for_date_range", False):
+                        if call_data and MAX_DAYS_TO_LOAD is not None:
+                            original_count = len(call_data)
+                            call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
+                            filtered_count = len(call_data)
+                            if filtered_count < original_count:
+                                logger.info(
+                                    f"Filtered loaded data from {original_count} to {filtered_count} calls "
+                                    f"(last {MAX_DAYS_TO_LOAD} days only)"
+                                )
                     # CRITICAL FIX: Store tuple (data, errors) instead of just data
                     # Store data and errors in session state for reuse
                     st.session_state["_s3_cache_result"] = (call_data, errors)
