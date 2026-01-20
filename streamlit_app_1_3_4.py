@@ -1927,10 +1927,50 @@ def deduplicate_calls(call_data):
 
     For CSV files, uses call_id as the primary identifier since multiple rows
     can come from the same CSV file.
+    
+    Memory optimization: Returns original list if no duplicates found (avoids copying).
     """
     if not call_data:
         return []
 
+    # Quick check if duplicates exist (sample first 100 calls)
+    seen_keys = set()
+    has_duplicates = False
+    sample_size = min(100, len(call_data))
+    
+    for i in range(sample_size):
+        call = call_data[i]
+        if not isinstance(call, dict):
+            continue
+        key = extract_cache_key(call)
+        if key:
+            if key in seen_keys:
+                has_duplicates = True
+                break
+            seen_keys.add(key)
+    
+    # If no duplicates in sample, check full list quickly
+    if not has_duplicates and len(call_data) > sample_size:
+        # Check remaining calls for duplicates
+        for i in range(sample_size, len(call_data)):
+            call = call_data[i]
+            if not isinstance(call, dict):
+                continue
+            key = extract_cache_key(call)
+            if key:
+                if key in seen_keys:
+                    has_duplicates = True
+                    break
+                seen_keys.add(key)
+    
+    # If no duplicates found, return original list without copying
+    if not has_duplicates:
+        logger.debug(
+            f" Deduplication check: No duplicates found, all {len(call_data)} calls are unique - returning original list"
+        )
+        return call_data
+
+    # Has duplicates - process and create deduplicated list
     seen_keys = set()
     deduplicated = []
     duplicates_count = 0
@@ -1954,10 +1994,6 @@ def deduplicate_calls(call_data):
     if duplicates_count > 0:
         logger.warning(
             f" Removed {duplicates_count} duplicate calls (kept {len(deduplicated)} unique calls)"
-        )
-    else:
-        logger.debug(
-            f" Deduplication check: No duplicates found, all {len(deduplicated)} calls are unique"
         )
 
     return deduplicated
@@ -3878,13 +3914,12 @@ def load_all_calls_cached(cache_version=0):
                 and s3_cache_result[0] is not None
                 and isinstance(s3_cache_result[0], list)
             ):
-                # Migrate old cache format to new format
-                migrated_calls = migrate_old_cache_format(s3_cache_result[0])
+                # Cache is already in correct format - use directly
                 logger.info(
-                    f" Refresh in progress - using S3 cache directly: {len(migrated_calls)} calls"
+                    f" Refresh in progress - using S3 cache directly: {len(s3_cache_result[0])} calls"
                 )
                 return (
-                    migrated_calls,
+                    s3_cache_result[0],
                     s3_cache_result[1] if len(s3_cache_result) > 1 else [],
                 )
             else:
@@ -3917,8 +3952,7 @@ def load_all_calls_cached(cache_version=0):
                 # Use merged cache data (it's still current)
                 merged_data = st.session_state["_merged_cache_data"]
                 merged_errors = st.session_state.get("_merged_cache_errors", [])
-                # Migrate old cache format to new format
-                merged_data = migrate_old_cache_format(merged_data)
+                # Cache is already in correct format - use directly
                 logger.info(
                     f" Using merged cache data from refresh: {len(merged_data)} calls"
                 )
@@ -3937,16 +3971,15 @@ def load_all_calls_cached(cache_version=0):
             and s3_cache_result[0] is not None
             and isinstance(s3_cache_result[0], list)
         ):
-            # Migrate old cache format to new format
-            migrated_calls = migrate_old_cache_format(s3_cache_result[0])
+            # Cache is already in correct format - use directly
             logger.info(
-                f" Using S3 cache (source of truth): {len(migrated_calls)} calls"
+                f" Using S3 cache (source of truth): {len(s3_cache_result[0])} calls"
             )
             # Store timestamp for future comparison
             if s3_cache_timestamp:
                 st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
             return (
-                migrated_calls,
+                s3_cache_result[0],
                 s3_cache_result[1] if len(s3_cache_result) > 1 else [],
             )
 
@@ -4097,7 +4130,12 @@ def load_all_calls_cached(cache_version=0):
                         return disk_call_data, [new_errors] if disk_errors else []
 
                     # Merge new calls with existing disk cache
-                    all_calls_merged = disk_call_data + new_calls
+                    # Use extend() to modify in-place (avoids creating new list)
+                    if disk_call_data:
+                        disk_call_data.extend(new_calls)
+                        all_calls_merged = disk_call_data
+                    else:
+                        all_calls_merged = new_calls
                     all_calls_merged = deduplicate_calls(all_calls_merged)
 
                     # Save merged data to disk immediately
@@ -7299,7 +7337,12 @@ if is_super_admin():
                     f" Disk cache missing {len(missing_keys)} keys from new_calls - incremental saves may have failed, merging as fallback"
                 )
                 logger.warning(f" Sample missing keys: {list(missing_keys)[:5]}")
-                all_calls_merged = disk_cached_calls + new_calls
+                # Use extend() to modify in-place (avoids creating new list)
+                if disk_cached_calls:
+                    disk_cached_calls.extend(new_calls)
+                    all_calls_merged = disk_cached_calls
+                else:
+                    all_calls_merged = new_calls
                 all_calls_merged = deduplicate_calls(all_calls_merged)
                 logger.info(
                     f" Fallback merge: {len(disk_cached_calls)} + {len(new_calls)} = {len(all_calls_merged)} unique calls"
@@ -7525,9 +7568,12 @@ if is_super_admin():
                             )
 
                             # Merge preserved Streamlit cache with disk cache
-                            merged_data = (
-                                previous_streamlit_cache + disk_result_verify[0]
-                            )
+                            # Use extend() to modify in-place (avoids creating new list)
+                            if previous_streamlit_cache:
+                                previous_streamlit_cache.extend(disk_result_verify[0])
+                                merged_data = previous_streamlit_cache
+                            else:
+                                merged_data = disk_result_verify[0]
                         merged_data = deduplicate_calls(merged_data)
                         merged_count = len(merged_data)
 
@@ -7742,10 +7788,16 @@ if is_super_admin():
                     )
 
             # We need to manually update the cache - store in session state temporarily
+            # Use _merged_cache_data as single source of truth (avoid redundant merged_calls key)
             # CRITICAL FIX: Protect all session state accesses to prevent crashes
             try:
-                st.session_state["merged_calls"] = all_calls_merged
-                st.session_state["merged_errors"] = new_errors if new_errors else []
+                st.session_state["_merged_cache_data"] = all_calls_merged
+                st.session_state["_merged_cache_errors"] = new_errors if new_errors else []
+                # Clear redundant merged_calls key if it exists
+                if "merged_calls" in st.session_state:
+                    del st.session_state["merged_calls"]
+                if "merged_errors" in st.session_state:
+                    del st.session_state["merged_errors"]
                 # Update processed keys tracking
                 if "processed_s3_keys" not in st.session_state:
                     st.session_state["processed_s3_keys"] = set()
@@ -7983,7 +8035,7 @@ status_text = st.empty()
 
 # Check if data is already loaded - skip S3 test if so
 data_already_loaded = (
-    "merged_calls" in st.session_state
+    "_merged_cache_data" in st.session_state
     or st.session_state.get("_s3_cache_result") is not None
     or st.session_state.get("_data_load_in_progress", False)
 )
@@ -8098,12 +8150,13 @@ try:
     call_data = None
     errors = None
 
-    if "merged_calls" in st.session_state:
-        logger.info("Found merged calls in session state, using cached data")
-        # CRITICAL FIX: Add defensive error handling around merged_calls access
+    # Check for merged cache data (prefer _merged_cache_data over legacy merged_calls)
+    if "_merged_cache_data" in st.session_state:
+        logger.info("Found merged cache data in session state, using cached data")
+        # CRITICAL FIX: Add defensive error handling around merged cache access
         try:
             # Use merged data from smart refresh
-            merged_calls = st.session_state.get("merged_calls")
+            merged_calls = st.session_state.get("_merged_cache_data")
             if merged_calls is None:
                 logger.warning(
                     "merged_calls is None in session state - using empty list"
@@ -8127,7 +8180,7 @@ try:
                     call_data = [c for c in call_data if isinstance(c, dict)]
                     logger.info(f"Filtered to {len(call_data)} valid calls")
 
-            errors = st.session_state.get("merged_errors", [])
+            errors = st.session_state.get("_merged_cache_errors", [])
             if not isinstance(errors, list):
                 logger.warning(
                     f"merged_errors is not a list (type: {type(errors)}) - using empty list"
@@ -8136,20 +8189,58 @@ try:
 
             # Clear the temporary session state
             try:
-                del st.session_state["merged_calls"]
+                del st.session_state["_merged_cache_data"]
             except (KeyError, RuntimeError, AttributeError) as del_error:
                 logger.warning(
-                    f"Could not delete merged_calls from session state: {del_error}"
+                    f"Could not delete _merged_cache_data from session state: {del_error}"
                 )
 
             try:
-                if "merged_errors" in st.session_state:
-                    del st.session_state["merged_errors"]
+                if "_merged_cache_errors" in st.session_state:
+                    del st.session_state["_merged_cache_errors"]
             except (KeyError, RuntimeError, AttributeError) as del_error:
                 logger.warning(
-                    f"Could not delete merged_errors from session state: {del_error}"
+                    f"Could not delete _merged_cache_errors from session state: {del_error}"
                 )
         except Exception as e:
+            logger.error(f"Error accessing _merged_cache_data from session state: {e}")
+            call_data = []
+            errors = []
+        else:
+            # Successfully loaded from _merged_cache_data
+            # Note: Disk cache already has the merged data from refresh, Streamlit cache will update on next access
+            elapsed = time.time() - t0
+            status_text.empty()
+            logger.info(
+                f" Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
+            )
+            # Continue to DataFrame creation below (don't return here)
+
+    # Legacy support: migrate from old merged_calls key to _merged_cache_data
+    elif "merged_calls" in st.session_state:
+        logger.info("Found legacy merged_calls in session state, migrating to _merged_cache_data")
+        try:
+            merged_calls = st.session_state.get("merged_calls")
+            if merged_calls:
+                st.session_state["_merged_cache_data"] = merged_calls
+                if "merged_errors" in st.session_state:
+                    st.session_state["_merged_cache_errors"] = st.session_state["merged_errors"]
+                # Clear old keys
+                del st.session_state["merged_calls"]
+                if "merged_errors" in st.session_state:
+                    del st.session_state["merged_errors"]
+                # Load using the migrated data
+                call_data, errors = load_all_calls_cached()
+                elapsed = time.time() - t0
+                status_text.empty()
+                logger.info(
+                    f" Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
+                )
+                # Continue to DataFrame creation below (don't return here)
+        except Exception as e:
+            logger.error(f"Error migrating legacy merged_calls: {e}")
+            call_data = []
+            errors = []
             logger.error(f"Error accessing merged_calls from session state: {e}")
             call_data = []
             errors = []
