@@ -5431,7 +5431,6 @@ def is_regular_admin():
 
     Regular admins can:
     - View all agent data and analytics
-    - Access dark mode
     - See all charts and reports
 
     Regular admins cannot:
@@ -7430,25 +7429,6 @@ if "selected_rubric_codes" not in st.session_state:
     st.session_state.selected_rubric_codes = []
 if "rubric_filter_type" not in st.session_state:
     st.session_state.rubric_filter_type = "Any Status"
-
-# Dark mode toggle (admin only)
-if is_regular_admin():
-    st.sidebar.markdown("---")
-    dark_mode = st.sidebar.toggle(
-        "🌙 Dark Mode", value=False, help="Toggle dark mode (requires page refresh)"
-    )
-    if dark_mode:
-        st.markdown(
-            """
-        <style>
-        .stApp {
-            background-color: #0e1117;
-            color: #fafafa;
-        }
-        </style>
-        """,
-            unsafe_allow_html=True,
-        )
 
 # Keyboard shortcuts info
 with st.sidebar.expander(" Keyboard Shortcuts"):
