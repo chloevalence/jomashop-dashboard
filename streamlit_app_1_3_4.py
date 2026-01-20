@@ -8761,6 +8761,13 @@ try:
 
         # Create DataFrame with memory-efficient approach
         try:
+            # Check memory before DataFrame creation - warn if already high
+            current_mem_before_df = get_memory_usage_mb()
+            if current_mem_before_df > 0 and current_mem_before_df > 2000:
+                logger.warning(
+                    f"High memory usage ({current_mem_before_df:.1f}MB) before DataFrame creation - may cause issues"
+                )
+            
             meta_df = pd.DataFrame(call_data)
             logger.info(
                 f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
@@ -8770,14 +8777,34 @@ try:
             memory_after_df = log_memory_usage(
                 "DataFrame creation - complete", memory_before_df
             )
-
-            # Note: call_data may still be referenced elsewhere, so we don't explicitly delete it
-            # Garbage collection will handle it when it goes out of scope
-            # Force garbage collection to help free memory
+            
+            # CRITICAL: Clear call_data reference if it's stored in session state to free memory
+            # The DataFrame now has the data, so we don't need the original list
+            try:
+                if "_s3_cache_result" in st.session_state:
+                    # Clear the call_data from session state to free memory
+                    # Keep the tuple structure but clear the list
+                    cached_result = st.session_state["_s3_cache_result"]
+                    if isinstance(cached_result, tuple) and len(cached_result) > 0:
+                        # Replace with empty list to free memory (DataFrame has the data now)
+                        st.session_state["_s3_cache_result"] = ([], cached_result[1] if len(cached_result) > 1 else [])
+                        logger.debug("Cleared call_data from _s3_cache_result to free memory after DataFrame creation")
+            except Exception as clear_error:
+                logger.debug(f"Could not clear session state cache: {clear_error}")
+            
+            # CRITICAL: Force aggressive garbage collection after DataFrame creation
+            # This helps free memory from intermediate structures
+            gc.collect()
+            # Run garbage collection twice to ensure cleanup
             gc.collect()
             logger.debug(
-                "Forced garbage collection after DataFrame creation to free memory"
+                "Forced aggressive garbage collection after DataFrame creation to free memory"
             )
+            
+            # Log final memory state
+            final_mem = get_memory_usage_mb()
+            if final_mem > 0:
+                logger.info(f"Final memory usage after DataFrame creation: {final_mem:.1f}MB")
 
         except MemoryError as mem_error:
             memory_after_error = log_memory_usage(
