@@ -6859,10 +6859,9 @@ try:
                     )
 
                     # Clear loading messages
-                    loading_placeholder.empty()
+                    status_text.empty()
                 except TimeoutError:
                     logger.exception("Timeout during data loading")
-                    loading_placeholder.empty()
                     status_text.empty()
                     st.error(" **Loading Timeout**")
                     st.error(
@@ -6885,7 +6884,6 @@ try:
                     st.stop()
                 except Exception as e:
                     logger.exception("Error during data loading")
-                    loading_placeholder.empty()
                     status_text.empty()
                     st.error(" **Error Loading Data**")
                     st.error(f"**Error:** {str(e)}")
@@ -9017,10 +9015,16 @@ if not user_agent_id:
             }
         )
         # Ensure clean numeric types after fillna
-        agent_perf_display["Total_Calls"] = agent_perf_display["Total_Calls"].astype(int)
-        agent_perf_display["Avg_QA_Score"] = agent_perf_display["Avg_QA_Score"].astype(float)
+        agent_perf_display["Total_Calls"] = agent_perf_display["Total_Calls"].astype(
+            int
+        )
+        agent_perf_display["Avg_QA_Score"] = agent_perf_display["Avg_QA_Score"].astype(
+            float
+        )
         agent_perf_display["Pass_Rate"] = agent_perf_display["Pass_Rate"].astype(float)
-        agent_perf_display["Avg_Call_Duration"] = agent_perf_display["Avg_Call_Duration"].astype(float)
+        agent_perf_display["Avg_Call_Duration"] = agent_perf_display[
+            "Avg_Call_Duration"
+        ].astype(float)
         # Display as sortable dataframe with column configuration
         st.dataframe(
             agent_perf_display,
@@ -9028,11 +9032,19 @@ if not user_agent_id:
             hide_index=True,
             column_config={
                 "Agent": st.column_config.TextColumn("Agent", width="medium"),
-                "Total_Calls": st.column_config.NumberColumn("Total Calls", format="%d"),
-                "Avg_QA_Score": st.column_config.NumberColumn("Avg QA Score", format="%.1f"),
+                "Total_Calls": st.column_config.NumberColumn(
+                    "Total Calls", format="%d"
+                ),
+                "Avg_QA_Score": st.column_config.NumberColumn(
+                    "Avg QA Score", format="%.1f"
+                ),
                 "Pass_Rate": st.column_config.NumberColumn("Pass Rate", format="%.1f"),
-                "Percentile_Rank": st.column_config.TextColumn("Percentile Rank", width="medium"),
-                "Avg_Call_Duration": st.column_config.NumberColumn("Avg Call Duration", format="%.1f"),
+                "Percentile_Rank": st.column_config.TextColumn(
+                    "Percentile Rank", width="medium"
+                ),
+                "Avg_Call_Duration": st.column_config.NumberColumn(
+                    "Avg Call Duration", format="%.1f"
+                ),
             },
         )
     else:
