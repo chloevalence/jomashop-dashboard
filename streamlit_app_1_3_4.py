@@ -9241,6 +9241,8 @@ try:
 
             # Create DataFrame - this is the heavy operation
             meta_df = pd.DataFrame(call_data)
+            # Store in session state to persist across reruns
+            st.session_state["_meta_df"] = meta_df
             df_progress.progress(0.7)
             send_heartbeat()
 
@@ -10361,7 +10363,14 @@ if user_agent_id:
 else:
     # Admin/All data view
     # Only create filter_df if DataFrame exists (user clicked "Load Data")
-    if "meta_df" in locals() and not meta_df.empty:
+    # Check session state first (persists across reruns), then locals() as fallback
+    if "_meta_df" in st.session_state and not st.session_state["_meta_df"].empty:
+        meta_df = st.session_state["_meta_df"]
+        filter_df = meta_df
+        show_comparison = False
+        st.sidebar.info(f" Showing all data ({len(meta_df)} calls)")
+    elif "meta_df" in locals() and not meta_df.empty:
+        # Fallback to locals() if session state doesn't have it
         filter_df = meta_df
         show_comparison = False
         st.sidebar.info(f" Showing all data ({len(meta_df)} calls)")
@@ -10653,12 +10662,21 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("###  Rubric Code Filters")
 
 # Collect all rubric codes (both pass and fail) - OPTIMIZED: Cache in session state and use vectorized operations
-if "all_rubric_codes" not in st.session_state or st.session_state.get(
-    "_rubric_codes_df_hash"
-) != hash(str(len(meta_df))):
+# Get meta_df from session state or locals()
+meta_df_for_rubric = (
+    st.session_state.get("_meta_df")
+    if "_meta_df" in st.session_state
+    else (meta_df if "meta_df" in locals() else None)
+)
+
+if meta_df_for_rubric is not None and (
+    "all_rubric_codes" not in st.session_state
+    or st.session_state.get("_rubric_codes_df_hash")
+    != hash(str(len(meta_df_for_rubric)))
+):
     # Recompute if not cached or if DataFrame size changed
     all_rubric_codes = set()
-    if "Rubric Details" in meta_df.columns:
+    if "Rubric Details" in meta_df_for_rubric.columns:
         with st.spinner("Collecting rubric codes..."):
             # Use vectorized apply instead of iterrows() - much faster
             def extract_rubric_codes(rubric_details):
@@ -10667,14 +10685,21 @@ if "all_rubric_codes" not in st.session_state or st.session_state.get(
                 return set()
 
             # Apply to all rows at once (vectorized)
-            code_sets = meta_df["Rubric Details"].apply(extract_rubric_codes)
+            code_sets = meta_df_for_rubric["Rubric Details"].apply(extract_rubric_codes)
             # Union all sets
             for code_set in code_sets:
                 all_rubric_codes.update(code_set)
 
         all_rubric_codes = sorted(list(all_rubric_codes))
         st.session_state["all_rubric_codes"] = all_rubric_codes
-        st.session_state["_rubric_codes_df_hash"] = hash(str(len(meta_df)))
+        # Get meta_df from session state or locals()
+        meta_df_for_hash = (
+            st.session_state.get("_meta_df")
+            if "_meta_df" in st.session_state
+            else (meta_df if "meta_df" in locals() else None)
+        )
+        if meta_df_for_hash is not None:
+            st.session_state["_rubric_codes_df_hash"] = hash(str(len(meta_df_for_hash)))
         logger.debug(f"Collected {len(all_rubric_codes)} unique rubric codes")
     else:
         all_rubric_codes = []
@@ -12774,7 +12799,12 @@ if (
                     compute_high_aht_coaching_analysis,
                 )
 
-                if high_aht_coaching_categories:
+                # Check if high_aht_coaching_categories is not empty using len() to avoid
+                # TypeError when list contains mixed types (float/str)
+                if (
+                    high_aht_coaching_categories
+                    and len(high_aht_coaching_categories) > 0
+                ):
                     # Calculate frequencies
                     from collections import Counter
 
@@ -12904,8 +12934,12 @@ if (
                         categories = long_aht_calls["Challenges"].apply(
                             categorize_challenge
                         )
-                        # Filter out None values
-                        return [cat for cat in categories if cat is not None]
+                        # Filter out None values and ensure all are strings (not floats/NaN)
+                        return [
+                            cat
+                            for cat in categories
+                            if cat is not None and isinstance(cat, str)
+                        ]
 
                 # Get cached or compute challenge categories
                 all_challenge_categories = get_cached_computation(
@@ -12915,7 +12949,12 @@ if (
                     cache_key_high_aht_challenges, compute_high_aht_challenges
                 )
 
-                if high_aht_challenge_categories:
+                # Check if high_aht_challenge_categories is not empty using len() to avoid
+                # TypeError when list contains mixed types (float/str)
+                if (
+                    high_aht_challenge_categories
+                    and len(high_aht_challenge_categories) > 0
+                ):
                     from collections import Counter
 
                     all_challenge_counts = Counter(all_challenge_categories)
