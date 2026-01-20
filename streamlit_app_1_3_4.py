@@ -12390,11 +12390,6 @@ with analytics_tab3:
                 st.markdown(f"### Failure Code: {selected_failure_code}")
                 st.metric("Total Failures", failure_info["count"])
                 st.metric("Affected Calls", len(failure_info["calls"]))
-                            height=68,
-                            disabled=True,
-                            key=f"note_{hash(note)}",
-                            label_visibility="collapsed",
-                        )
         else:
             st.info(" No failed rubric items found in the filtered data")
     else:
