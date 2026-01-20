@@ -1927,7 +1927,7 @@ def deduplicate_calls(call_data):
 
     For CSV files, uses call_id as the primary identifier since multiple rows
     can come from the same CSV file.
-    
+
     Memory optimization: Returns original list if no duplicates found (avoids copying).
     """
     if not call_data:
@@ -1937,7 +1937,7 @@ def deduplicate_calls(call_data):
     seen_keys = set()
     has_duplicates = False
     sample_size = min(100, len(call_data))
-    
+
     for i in range(sample_size):
         call = call_data[i]
         if not isinstance(call, dict):
@@ -1948,7 +1948,7 @@ def deduplicate_calls(call_data):
                 has_duplicates = True
                 break
             seen_keys.add(key)
-    
+
     # If no duplicates in sample, check full list quickly
     if not has_duplicates and len(call_data) > sample_size:
         # Check remaining calls for duplicates
@@ -1962,7 +1962,7 @@ def deduplicate_calls(call_data):
                     has_duplicates = True
                     break
                 seen_keys.add(key)
-    
+
     # If no duplicates found, return original list without copying
     if not has_duplicates:
         logger.debug(
@@ -3832,7 +3832,7 @@ def load_all_calls_cached(cache_version=0):
                             if memory_after_s3_load > 0 and memory_after_s3_load > 2500:
                                 logger.warning(
                                     f"High memory usage after S3 cache load: {memory_after_s3_load:.1f}MB - consider closing other sessions"
-                                )
+                            )
 
                             # Cache in session state to avoid duplicate loads
                             st.session_state[s3_cache_key] = s3_cache_result
@@ -7792,7 +7792,9 @@ if is_super_admin():
             # CRITICAL FIX: Protect all session state accesses to prevent crashes
             try:
                 st.session_state["_merged_cache_data"] = all_calls_merged
-                st.session_state["_merged_cache_errors"] = new_errors if new_errors else []
+                st.session_state["_merged_cache_errors"] = (
+                    new_errors if new_errors else []
+                )
                 # Clear redundant merged_calls key if it exists
                 if "merged_calls" in st.session_state:
                     del st.session_state["merged_calls"]
@@ -8218,13 +8220,17 @@ try:
 
     # Legacy support: migrate from old merged_calls key to _merged_cache_data
     elif "merged_calls" in st.session_state:
-        logger.info("Found legacy merged_calls in session state, migrating to _merged_cache_data")
+        logger.info(
+            "Found legacy merged_calls in session state, migrating to _merged_cache_data"
+        )
         try:
             merged_calls = st.session_state.get("merged_calls")
             if merged_calls:
                 st.session_state["_merged_cache_data"] = merged_calls
                 if "merged_errors" in st.session_state:
-                    st.session_state["_merged_cache_errors"] = st.session_state["merged_errors"]
+                    st.session_state["_merged_cache_errors"] = st.session_state[
+                        "merged_errors"
+                    ]
                 # Clear old keys
                 del st.session_state["merged_calls"]
                 if "merged_errors" in st.session_state:
@@ -8562,20 +8568,20 @@ try:
                         st.error(
                             "The app may be trying to load too many files at once."
                         )
-                        st.info(" **Try this:**")
-                        st.info(
-                            "1. **Refresh the page** - if cache exists, it will load instantly"
-                        )
-                        st.info(
-                            "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
-                        )
-                        st.info("3. Wait a few minutes and refresh the page")
-                        st.info("4. Check the terminal/logs for detailed errors")
-                        with st.expander("Show full error details"):
-                            import traceback
+                    st.info(" **Try this:**")
+                    st.info(
+                        "1. **Refresh the page** - if cache exists, it will load instantly"
+                    )
+                    st.info(
+                        "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
+                    )
+                    st.info("3. Wait a few minutes and refresh the page")
+                    st.info("4. Check the terminal/logs for detailed errors")
+                    with st.expander("Show full error details"):
+                        import traceback
 
-                            st.code(traceback.format_exc())
-                        st.stop()
+                        st.code(traceback.format_exc())
+                    st.stop()
 
         # Clear progress after loading (only if progress_placeholder was created)
         was_processing = st.session_state.csv_processing_progress.get("total", 0) > 0
@@ -8767,7 +8773,7 @@ try:
                 logger.warning(
                     f"High memory usage ({current_mem_before_df:.1f}MB) before DataFrame creation - may cause issues"
                 )
-            
+
             meta_df = pd.DataFrame(call_data)
             logger.info(
                 f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
@@ -8777,21 +8783,37 @@ try:
             memory_after_df = log_memory_usage(
                 "DataFrame creation - complete", memory_before_df
             )
-            
-            # CRITICAL: Clear call_data reference if it's stored in session state to free memory
+
+            # CRITICAL: Clear call_data references to free memory
             # The DataFrame now has the data, so we don't need the original list
             try:
+                # Clear from session state
                 if "_s3_cache_result" in st.session_state:
                     # Clear the call_data from session state to free memory
                     # Keep the tuple structure but clear the list
                     cached_result = st.session_state["_s3_cache_result"]
                     if isinstance(cached_result, tuple) and len(cached_result) > 0:
                         # Replace with empty list to free memory (DataFrame has the data now)
-                        st.session_state["_s3_cache_result"] = ([], cached_result[1] if len(cached_result) > 1 else [])
-                        logger.debug("Cleared call_data from _s3_cache_result to free memory after DataFrame creation")
+                        st.session_state["_s3_cache_result"] = (
+                            [],
+                            cached_result[1] if len(cached_result) > 1 else [],
+                        )
+                        logger.debug(
+                            "Cleared call_data from _s3_cache_result to free memory after DataFrame creation"
+                        )
+                
+                # Also clear _merged_cache_data if it exists
+                if "_merged_cache_data" in st.session_state:
+                    del st.session_state["_merged_cache_data"]
+                    logger.debug("Cleared _merged_cache_data to free memory after DataFrame creation")
             except Exception as clear_error:
                 logger.debug(f"Could not clear session state cache: {clear_error}")
             
+            # CRITICAL: Clear local call_data variable to free memory
+            # Set to empty list to help garbage collector
+            call_data = []
+            logger.debug("Cleared local call_data variable to free memory after DataFrame creation")
+
             # CRITICAL: Force aggressive garbage collection after DataFrame creation
             # This helps free memory from intermediate structures
             gc.collect()
@@ -8800,11 +8822,40 @@ try:
             logger.debug(
                 "Forced aggressive garbage collection after DataFrame creation to free memory"
             )
-            
+
             # Log final memory state
             final_mem = get_memory_usage_mb()
             if final_mem > 0:
-                logger.info(f"Final memory usage after DataFrame creation: {final_mem:.1f}MB")
+                logger.info(
+                    f"Final memory usage after DataFrame creation: {final_mem:.1f}MB"
+                )
+            
+            # OPTIMIZATION: Optimize DataFrame memory usage by converting object dtypes to category
+            # This can reduce memory usage by 50-90% for string columns with repeated values
+            try:
+                memory_before_optimization = get_memory_usage_mb()
+                object_columns = meta_df.select_dtypes(include=['object']).columns
+                if len(object_columns) > 0:
+                    logger.debug(f"Optimizing {len(object_columns)} object columns to reduce memory usage")
+                    for col in object_columns:
+                        try:
+                            # Convert to category if it has repeated values (memory efficient)
+                            # Only convert if unique values are less than 50% of total (worth it)
+                            unique_ratio = meta_df[col].nunique() / len(meta_df)
+                            if unique_ratio < 0.5 and meta_df[col].nunique() > 0:
+                                meta_df[col] = meta_df[col].astype('category')
+                                logger.debug(f"Converted {col} to category (unique ratio: {unique_ratio:.2f})")
+                        except Exception as col_error:
+                            # Skip columns that can't be converted (e.g., mixed types)
+                            logger.debug(f"Could not convert {col} to category: {col_error}")
+                    
+                    memory_after_optimization = get_memory_usage_mb()
+                    if memory_after_optimization > 0 and memory_before_optimization > 0:
+                        memory_saved = memory_before_optimization - memory_after_optimization
+                        if memory_saved > 0:
+                            logger.info(f"DataFrame dtype optimization saved {memory_saved:.1f}MB")
+            except Exception as opt_error:
+                logger.debug(f"Could not optimize DataFrame dtypes: {opt_error}")
 
         except MemoryError as mem_error:
             memory_after_error = log_memory_usage(
