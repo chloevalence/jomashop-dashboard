@@ -3787,7 +3787,7 @@ def load_all_calls_cached(cache_version=0):
 
                                     # Force garbage collection after storing in session state
                                     gc.collect()
-                                    
+
                                     # Send heartbeat after storing in session state
                                     send_heartbeat()
                                 else:
@@ -3869,7 +3869,7 @@ def load_all_calls_cached(cache_version=0):
 
                             # Force garbage collection after storing in session state
                             gc.collect()
-                            
+
                             # Send heartbeat after storing in session state
                             send_heartbeat()
                     except ClientError as s3_error:
@@ -8270,10 +8270,10 @@ try:
                 call_data, errors = load_all_calls_cached()
                 elapsed = time.time() - t0
                 status_text.empty()
-                
+
                 # Send heartbeat after data loading completes, before DataFrame creation
                 send_heartbeat(force=True)
-                
+
                 logger.info(
                     f" Merged data loaded in {elapsed:.2f} seconds: {len(call_data)} calls, {len(errors)} errors"
                 )
