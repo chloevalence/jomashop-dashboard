@@ -7487,6 +7487,23 @@ else:
 # Extract start_date and end_date from selected_dates (works for both preset and custom)
 start_date, end_date = selected_dates
 
+# Check if selected date range is outside loaded data range
+available_min_date = min(dates) if dates else None
+available_max_date = max(dates) if dates else None
+if available_min_date and available_max_date:
+    if start_date < available_min_date or end_date > available_max_date:
+        date_range_warning = []
+        if start_date < available_min_date:
+            date_range_warning.append(f"start date ({start_date}) is before the earliest loaded data ({available_min_date})")
+        if end_date > available_max_date:
+            date_range_warning.append(f"end date ({end_date}) is after the latest loaded data ({available_max_date})")
+        if date_range_warning:
+            st.sidebar.warning(
+                f"⚠️ **Date Range Warning:** Your selected {' and '.join(date_range_warning)}. "
+                f"Only data from {available_min_date} to {available_max_date} is currently loaded. "
+                "To view data outside this range, use the 'Reload ALL Data' button (admin only) or select a date range within the loaded data."
+            )
+
 # Agent filter (only for admin view)
 if not user_agent_id:
     available_agents = filter_df["Agent"].dropna().unique().tolist()
