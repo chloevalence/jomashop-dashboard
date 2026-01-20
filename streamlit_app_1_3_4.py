@@ -10679,6 +10679,12 @@ if "all_rubric_codes" not in st.session_state or st.session_state.get(
     else:
         all_rubric_codes = []
         st.session_state["all_rubric_codes"] = []
+
+    # Initialize selected_failed_codes for this code path
+    # It will be set properly when the UI is displayed in the else block below
+    selected_failed_codes = st.session_state.get("selected_failed_codes", [])
+    selected_rubric_codes = st.session_state.get("selected_rubric_codes", [])
+    rubric_filter_type = st.session_state.get("rubric_filter_type", "Any Status")
 else:
     # Use cached rubric codes
     all_rubric_codes = st.session_state["all_rubric_codes"]
@@ -10708,10 +10714,16 @@ else:
         selected_failed_codes = (
             selected_rubric_codes if rubric_filter_type == "Failed Only" else []
         )
+        # Store in session state for consistency
+        st.session_state["selected_failed_codes"] = selected_failed_codes
     else:
         selected_rubric_codes = []
         selected_failed_codes = []
         rubric_filter_type = "Any Status"
+        # Store in session state for consistency
+        st.session_state["selected_failed_codes"] = selected_failed_codes
+        st.session_state["selected_rubric_codes"] = selected_rubric_codes
+        st.session_state["rubric_filter_type"] = rubric_filter_type
 
 # Performance alerts threshold
 st.sidebar.markdown("---")
