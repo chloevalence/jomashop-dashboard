@@ -6859,10 +6859,12 @@ try:
                     )
 
                     # Clear loading messages
-                    status_text.empty()
+                    if status_text is not None:
+                        status_text.empty()
                 except TimeoutError:
                     logger.exception("Timeout during data loading")
-                    status_text.empty()
+                    if status_text is not None:
+                        status_text.empty()
                     st.error(" **Loading Timeout**")
                     st.error(
                         "The data loading is taking too long. This might be due to:"
@@ -6884,7 +6886,8 @@ try:
                     st.stop()
                 except Exception as e:
                     logger.exception("Error during data loading")
-                    status_text.empty()
+                    if status_text is not None:
+                        status_text.empty()
                     st.error(" **Error Loading Data**")
                     st.error(f"**Error:** {str(e)}")
                     st.error("The app may be trying to load too many files at once.")
