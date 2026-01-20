@@ -6530,6 +6530,8 @@ logger.debug("Entering data loading section...")
 # Initialize call_data and errors to prevent undefined variable errors
 call_data = []
 errors = []
+# Initialize meta_df to prevent NameError
+meta_df = pd.DataFrame()
 try:
     status_text.text(" Loading CSV files from S3...")
     logger.debug("Status text updated, starting timer...")
@@ -6832,7 +6834,7 @@ try:
                 )
         # If call_data exists but we don't need to show processing messages, just continue silently
         # The data is loaded and will be used below
-        
+
         # CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
         # This ensures cached data with old agent IDs gets normalized consistently
         # This fixes the issue where cached DataFrames have wrong agent IDs
@@ -6865,7 +6867,9 @@ try:
         if "call_date" in meta_df.columns:
             # If call_date is already datetime, keep it; otherwise try to parse
             if meta_df["call_date"].dtype == "object":
-                meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
+                meta_df["call_date"] = pd.to_datetime(
+                    meta_df["call_date"], errors="coerce"
+                )
     else:
         # call_data is empty or falsy - show error
         st.error(" No call data found!")
