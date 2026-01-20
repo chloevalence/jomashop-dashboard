@@ -7471,8 +7471,7 @@ if not dates:
     st.stop()
 
 # Remember last filter settings
-if "last_date_preset" not in st.session_state:
-    st.session_state.last_date_preset = "Last 30 Days"
+# Note: last_date_preset is no longer used, replaced by date_range_mode
 if "last_date_range" not in st.session_state:
     st.session_state.last_date_range = None
 if "last_agents" not in st.session_state:
