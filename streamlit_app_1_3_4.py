@@ -3718,9 +3718,9 @@ def load_all_calls_cached(cache_version=0):
                             )
                             # Use memory-efficient chunked loading for large files
                             try:
-                                response = s3_client.get_object(
-                                    Bucket=s3_bucket, Key=S3_CACHE_KEY
-                                )
+                            response = s3_client.get_object(
+                                Bucket=s3_bucket, Key=S3_CACHE_KEY
+                            )
                                 body = response["Body"]
                                 # Use memory-efficient parsing function
                                 s3_cached_data = parse_json_streaming(
@@ -3743,7 +3743,7 @@ def load_all_calls_cached(cache_version=0):
                                     # Clear the parsed dict immediately to free memory
                                     del s3_cached_data
                                     gc.collect()
-                                    logger.debug(
+                                        logger.debug(
                                         "Cleared parsed JSON dict after extracting data"
                                     )
 
@@ -8035,6 +8035,18 @@ if is_super_admin():
                 if "_data_load_in_progress" in st.session_state:
                     del st.session_state["_data_load_in_progress"]
 
+# --- Lazy Loading Controls ---
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Load Heavy Sections")
+st.sidebar.info("💡 Load sections on-demand to save memory")
+
+if st.sidebar.button("📊 Load Charts", help="Load all charts and visualizations"):
+    st.session_state.lazy_load_charts = True
+    st.rerun()
+
+if st.sidebar.button("📈 Load Trends", help="Load trends over time analysis"):
+    st.session_state.lazy_load_trends = True
+    st.rerun()
 
 # --- Load Rubric Reference ---
 @st.cache_data
@@ -8598,8 +8610,8 @@ try:
                         st.info("2. **Refresh the page** to retry")
                         st.info("3. **Wait a few minutes** and try again")
                     else:
-                        st.error(" **Error Loading Data**")
-                        st.error(f"**Error:** {str(e)}")
+                    st.error(" **Error Loading Data**")
+                    st.error(f"**Error:** {str(e)}")
                         st.error(
                             "The app may be trying to load too many files at once."
                         )
@@ -8816,10 +8828,10 @@ try:
                     f"High memory usage ({current_mem_before_df:.1f}MB) before DataFrame creation - may cause issues"
             )
 
-            meta_df = pd.DataFrame(call_data)
-            logger.info(
-                f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
-            )
+        meta_df = pd.DataFrame(call_data)
+        logger.info(
+            f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
+        )
 
             # Send heartbeat after DataFrame creation completes
             send_heartbeat()
@@ -9922,6 +9934,12 @@ if "selected_rubric_codes" not in st.session_state:
 if "rubric_filter_type" not in st.session_state:
     st.session_state.rubric_filter_type = "Any Status"
 
+# Lazy loading state flags for charts and trends
+if "lazy_load_charts" not in st.session_state:
+    st.session_state.lazy_load_charts = False
+if "lazy_load_trends" not in st.session_state:
+    st.session_state.lazy_load_trends = False
+
 # Dark mode toggle (admin only)
 if is_regular_admin():
     st.sidebar.markdown("---")
@@ -10763,6 +10781,8 @@ if show_comparison and user_agent_id:
         )
 
     # Comparison section
+    if st.session_state.get("lazy_load_charts", False):
+        log_memory_usage("After loading charts")
     st.subheader("My Performance vs. Team Average")
     comp_col1, comp_col2, comp_col3 = st.columns(3)
 
@@ -10842,6 +10862,9 @@ if show_comparison and user_agent_id:
             st_pyplot_safe(fig_aht)
         else:
             st.info("AHT data not available")
+    else:
+        st.subheader("My Performance vs. Team Average")
+        st.info("💡 Click 'Load Charts' in sidebar to view performance comparisons")
 
 else:
     # Admin/All data view
@@ -10957,6 +10980,7 @@ with st.expander(" Historical Baseline Comparisons", expanded=False):
 
     # Benchmark visualization chart
     if baselines and current_avg_score:
+        if st.session_state.get("lazy_load_charts", False):
         st.markdown("### Benchmark Comparison Chart")
         baseline_names = []
         baseline_scores = []
@@ -10996,6 +11020,9 @@ with st.expander(" Historical Baseline Comparisons", expanded=False):
             plt.xticks(rotation=45, ha="right")
             plt.tight_layout()
             st_pyplot_safe(fig_bench)
+        else:
+            st.markdown("### Benchmark Comparison Chart")
+            st.info("💡 Click 'Load Charts' in sidebar to view benchmark comparison chart")
 
 # --- Agent Leaderboard ---
 if not user_agent_id:
@@ -11177,6 +11204,7 @@ else:
 # --- Call Reason & Outcome Analysis ---
 with st.expander("Call Reason & Outcome Analysis", expanded=False):
     st.subheader("Call Reason & Outcome Analysis")
+    if st.session_state.get("lazy_load_charts", False):
     if (
         "Reason" in filtered_df.columns
         or "Outcome" in filtered_df.columns
@@ -11586,6 +11614,10 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                     st.info(
                         "No products found in call data. Products are extracted from Summary, Reason, and Outcome fields."
                     )
+        else:
+            st.info("💡 Click 'Load Charts' in sidebar to view call reason and outcome analysis")
+    else:
+        st.info("💡 Click 'Load Charts' in sidebar to view call reason and outcome analysis")
 
 # --- AHT Root Cause Analysis ---
 if (
@@ -12479,6 +12511,8 @@ if (
 
 # --- QA Score Trends Over Time ---
 with st.expander("QA Score Trends Over Time", expanded=False):
+    if st.session_state.get("lazy_load_trends", False):
+        log_memory_usage("After loading trends")
     st.subheader("QA Score Trends Over Time")
     col_trend1, col_trend2 = st.columns(2)
 
@@ -12564,10 +12598,14 @@ with st.expander("QA Score Trends Over Time", expanded=False):
             plt.xticks(rotation=45)
             plt.tight_layout()
             st_pyplot_safe(fig_pf)
+    else:
+        st.subheader("QA Score Trends Over Time")
+        st.info("💡 Click 'Load Trends' in sidebar to view trends over time")
 
 # --- Rubric Code Analysis ---
 with st.expander("Rubric Code Analysis", expanded=False):
     st.subheader("Rubric Code Analysis")
+    if st.session_state.get("lazy_load_charts", False):
     if "Rubric Details" in filtered_df.columns:
         # OPTIMIZED: Collect all rubric code statistics using vectorized operations
         df_hash = get_df_hash(filtered_df)
@@ -12756,6 +12794,10 @@ with st.expander("Rubric Code Analysis", expanded=False):
                         plt.xticks(rotation=0)
                         plt.tight_layout()
                         st_pyplot_safe(fig_heat)
+        else:
+            st.info("💡 Click 'Load Charts' in sidebar to view rubric code analysis")
+    else:
+        st.info("💡 Click 'Load Charts' in sidebar to view rubric code analysis")
 
 # --- Trend Forecasting (Predictive Analytics) ---
 with st.expander("Trend Forecasting", expanded=False):
@@ -12764,6 +12806,7 @@ with st.expander("Trend Forecasting", expanded=False):
         "Forecasts future QA scores based on historical trends using time series analysis"
     )
 
+    if st.session_state.get("lazy_load_trends", False):
     forecast_days = st.selectbox(
         "Forecast Period", [7, 14, 30], index=0, help="Number of days to forecast ahead"
     )
@@ -12861,7 +12904,7 @@ with st.expander("Trend Forecasting", expanded=False):
                 " Insufficient data for forecasting (need at least 7 days of historical data)"
             )
     else:
-        st.info(" No data available for forecasting")
+        st.info("💡 Click 'Load Trends' in sidebar to view trend forecasting")
 
 # --- Agent-Specific Trends ---
 if user_agent_id:
