@@ -3718,10 +3718,10 @@ def load_all_calls_cached(cache_version=0):
                             )
                             # Use memory-efficient chunked loading for large files
                             try:
-                                response = s3_client.get_object(
-                                    Bucket=s3_bucket, Key=S3_CACHE_KEY
-                                )
-                                body = response["Body"]
+                            response = s3_client.get_object(
+                                Bucket=s3_bucket, Key=S3_CACHE_KEY
+                            )
+                            body = response["Body"]
                                 # Use memory-efficient parsing function
                                 s3_cached_data = parse_json_streaming(
                                     body, "S3 cache load (large file)"
@@ -3743,7 +3743,7 @@ def load_all_calls_cached(cache_version=0):
                                     # Clear the parsed dict immediately to free memory
                                     del s3_cached_data
                                     gc.collect()
-                                    logger.debug(
+                                        logger.debug(
                                         "Cleared parsed JSON dict after extracting data"
                                     )
 
@@ -8598,8 +8598,8 @@ try:
                         st.info("2. **Refresh the page** to retry")
                         st.info("3. **Wait a few minutes** and try again")
                     else:
-                        st.error(" **Error Loading Data**")
-                        st.error(f"**Error:** {str(e)}")
+                    st.error(" **Error Loading Data**")
+                    st.error(f"**Error:** {str(e)}")
                         st.error(
                             "The app may be trying to load too many files at once."
                         )
@@ -8814,12 +8814,12 @@ try:
             if current_mem_before_df > 0 and current_mem_before_df > 2000:
                 logger.warning(
                     f"High memory usage ({current_mem_before_df:.1f}MB) before DataFrame creation - may cause issues"
-                )
-
-            meta_df = pd.DataFrame(call_data)
-            logger.info(
-                f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
             )
+
+        meta_df = pd.DataFrame(call_data)
+        logger.info(
+            f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
+        )
 
             # Send heartbeat after DataFrame creation completes
             send_heartbeat()
@@ -10296,6 +10296,7 @@ if search_text:
     filtered_df = filtered_df[search_mask].copy()
 
 # Apply enhanced rubric code filter - OPTIMIZED: Use vectorized apply instead of iterrows()
+selected_rubric_codes = st.session_state.get("selected_rubric_codes", [])
 if selected_rubric_codes:
     send_heartbeat()  # Send heartbeat before potentially long operation
     with st.spinner("Filtering by rubric codes..."):
