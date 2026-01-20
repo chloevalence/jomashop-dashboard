@@ -6767,7 +6767,6 @@ try:
                     # Set up threading for loading with message updates
                     result_queue = queue.Queue()
                     exception_queue = queue.Queue()
-                    message_queue = queue.Queue()
                     stop_flag = threading.Event()
 
                     def load_data_thread():
@@ -6778,43 +6777,26 @@ try:
                         except Exception as e:
                             exception_queue.put(e)
 
-                    def message_cycling_thread():
-                        """Cycle through loading messages"""
-                        message_idx = 0
-                        start_time = time.time()
-                        while not stop_flag.is_set():
-                            current_time = time.time()
-                            elapsed = current_time - start_time
-                            # Change message every 2 seconds
-                            message_idx = int(elapsed / 2) % len(loading_messages)
-                            message_queue.put(message_idx)
-                            time.sleep(0.5)  # Check every 0.5 seconds
-
-                    # Start threads
+                    # Start loading thread
                     load_thread = threading.Thread(target=load_data_thread, daemon=True)
-                    message_thread = threading.Thread(
-                        target=message_cycling_thread, daemon=True
-                    )
-
                     load_thread.start()
-                    message_thread.start()
 
                     # Display cycling messages while loading using status_text (same location as old messages)
-                    last_message_idx = -1
+                    # Cycle messages in main thread (Streamlit requires main thread context)
+                    message_idx = 0
+                    start_time = time.time()
+                    last_update_time = start_time
+                    
                     while load_thread.is_alive():
-                        # Update message if changed
-                        try:
-                            message_idx = message_queue.get_nowait()
-                            if message_idx != last_message_idx:
+                        # Update message every 2 seconds
+                        current_time = time.time()
+                        if current_time - last_update_time >= 2.0:
+                            message_idx = (message_idx + 1) % len(loading_messages)
+                            if status_text is not None:
                                 status_text.text(f" {loading_messages[message_idx]}")
-                                last_message_idx = message_idx
-                        except queue.Empty:
-                            pass
+                            last_update_time = current_time
 
-                        time.sleep(0.2)  # Small delay to avoid busy waiting
-
-                    # Stop message thread
-                    stop_flag.set()
+                        time.sleep(0.3)  # Check every 0.3 seconds
 
                     # Wait for load thread to finish
                     load_thread.join(timeout=1.0)
