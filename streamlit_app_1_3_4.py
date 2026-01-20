@@ -410,7 +410,7 @@ except (RuntimeError, AttributeError) as e:
 # Heartbeat mechanism to prevent health check timeouts during long rendering
 _heartbeat_counter = {"count": 0, "last_heartbeat": time.time()}
 _heartbeat_placeholder = None
-_HEARTBEAT_INTERVAL = 10  # Send heartbeat every 10 seconds during long operations
+_HEARTBEAT_INTERVAL = 5  # Send heartbeat every 5 seconds during long operations
 
 
 def send_heartbeat(force=False):
@@ -665,11 +665,15 @@ def parse_json_streaming(body, operation_name="JSON parsing"):
     memory_before = log_memory_usage(f"{operation_name} - start")
 
     try:
+        # Send heartbeat before starting long operation
+        send_heartbeat(force=True)
+
         # Accumulate chunks with progress logging
         # OPTIMIZATION: Use BytesIO buffer instead of list to reduce memory overhead
         data_buffer = io.BytesIO()
         chunk_size = 8192
         total_bytes = 0
+        last_heartbeat_time = time.time()
 
         try:
             for chunk in body.iter_chunks(chunk_size=chunk_size):
@@ -681,12 +685,23 @@ def parse_json_streaming(body, operation_name="JSON parsing"):
                     logger.debug(
                         f" {operation_name}: {total_bytes / (1024 * 1024):.1f} MB downloaded (memory: {current_mem:.1f}MB)..."
                     )
+                    # Send heartbeat during chunk accumulation
+                    send_heartbeat()
+
+                # Send heartbeat every 5 seconds during chunk accumulation
+                current_time = time.time()
+                if current_time - last_heartbeat_time >= 5:
+                    send_heartbeat()
+                    last_heartbeat_time = current_time
         except Exception as stream_error:
             logger.error(f" Error streaming data: {stream_error}")
             raise
 
         # Parse JSON from buffer - clear buffer immediately after to free memory
         try:
+            # Send heartbeat before JSON parsing (can take several seconds)
+            send_heartbeat(force=True)
+
             # Get bytes from buffer
             joined_bytes = data_buffer.getvalue()
             # CRITICAL: Close and clear buffer immediately to free memory
@@ -707,6 +722,9 @@ def parse_json_streaming(body, operation_name="JSON parsing"):
             del json_string
             # Force garbage collection after parsing
             gc.collect()
+
+            # Send heartbeat after JSON parsing completes
+            send_heartbeat()
 
             log_memory_usage(f"{operation_name} - after parsing", memory_before)
             return s3_cached_data
@@ -8768,6 +8786,9 @@ try:
 
         # Create DataFrame with memory-efficient approach
         try:
+            # Send heartbeat before DataFrame creation (can take 8+ seconds)
+            send_heartbeat(force=True)
+
             # Check memory before DataFrame creation - warn if already high
             current_mem_before_df = get_memory_usage_mb()
             if current_mem_before_df > 0 and current_mem_before_df > 2000:
@@ -8779,6 +8800,9 @@ try:
             logger.info(
                 f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
             )
+
+            # Send heartbeat after DataFrame creation completes
+            send_heartbeat()
 
             # Log memory usage after DataFrame creation
             memory_after_df = log_memory_usage(
@@ -8828,6 +8852,9 @@ try:
                 "Forced aggressive garbage collection after DataFrame creation to free memory"
             )
 
+            # Send heartbeat after memory cleanup
+            send_heartbeat()
+
             # Log final memory state
             final_mem = get_memory_usage_mb()
             if final_mem > 0:
@@ -8838,15 +8865,19 @@ try:
             # OPTIMIZATION: Optimize DataFrame memory usage with multiple strategies
             # This can reduce memory usage by 30-70% overall
             try:
+                # Send heartbeat before optimization starts
+                send_heartbeat(force=True)
+
                 memory_before_optimization = get_memory_usage_mb()
-                
+
                 # Strategy 1: Convert object columns to category (more aggressive threshold)
                 object_columns = meta_df.select_dtypes(include=["object"]).columns
                 if len(object_columns) > 0:
                     logger.debug(
                         f"Optimizing {len(object_columns)} object columns to reduce memory usage"
                     )
-                    for col in object_columns:
+                    last_heartbeat_time = time.time()
+                    for idx, col in enumerate(object_columns):
                         try:
                             # Convert to category if it has repeated values (memory efficient)
                             # Lower threshold to 30% (more aggressive) for better memory savings
@@ -8861,19 +8892,31 @@ try:
                             logger.debug(
                                 f"Could not convert {col} to category: {col_error}"
                             )
-                
+
+                        # Send heartbeat every 5 seconds or every 10 columns during optimization
+                        current_time = time.time()
+                        if (
+                            current_time - last_heartbeat_time >= 5
+                            or (idx + 1) % 10 == 0
+                        ):
+                            send_heartbeat()
+                            last_heartbeat_time = current_time
+
                 # Strategy 2: Downcast numeric types to smaller dtypes
                 # int64 -> int32/int16/int8, float64 -> float32
-                numeric_columns = meta_df.select_dtypes(include=["int64", "float64"]).columns
+                numeric_columns = meta_df.select_dtypes(
+                    include=["int64", "float64"]
+                ).columns
                 if len(numeric_columns) > 0:
                     logger.debug(
                         f"Downcasting {len(numeric_columns)} numeric columns to reduce memory usage"
                     )
-                    for col in numeric_columns:
+                    last_heartbeat_time = time.time()
+                    for idx, col in enumerate(numeric_columns):
                         try:
                             col_min = meta_df[col].min()
                             col_max = meta_df[col].max()
-                            
+
                             if meta_df[col].dtype == "int64":
                                 # Downcast integers
                                 if col_min >= -128 and col_max <= 127:
@@ -8891,10 +8934,17 @@ try:
                                 logger.debug(f"Downcasted {col} to float32")
                         except Exception as col_error:
                             # Skip columns that can't be downcast
-                            logger.debug(
-                                f"Could not downcast {col}: {col_error}"
-                            )
-                
+                            logger.debug(f"Could not downcast {col}: {col_error}")
+
+                        # Send heartbeat every 5 seconds or every 10 columns during optimization
+                        current_time = time.time()
+                        if (
+                            current_time - last_heartbeat_time >= 5
+                            or (idx + 1) % 10 == 0
+                        ):
+                            send_heartbeat()
+                            last_heartbeat_time = current_time
+
                 # Strategy 3: Optimize boolean columns (if any)
                 bool_columns = meta_df.select_dtypes(include=["bool"]).columns
                 if len(bool_columns) > 0:
@@ -8915,6 +8965,9 @@ try:
                         logger.info(
                             f"DataFrame dtype optimization saved {memory_saved:.1f}MB"
                         )
+
+                # Send heartbeat after optimization completes
+                send_heartbeat()
             except Exception as opt_error:
                 logger.debug(f"Could not optimize DataFrame dtypes: {opt_error}")
 
