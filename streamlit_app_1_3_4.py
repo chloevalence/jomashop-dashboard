@@ -10266,7 +10266,8 @@ with st.expander("Rubric Code Analysis", expanded=False):
                     with rubric_col1:
                         st.write("**Fail Rate Distribution**")
                         fig_rubric, ax_rubric = plt.subplots(figsize=(8, 6))
-                        # Ensure top_failed has proper types before plotting
+                        # Ensure top_failed has proper types before plotting - create explicit copy to avoid SettingWithCopyWarning
+                        top_failed = top_failed.copy()
                         top_failed["Code"] = top_failed["Code"].astype(str)
                         top_failed["Fail_Rate"] = top_failed["Fail_Rate"].astype(float)
                         top_failed = top_failed.reset_index(drop=True)
