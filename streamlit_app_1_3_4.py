@@ -7503,34 +7503,118 @@ with st.sidebar.expander(" Keyboard Shortcuts"):
     - Use full-text search across all call details
     """)
 
-preset_option = st.sidebar.selectbox(
-    "📆 Date Range",
-    options=["This Week", "Last 7 Days", "Last 30 Days", "Custom"],
-    index=["This Week", "Last 7 Days", "Last 30 Days", "Custom"].index(
-        st.session_state.last_date_preset
-    )
-    if st.session_state.last_date_preset
-    in ["This Week", "Last 7 Days", "Last 30 Days", "Custom"]
-    else 2,  # Default to "Last 30 Days" (index 2) to match data loading default
-)
-
 # Maximum date range allowed (30 days to prevent memory issues)
 MAX_DATE_RANGE_DAYS = 30
 
-if preset_option != "Custom":
-    today = datetime.today().date()
-    if preset_option == "This Week":
-        week_start = today - timedelta(days=today.weekday())
-        # Ensure week doesn't exceed 30 days
-        if (today - week_start).days > MAX_DATE_RANGE_DAYS:
-            week_start = today - timedelta(days=MAX_DATE_RANGE_DAYS)
-        selected_dates = (week_start, today)
-    elif preset_option == "Last 7 Days":
-        selected_dates = (today - timedelta(days=7), today)
-    elif preset_option == "Last 30 Days":
-        selected_dates = (today - timedelta(days=30), today)
-    st.session_state.last_date_preset = preset_option  # Save selection
-else:
+# Initialize date range state
+if "current_date_range_start" not in st.session_state:
+    st.session_state.current_date_range_start = None
+if "current_date_range_end" not in st.session_state:
+    st.session_state.current_date_range_end = None
+if "date_range_mode" not in st.session_state:
+    st.session_state.date_range_mode = "Last Week"  # Default to Last Week
+
+st.sidebar.markdown("### 📆 Date Range")
+
+# Date range mode selection
+date_range_mode = st.sidebar.radio(
+    "Select Period",
+    options=["Last Week", "Last Month", "Pick Your Dates"],
+    index=["Last Week", "Last Month", "Pick Your Dates"].index(
+        st.session_state.date_range_mode
+    )
+    if st.session_state.date_range_mode
+    in ["Last Week", "Last Month", "Pick Your Dates"]
+    else 0,
+    help="Choose how to select your date range",
+)
+st.session_state.date_range_mode = date_range_mode
+
+today = datetime.today().date()
+
+if date_range_mode == "Last Week":
+    # Initialize or get current week range
+    if (
+        st.session_state.current_date_range_start is None
+        or st.session_state.current_date_range_end is None
+    ):
+        week_start = today - timedelta(days=7)
+        week_end = today
+        st.session_state.current_date_range_start = week_start
+        st.session_state.current_date_range_end = week_end
+    else:
+        week_start = st.session_state.current_date_range_start
+        week_end = st.session_state.current_date_range_end
+
+    # Navigation buttons for week
+    col1, col2, col3 = st.sidebar.columns([1, 2, 1])
+    with col1:
+        if st.button("◀ Week", help="Go back one week"):
+            week_start = week_start - timedelta(days=7)
+            week_end = week_end - timedelta(days=7)
+            st.session_state.current_date_range_start = week_start
+            st.session_state.current_date_range_end = week_end
+            st.rerun()
+    with col2:
+        st.sidebar.write(f"**{week_start} to {week_end}**")
+    with col3:
+        if st.button("Week ▶", help="Go forward one week"):
+            # Don't go beyond today
+            new_week_start = week_start + timedelta(days=7)
+            new_week_end = week_end + timedelta(days=7)
+            if new_week_end <= today:
+                week_start = new_week_start
+                week_end = new_week_end
+                st.session_state.current_date_range_start = week_start
+                st.session_state.current_date_range_end = week_end
+                st.rerun()
+            else:
+                st.sidebar.warning("Cannot go beyond today")
+
+    selected_dates = (week_start, week_end)
+
+elif date_range_mode == "Last Month":
+    # Initialize or get current month range
+    if (
+        st.session_state.current_date_range_start is None
+        or st.session_state.current_date_range_end is None
+    ):
+        month_start = today - timedelta(days=30)
+        month_end = today
+        st.session_state.current_date_range_start = month_start
+        st.session_state.current_date_range_end = month_end
+    else:
+        month_start = st.session_state.current_date_range_start
+        month_end = st.session_state.current_date_range_end
+
+    # Navigation buttons for month
+    col1, col2, col3 = st.sidebar.columns([1, 2, 1])
+    with col1:
+        if st.button("◀ Month", help="Go back one month"):
+            month_start = month_start - timedelta(days=30)
+            month_end = month_end - timedelta(days=30)
+            st.session_state.current_date_range_start = month_start
+            st.session_state.current_date_range_end = month_end
+            st.rerun()
+    with col2:
+        st.sidebar.write(f"**{month_start} to {month_end}**")
+    with col3:
+        if st.button("Month ▶", help="Go forward one month"):
+            # Don't go beyond today
+            new_month_start = month_start + timedelta(days=30)
+            new_month_end = month_end + timedelta(days=30)
+            if new_month_end <= today:
+                month_start = new_month_start
+                month_end = new_month_end
+                st.session_state.current_date_range_start = month_start
+                st.session_state.current_date_range_end = month_end
+                st.rerun()
+            else:
+                st.sidebar.warning("Cannot go beyond today")
+
+    selected_dates = (month_start, month_end)
+
+else:  # Pick Your Dates
     # Restore last custom date range or use default (last 30 days)
     default_date_range = (
         st.session_state.last_date_range
@@ -7542,23 +7626,21 @@ else:
         )
     )
     custom_input = st.sidebar.date_input(
-        f"Select Date Range (max {MAX_DATE_RANGE_DAYS} days)",
+        "Pick Your Dates",
         value=default_date_range,
-        help=f"Maximum date range is {MAX_DATE_RANGE_DAYS} days to prevent memory issues",
+        help="Select your date range. Maximum 30 days allowed.",
     )
     if isinstance(custom_input, tuple) and len(custom_input) == 2:
         selected_dates = custom_input
-        # Enforce 30-day maximum
+        # Check and warn if more than 30 days
         days_diff = (selected_dates[1] - selected_dates[0]).days
         if days_diff > MAX_DATE_RANGE_DAYS:
-            st.sidebar.warning(
-                f"⚠️ Date range limited to {MAX_DATE_RANGE_DAYS} days. "
-                f"Selected range was {days_diff} days. Using last {MAX_DATE_RANGE_DAYS} days from end date."
+            st.sidebar.error(
+                f"⚠️ **Cannot select more than {MAX_DATE_RANGE_DAYS} days at once.** "
+                f"Your selection is {days_diff} days. Please choose a smaller range."
             )
-            selected_dates = (
-                selected_dates[1] - timedelta(days=MAX_DATE_RANGE_DAYS),
-                selected_dates[1],
-            )
+            # Don't auto-adjust, let user fix it
+            st.stop()
         st.session_state.last_date_range = selected_dates  # Save selection
     elif isinstance(custom_input, date):
         selected_dates = (custom_input, custom_input)
@@ -7567,7 +7649,7 @@ else:
         st.warning(" Please select a valid date range.")
         st.stop()
 
-# Extract start_date and end_date from selected_dates (works for both preset and custom)
+# Extract start_date and end_date from selected_dates
 start_date, end_date = selected_dates
 
 # Final validation: ensure range doesn't exceed 30 days
@@ -7791,9 +7873,8 @@ if "Rubric Details" in meta_df.columns:
         selected_failed_codes = []
         rubric_filter_type = "Any Status"
 
-# Day of Week filter
+# Day of Week and Time of Day filters (within Date Range section)
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📅 Additional Filters")
 
 if "last_selected_days" not in st.session_state:
     st.session_state.last_selected_days = []
