@@ -51,6 +51,131 @@ except Exception:
 # --- Configuration: Limit for faster testing (set to None to load all files) ---
 MAX_FILES_FOR_TESTING = None  # Set to None to disable limit
 
+# --- Configuration: Limit calls by date to reduce memory usage ---
+# Set to number of days (e.g., 30 for last 30 days) or None to load all calls
+# Loading only recent calls significantly reduces memory from ~1.5GB to ~100-200MB
+MAX_DAYS_TO_LOAD = 30  # Load only calls from last 30 days
+
+
+def filter_calls_by_date(call_data, max_days):
+    """Filter calls to only include those from the last N days.
+
+    Args:
+        call_data: List of call dictionaries
+        max_days: Number of days to keep (e.g., 30 for last 30 days), or None to skip filtering
+
+    Returns:
+        Filtered list of calls, or original list if max_days is None
+    """
+    if not call_data or max_days is None:
+        return call_data
+
+    # Calculate cutoff date
+    cutoff_date = datetime.now() - timedelta(days=max_days)
+    cutoff_date = cutoff_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    original_count = len(call_data)
+    filtered_calls = []
+
+    # Log available fields from first call for debugging
+    if call_data and len(call_data) > 0:
+        first_call_fields = list(call_data[0].keys())
+        logger.debug(f"Available date fields in call data: {first_call_fields}")
+        # Try to find date field by checking all fields
+        date_field_candidates = [
+            f
+            for f in first_call_fields
+            if any(
+                keyword in f.lower()
+                for keyword in ["date", "time", "timestamp", "created", "when"]
+            )
+        ]
+        if date_field_candidates:
+            logger.info(f"Found potential date fields: {date_field_candidates}")
+
+    for call in call_data:
+        # Try to get call date from various possible fields
+        call_date = None
+        # Check all fields that might contain a date
+        date_fields_to_check = [
+            "Call Date",
+            "call_date",
+            "date",
+            "timestamp",
+            "Date",
+            "callDate",
+            "CallDate",
+        ]
+        # Also check any field with "date" in the name (case insensitive)
+        for key in call.keys():
+            if "date" in key.lower() and key not in date_fields_to_check:
+                date_fields_to_check.append(key)
+
+        for date_field in date_fields_to_check:
+            if date_field in call and call[date_field]:
+                try:
+                    date_value = call[date_field]
+                    # Handle different date formats
+                    if isinstance(date_value, str):
+                        # Try parsing common date formats
+                        try:
+                            # Handle ISO format with or without time
+                            date_str = (
+                                date_value.split("T")[0]
+                                if "T" in date_value
+                                else date_value.split(" ")[0]
+                            )
+                            call_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        except ValueError:
+                            # Try other common formats
+                            try:
+                                call_date = datetime.strptime(
+                                    date_value, "%Y-%m-%d %H:%M:%S"
+                                )
+                            except ValueError:
+                                try:
+                                    call_date = datetime.strptime(
+                                        date_value, "%m/%d/%Y"
+                                    )
+                                except ValueError:
+                                    continue
+                    elif isinstance(date_value, datetime):
+                        call_date = date_value
+                    elif isinstance(date_value, (int, float)):
+                        # Unix timestamp
+                        call_date = datetime.fromtimestamp(date_value)
+                    if call_date:
+                        break
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.debug(f"Error parsing date field {date_field}: {e}")
+                    continue
+
+        # If we found a date and it's within the cutoff, include the call
+        if call_date:
+            if call_date >= cutoff_date:
+                filtered_calls.append(call)
+        else:
+            # No date found - log a warning for first few calls to help debug
+            if len(filtered_calls) < 3:
+                logger.warning(
+                    f"Could not find date field in call. Available fields: {list(call.keys())[:10]}. "
+                    f"Including call anyway to avoid data loss."
+                )
+            # Include calls without dates to avoid data loss (but this shouldn't happen)
+            filtered_calls.append(call)
+
+    filtered_count = len(filtered_calls)
+    if filtered_count < original_count:
+        logger.info(
+            f"Filtered calls from {original_count} to {filtered_count} "
+            f"(keeping last {max_days} days)"
+        )
+    else:
+        logger.info(f"All {original_count} calls are within last {max_days} days")
+
+    return filtered_calls
+
+
 # --- Logging Setup ---
 log_dir = Path("logs")
 try:
@@ -353,17 +478,16 @@ def track_error(error_type, error_message):
             f"ALERT: Repeated failure detected - {error_key} (count: {metrics['errors'][error_key]['count']})"
         )
 
+    # Initialize session metrics
+    if "session_started" not in st.session_state:
+        metrics = load_metrics()
+        metrics["sessions"] = metrics.get("sessions", 0) + 1
+        save_metrics(metrics)
+        st.session_state.session_started = True
+        logger.info(f"New session started. Total sessions: {metrics['sessions']}")
 
-# Initialize session metrics
-if "session_started" not in st.session_state:
-    metrics = load_metrics()
-    metrics["sessions"] = metrics.get("sessions", 0) + 1
-    save_metrics(metrics)
-    st.session_state.session_started = True
-    logger.info(f"New session started. Total sessions: {metrics['sessions']}")
-
-st.set_page_config(page_title="Emotion Dashboard", layout="wide")
-logger.debug("Page config set, starting app initialization...")
+    st.set_page_config(page_title="Emotion Dashboard", layout="wide")
+    logger.debug("Page config set, starting app initialization...")
 
 
 def st_pyplot_safe(fig, **kwargs):
@@ -400,51 +524,50 @@ def st_pyplot_safe(fig, **kwargs):
 
         gc.collect()
 
+    # Show immediate feedback - app is loading
+    initial_status = st.empty()
+    initial_status.info(" **Initializing dashboard...** Please wait.")
 
-# Show immediate feedback - app is loading
-initial_status = st.empty()
-initial_status.info(" **Initializing dashboard...** Please wait.")
+    # Initialize S3 client from secrets (but don't test connection yet - do that after login)
+    logger.debug("Initializing S3 client from secrets...")
+    try:
+        # Check if secrets are available
+        if "s3" not in st.secrets:
+            raise KeyError("s3 section not found in secrets")
 
-# Initialize S3 client from secrets (but don't test connection yet - do that after login)
-logger.debug("Initializing S3 client from secrets...")
-try:
-    # Check if secrets are available
-    if "s3" not in st.secrets:
-        raise KeyError("s3 section not found in secrets")
-
-    s3_client = boto3.client(
-        "s3",
-        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-        region_name=st.secrets["s3"].get("region_name", "us-east-1"),
-    )
-    s3_bucket_name = st.secrets["s3"]["bucket_name"]
-    s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
-    logger.debug(
-        f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}"
-    )
-    initial_status.empty()  # Clear initial status once S3 client is ready
-except KeyError as e:
-    logger.error(f"Missing S3 configuration in secrets: {e}")
-    initial_status.empty()
-    st.error(f" Missing S3 configuration in secrets: {e}")
-    st.error(
-        "Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set."
-    )
-    st.error(f"**Current working directory:** `{os.getcwd()}`")
-    st.error(
-        "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
-    )
-    st.error(
-        f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
-    )
-    st.stop()
-except Exception as e:
-    logger.exception(f"Error initializing S3 client: {e}")
-    initial_status.empty()
-    st.error(f" Error initializing S3 client: {e}")
-    st.error("Please check your AWS credentials and try again.")
-    st.stop()
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+            region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+        )
+        s3_bucket_name = st.secrets["s3"]["bucket_name"]
+        s3_prefix = st.secrets["s3"].get("prefix", "")  # Optional prefix/folder path
+        logger.debug(
+            f"S3 client initialized. Bucket: {s3_bucket_name}, Prefix: {s3_prefix}"
+        )
+        initial_status.empty()  # Clear initial status once S3 client is ready
+    except KeyError as e:
+        logger.error(f"Missing S3 configuration in secrets: {e}")
+        initial_status.empty()
+        st.error(f" Missing S3 configuration in secrets: {e}")
+        st.error(
+            "Please check your `.streamlit/secrets.toml` file and ensure all S3 fields are set."
+        )
+        st.error(f"**Current working directory:** `{os.getcwd()}`")
+        st.error(
+            "**Expected secrets path:** `.streamlit/secrets.toml` in the project directory"
+        )
+        st.error(
+            f"**Make sure you're running Streamlit from the project root directory:** `{PROJECT_ROOT}`"
+        )
+        st.stop()
+    except Exception as e:
+        logger.exception(f"Error initializing S3 client: {e}")
+        initial_status.empty()
+        st.error(f" Error initializing S3 client: {e}")
+        st.error("Please check your AWS credentials and try again.")
+        st.stop()
 
 
 # --- Agent ID Mapping System ---
@@ -1109,7 +1232,9 @@ def load_calls_from_csv(s3_client, s3_bucket, s3_prefix):
                         logger.warning(error_msg)
                         continue
 
-                logger.info(f"Processed {rows_processed} rows from {filename}, added {rows_added} calls to all_calls (total rows in CSV: {len(df)})")
+                logger.info(
+                    f"Processed {rows_processed} rows from {filename}, added {rows_added} calls to all_calls (total rows in CSV: {len(df)})"
+                )
 
             except Exception as e:
                 error_msg = f"Error processing CSV file {csv_key}: {str(e)}"
@@ -1153,6 +1278,10 @@ def load_all_calls_internal(max_files=None):
             region_name=st.secrets["s3"].get("region_name", "us-east-1"),
             config=config,
         )
+
+        # Get S3 bucket name and prefix from secrets
+        s3_bucket_name = st.secrets["s3"]["bucket_name"]
+        s3_prefix = st.secrets["s3"].get("prefix", "")
 
         # Load calls from CSV files (PDFs are ignored)
         logger.info("Loading from CSV files (PDFs ignored)...")
@@ -1226,12 +1355,19 @@ def load_all_calls_internal(max_files=None):
         error_code = "Unknown"
         if hasattr(e, "response") and isinstance(e.response, dict):
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        # Get bucket name from secrets for error message
+        try:
+            bucket_name = st.secrets["s3"]["bucket_name"]
+        except Exception:
+            bucket_name = "unknown"
         if error_code == "NoSuchBucket":
-            error_msg = f"S3 bucket '{s3_bucket_name}' not found."
+            error_msg = f"S3 bucket '{bucket_name}' not found."
             track_error(f"S3_{error_code}", error_msg)
             return [], error_msg
         elif error_code == "AccessDenied":
-            error_msg = f"Access denied to S3 bucket '{s3_bucket_name}'. Check your credentials."
+            error_msg = (
+                f"Access denied to S3 bucket '{bucket_name}'. Check your credentials."
+            )
             track_error(f"S3_{error_code}", error_msg)
             return [], error_msg
         else:
@@ -1824,11 +1960,28 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
         # CRITICAL FIX: Ensure consistent tuple format (data, errors)
         # Handle both tuple (data, errors) and just data formats for backward compatibility
         if isinstance(cached_result, tuple):
-            result = cached_result
+            cached_data = cached_result[0] if len(cached_result) > 0 else []
+            cached_errors = cached_result[1] if len(cached_result) > 1 else []
         else:
             # Convert single value to tuple format
-            result = (cached_result, st.session_state.get("_last_load_errors", []))
-        
+            cached_data = cached_result
+            cached_errors = st.session_state.get("_last_load_errors", [])
+
+        # CRITICAL: Apply date filtering even to cached data (in case cache was created before filtering was added)
+        if cached_data and MAX_DAYS_TO_LOAD is not None:
+            original_count = len(cached_data)
+            cached_data = filter_calls_by_date(cached_data, MAX_DAYS_TO_LOAD)
+            filtered_count = len(cached_data)
+            if filtered_count < original_count:
+                logger.info(
+                    f"Filtered session cache from {original_count} to {filtered_count} calls "
+                    f"(last {MAX_DAYS_TO_LOAD} days only)"
+                )
+                # Update session state with filtered data
+                st.session_state[s3_cache_key] = (cached_data, cached_errors)
+
+        result = (cached_data, cached_errors)
+
         # Cache result in session state during refresh
         if refresh_in_progress:
             cache_key = "_disk_cache_during_refresh"
@@ -2331,7 +2484,7 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                                 f"with PARTIAL cache ({len(call_data)} calls). "
                                 f"Complete cache preserved. Local cache saved successfully."
                             )
-                            return  # Don't overwrite COMPLETE cache with PARTIAL
+                        return  # Don't overwrite COMPLETE cache with PARTIAL
                     else:
                         # Both are PARTIAL - check progress
                         existing_processed = existing_data.get("processed", 0)
@@ -2829,7 +2982,9 @@ def load_all_calls_cached(cache_version=0):
                     s3_cache_timestamp = cached_timestamp
                     # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
                     cache_data = s3_cache_result[0] if len(s3_cache_result) > 0 else []
-                    cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
+                    cache_data_len = (
+                        len(cache_data) if isinstance(cache_data, list) else 0
+                    )
                     logger.debug(
                         f" Using session-cached S3 result: {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                     )
@@ -2863,13 +3018,41 @@ def load_all_calls_cached(cache_version=0):
                             )
                             s3_cache_timestamp = s3_cached_data.get("timestamp", None)
                             # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
-                            cache_data = s3_cache_result[0] if len(s3_cache_result) > 0 and s3_cache_result[0] is not None else []
-                            cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
+                            cache_data = (
+                                s3_cache_result[0]
+                                if len(s3_cache_result) > 0
+                                and s3_cache_result[0] is not None
+                                else []
+                            )
+                            cache_data_len = (
+                                len(cache_data) if isinstance(cache_data, list) else 0
+                            )
                             logger.info(
                                 f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                             )
 
-                            # Cache in session state to avoid duplicate loads
+                            # CRITICAL: Filter calls to last 30 days BEFORE storing in session state
+                            if cache_data and MAX_DAYS_TO_LOAD is not None:
+                                original_count = len(cache_data)
+                                filtered_cache_data = filter_calls_by_date(
+                                    cache_data, MAX_DAYS_TO_LOAD
+                                )
+                                filtered_count = len(filtered_cache_data)
+                                if filtered_count < original_count:
+                                    logger.info(
+                                        f"Filtered S3 cache from {original_count} to {filtered_count} calls "
+                                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                                    )
+                                    # Update s3_cache_result with filtered data
+                                    s3_cache_result = (
+                                        filtered_cache_data,
+                                        s3_cache_result[1]
+                                        if len(s3_cache_result) > 1
+                                        else [],
+                                    )
+                                    cache_data = filtered_cache_data
+
+                            # Cache in session state to avoid duplicate loads (now with filtered data)
                             st.session_state[s3_cache_key] = s3_cache_result
                             if s3_cache_timestamp:
                                 st.session_state[s3_timestamp_key] = s3_cache_timestamp
@@ -3348,6 +3531,19 @@ def load_all_calls_cached(cache_version=0):
                 f" Total time: {elapsed:.1f} seconds ({elapsed / 60:.1f} minutes)"
             )
 
+            # Filter calls to last 30 days if MAX_DAYS_TO_LOAD is set
+            if final_call_data and MAX_DAYS_TO_LOAD is not None:
+                original_count = len(final_call_data)
+                final_call_data = filter_calls_by_date(
+                    final_call_data, MAX_DAYS_TO_LOAD
+                )
+                filtered_count = len(final_call_data)
+                if filtered_count < original_count:
+                    logger.info(
+                        f"Filtered {original_count} calls to {filtered_count} calls "
+                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                    )
+
             # CRITICAL: Ensure cache is saved after full load completes
             # This is a safety net to ensure data persists even if earlier saves failed
             if final_call_data and len(final_call_data) > 0:
@@ -3381,6 +3577,19 @@ def load_all_calls_cached(cache_version=0):
             # This also normalizes agent IDs in cached data
             if final_call_data:
                 final_call_data = migrate_old_cache_format(final_call_data)
+
+            # Filter calls to last 30 days if MAX_DAYS_TO_LOAD is set
+            if final_call_data and MAX_DAYS_TO_LOAD is not None:
+                original_count = len(final_call_data)
+                final_call_data = filter_calls_by_date(
+                    final_call_data, MAX_DAYS_TO_LOAD
+                )
+                filtered_count = len(final_call_data)
+                if filtered_count < original_count:
+                    logger.info(
+                        f"Filtered {original_count} calls to {filtered_count} calls "
+                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                    )
 
             # CRITICAL FIX: Store loaded data in session state BEFORE clearing load_in_progress flag
             # This allows concurrent requests to immediately access the data
@@ -4029,9 +4238,9 @@ def classify_trajectory(df, agent=None):
     else:
         trajectory = "stable"
 
-    # Projected score if trend continues
-    last_score = scores.iloc[-1]
-    projected_score = last_score + (slope * 7)  # Project 7 days ahead
+        # Projected score if trend continues
+        last_score = scores.iloc[-1]
+        projected_score = last_score + (slope * 7)  # Project 7 days ahead
 
     return {
         "trajectory": trajectory,
@@ -4147,8 +4356,8 @@ def load_new_calls_only():
             if "_s3_cache_result" in st.session_state:
                 logger.debug(" Clearing stale session cache to force fresh S3 load")
                 del st.session_state["_s3_cache_result"]
-            if "_s3_cache_timestamp" in st.session_state:
-                del st.session_state["_s3_cache_timestamp"]
+                if "_s3_cache_timestamp" in st.session_state:
+                    del st.session_state["_s3_cache_timestamp"]
 
         # Load from cache (will use S3 if session state was cleared, otherwise uses existing cache)
         disk_result = load_cached_data_from_disk()
@@ -4200,11 +4409,11 @@ def load_new_calls_only():
             try:
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     cached_data = json.load(f)
-                if isinstance(cached_data, dict):
-                    last_save_time = cached_data.get("last_save_time", 0)
-                    logger.debug(
-                        f" Read last_save_time from local cache: {last_save_time}"
-                    )
+                    if isinstance(cached_data, dict):
+                        last_save_time = cached_data.get("last_save_time", 0)
+                        logger.debug(
+                            f" Read last_save_time from local cache: {last_save_time}"
+                        )
             except Exception:
                 pass
 
@@ -4300,6 +4509,10 @@ def load_new_calls_only():
             config=config,
         )
 
+        # Get S3 bucket name and prefix from secrets
+        s3_bucket_name = st.secrets["s3"]["bucket_name"]
+        s3_prefix = st.secrets["s3"].get("prefix", "")
+
         # List all CSV files in S3 (PDFs are ignored)
         paginator = s3_client_with_timeout.get_paginator("list_objects_v2")
         pages = paginator.paginate(
@@ -4317,7 +4530,6 @@ def load_new_calls_only():
         page_count = 0
         files_per_page = []
         is_truncated = False
-
         for page in pages:
             page_count += 1
             page_file_count = 0
@@ -4348,7 +4560,7 @@ def load_new_calls_only():
                                 }
                             )
 
-            files_per_page.append(page_file_count)
+                files_per_page.append(page_file_count)
             # Check if pagination is truncated (though paginator should handle this automatically)
             if "IsTruncated" in page:
                 is_truncated = page["IsTruncated"]
@@ -4358,11 +4570,11 @@ def load_new_calls_only():
                         f" Page {page_count}: IsTruncated={is_truncated}, files_in_page={page_file_count}"
                     )
 
-            # Log pagination progress every 10 pages
-            if page_count % 10 == 0:
-                logger.info(
-                    f" Processing page {page_count}, found {total_s3_files} CSV files so far..."
-                )
+                # Log pagination progress every 10 pages
+                if page_count % 10 == 0:
+                    logger.info(
+                        f" Processing page {page_count}, found {total_s3_files} CSV files so far..."
+                    )
 
         # Log pagination completion with final IsTruncated status (combined)
         logger.info(
@@ -4541,6 +4753,9 @@ def load_new_calls_only():
 
         # Sort by modification date (most recent first)
         new_csv_keys.sort(key=lambda x: x["last_modified"], reverse=True)
+
+        # Get S3 prefix from secrets for process_csv function
+        s3_prefix = st.secrets["s3"].get("prefix", "")
 
         # Process new CSV files
         new_calls = []
@@ -4736,8 +4951,8 @@ def load_new_calls_only():
                             logger.debug(
                                 f" Skipped {duplicate_count} duplicate calls from {len(csv_calls_list)} total in batch"
                             )
-                    elif error:
-                        errors.append(error)
+                        elif error:
+                            errors.append(error)
 
                     # Log progress every 100 files (unconditionally for each processed file)
                     if processed_count % 100 == 0:
@@ -4765,137 +4980,137 @@ def load_new_calls_only():
                         except Exception:
                             pass  # Ignore memory check errors
 
-            # Update existing_calls with batch data (for next batch)
-            # OPTIMIZATION: Use extend() instead of concatenation for better performance
-            # This modifies the list in-place (O(k)) instead of creating a new list (O(n))
-            existing_calls.extend(batch_calls)
-            # Update existing_cache_keys to include new batch keys
-            # Use consistent key extraction logic
-            batch_keys_set = {
-                key
-                for call in batch_calls
-                if (key := extract_cache_key(call)) is not None
-            }
-            existing_cache_keys.update(batch_keys_set)
+                # Update existing_calls with batch data (for next batch)
+                # OPTIMIZATION: Use extend() instead of concatenation for better performance
+                # This modifies the list in-place (O(k)) instead of creating a new list (O(n))
+                existing_calls.extend(batch_calls)
+                # Update existing_cache_keys to include new batch keys
+                # Use consistent key extraction logic
+                batch_keys_set = {
+                    key
+                    for call in batch_calls
+                    if (key := extract_cache_key(call)) is not None
+                }
+                existing_cache_keys.update(batch_keys_set)
 
-            # Periodic memory cleanup every 5 batches
-            if batch_num % 5 == 0:
-                import gc
+                # Periodic memory cleanup every 5 batches
+                if batch_num % 5 == 0:
+                    import gc
 
-                gc.collect()
+                    gc.collect()
 
-            batches_since_save += 1
-            time_since_save = time.time() - last_incremental_save_time
-            should_save = (
-                (batches_since_save >= SAVE_INTERVAL_BATCHES)
-                or (time_since_save >= SAVE_INTERVAL_SECONDS)
-                or (batch_num == total_batches)
-            )
+                batches_since_save += 1
+                time_since_save = time.time() - last_incremental_save_time
+                should_save = (
+                    (batches_since_save >= SAVE_INTERVAL_BATCHES)
+                    or (time_since_save >= SAVE_INTERVAL_SECONDS)
+                    or (batch_num == total_batches)
+                )
 
-            # OPTIMIZATION: Save incrementally every 3 batches or 2 minutes (instead of every batch)
-            if should_save:
-                try:
-                    # existing_calls already contains all calls including current batch (updated above)
-                    # Deduplication will happen in save_cached_data_to_disk() - no need to do it here
-                    calls_to_save = existing_calls
+                # OPTIMIZATION: Save incrementally every 3 batches or 2 minutes (instead of every batch)
+                if should_save:
+                    try:
+                        # existing_calls already contains all calls including current batch (updated above)
+                        # Deduplication will happen in save_cached_data_to_disk() - no need to do it here
+                        calls_to_save = existing_calls
 
-                    # CRITICAL FIX: Add retry logic for save failures to prevent silent data loss
-                    # Retry up to 3 times with exponential backoff
-                    max_save_retries = 3
-                    save_success = False
-                    save_error = None
+                        # CRITICAL FIX: Add retry logic for save failures to prevent silent data loss
+                        # Retry up to 3 times with exponential backoff
+                        max_save_retries = 3
+                        save_success = False
+                        save_error = None
 
-                    for save_attempt in range(max_save_retries):
-                        try:
-                            # Use atomic write with locking via save_cached_data_to_disk
-                            save_cached_data_to_disk(
-                                calls_to_save,
-                                errors.copy(),
-                                partial=True,
-                                processed=processed_count,
-                                total=total_new,
+                        for save_attempt in range(max_save_retries):
+                            try:
+                                # Use atomic write with locking via save_cached_data_to_disk
+                                save_cached_data_to_disk(
+                                    calls_to_save,
+                                    errors.copy(),
+                                    partial=True,
+                                    processed=processed_count,
+                                    total=total_new,
+                                )
+                                save_success = True
+                                break  # Success, exit retry loop
+                            except Exception as save_e:
+                                save_error = save_e
+                                if save_attempt < max_save_retries - 1:
+                                    wait_time = 0.5 * (
+                                        save_attempt + 1
+                                    )  # Exponential backoff: 0.5s, 1s, 1.5s
+                                    logger.warning(
+                                        f" Incremental save attempt {save_attempt + 1}/{max_save_retries} failed: {save_e}, retrying in {wait_time}s..."
+                                    )
+                                    time.sleep(wait_time)
+                                else:
+                                    logger.error(
+                                        f" CRITICAL: Failed to save incremental cache after {max_save_retries} attempts: {save_e}"
+                                    )
+                                    logger.error(
+                                        f" Data loss risk: {len(calls_to_save)} calls not saved to disk"
+                                    )
+
+                        if save_success:
+                            last_incremental_save_time = time.time()
+                            st.session_state._last_incremental_save_time = (
+                                last_incremental_save_time
                             )
-                            save_success = True
-                            break  # Success, exit retry loop
-                        except Exception as save_e:
-                            save_error = save_e
-                            if save_attempt < max_save_retries - 1:
-                                wait_time = 0.5 * (
-                                    save_attempt + 1
-                                )  # Exponential backoff: 0.5s, 1s, 1.5s
-                                logger.warning(
-                                    f" Incremental save attempt {save_attempt + 1}/{max_save_retries} failed: {save_e}, retrying in {wait_time}s..."
-                                )
-                                time.sleep(wait_time)
-                            else:
-                                logger.error(
-                                    f" CRITICAL: Failed to save incremental cache after {max_save_retries} attempts: {save_e}"
-                                )
-                                logger.error(
-                                    f" Data loss risk: {len(calls_to_save)} calls not saved to disk"
-                                )
-
-                    if save_success:
-                        last_incremental_save_time = time.time()
-                        st.session_state._last_incremental_save_time = (
-                            last_incremental_save_time
-                        )
-                        batches_since_save = 0  # Reset counter
-                        logger.info(
-                            f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
-                        )
-
-                        # SAFE MEMORY OPTIMIZATION: Clear old batches after successful save, keep last 2 saves as buffer
-                        # This reduces memory while maintaining safety buffer
-                        batches_to_keep = (
-                            SAVE_INTERVAL_BATCHES * 2
-                        )  # Keep last 2 saves worth
-                        calls_per_save = batches_to_keep * BATCH_SIZE
-
-                        # Only clear if we have significantly more calls than we want to keep
-                        if (
-                            len(existing_calls) > calls_per_save * 1.5
-                        ):  # Only clear if 50% more than buffer
-                            calls_to_keep = existing_calls[-calls_per_save:]
-                            cleared_count = len(existing_calls) - len(calls_to_keep)
-                            existing_calls = calls_to_keep
-
-                            # Update existing_cache_keys to match
-                            # Use consistent key extraction logic
-                            existing_cache_keys = {
-                                key
-                                for call in existing_calls
-                                if (key := extract_cache_key(call)) is not None
-                            }
-
+                            batches_since_save = 0  # Reset counter
                             logger.info(
-                                f" Cleared {cleared_count} old calls from memory (kept {len(existing_calls)} as safety buffer)"
+                                f" Incremental save: Saved {len(calls_to_save)} calls to disk cache ({processed_count}/{total_new} = {processed_count * 100 // total_new if total_new > 0 else 0}% complete)"
                             )
 
-                            # Force garbage collection after clearing
+                            # SAFE MEMORY OPTIMIZATION: Clear old batches after successful save, keep last 2 saves as buffer
+                            # This reduces memory while maintaining safety buffer
+                            batches_to_keep = (
+                                SAVE_INTERVAL_BATCHES * 2
+                            )  # Keep last 2 saves worth
+                            calls_per_save = batches_to_keep * BATCH_SIZE
+
+                            # Only clear if we have significantly more calls than we want to keep
+                            if (
+                                len(existing_calls) > calls_per_save * 1.5
+                            ):  # Only clear if 50% more than buffer
+                                calls_to_keep = existing_calls[-calls_per_save:]
+                                cleared_count = len(existing_calls) - len(calls_to_keep)
+                                existing_calls = calls_to_keep
+
+                                # Update existing_cache_keys to match
+                                # Use consistent key extraction logic
+                                existing_cache_keys = {
+                                    key
+                                    for call in existing_calls
+                                    if (key := extract_cache_key(call)) is not None
+                                }
+
+                                logger.info(
+                                    f" Cleared {cleared_count} old calls from memory (kept {len(existing_calls)} as safety buffer)"
+                                )
+
+                                # Force garbage collection after clearing
+                                import gc
+
+                                gc.collect()
+
+                            # Clear intermediate variables after successful save
+                            del calls_to_save
                             import gc
 
                             gc.collect()
+                        else:
+                            # All retries failed - log critical error but continue processing
+                            # The next save attempt might succeed, and we don't want to lose all progress
+                            logger.error(
+                                f" CRITICAL: All incremental save retries failed. Last error: {save_error}"
+                            )
+                            logger.error(
+                                "Processing will continue, but data may be lost if app crashes"
+                            )
+                    except Exception as e:
+                        logger.error(f" Unexpected error during incremental save: {e}")
+                        import traceback
 
-                        # Clear intermediate variables after successful save
-                        del calls_to_save
-                        import gc
-
-                        gc.collect()
-                    else:
-                        # All retries failed - log critical error but continue processing
-                        # The next save attempt might succeed, and we don't want to lose all progress
-                        logger.error(
-                            f" CRITICAL: All incremental save retries failed. Last error: {save_error}"
-                        )
-                        logger.error(
-                            "Processing will continue, but data may be lost if app crashes"
-                        )
-                except Exception as e:
-                    logger.error(f" Unexpected error during incremental save: {e}")
-                    import traceback
-
-                    logger.error(traceback.format_exc())
+                        logger.error(traceback.format_exc())
 
             # Update dashboard every 500 calls
             if processed_count >= last_dashboard_update + DASHBOARD_UPDATE_INTERVAL:
@@ -5284,6 +5499,12 @@ is_admin = is_regular_admin()
 
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
+# Note about data loading
+st.sidebar.info(
+    "ℹ️ **Data Loading**: Only the last 30 days of calls are loaded by default to optimize memory usage. "
+    "Use the 'Load All Data (Full Dataset)' button below to load the complete dataset."
+)
+
 # Show view mode
 if is_anonymous_user:
     st.sidebar.info(" Anonymous View: De-identified Data")
@@ -5341,6 +5562,9 @@ def check_for_new_csvs_lightweight():
         # Get already processed keys from disk cache (survives restarts)
         # Also check session state as a fallback
         processed_keys = set()
+
+        # Get S3 prefix from secrets
+        s3_prefix = st.secrets["s3"].get("prefix", "")
 
         # First, try to load from disk cache to get already processed keys
         disk_result = load_cached_data_from_disk()
@@ -5980,23 +6204,23 @@ if is_super_admin():
                         "Using unverified all_calls_merged as fallback - data may be lost on restart"
                     )
 
-            # We need to manually update the cache - store in session state temporarily
-            st.session_state["merged_calls"] = all_calls_merged
-            st.session_state["merged_errors"] = new_errors if new_errors else []
-            # Update processed keys tracking
-            if "processed_s3_keys" not in st.session_state:
-                st.session_state["processed_s3_keys"] = set()
-            new_keys = {
-                call.get("_s3_key") for call in new_calls if call.get("_s3_key")
-            }
-            st.session_state["processed_s3_keys"].update(new_keys)
-            st.success(
-                f" Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls"
-            )
-            if new_errors:
-                st.warning(f" {len(new_errors)} file(s) had errors")
-            # Clear notification count after successful refresh
-            st.session_state.new_csvs_notification_count = 0
+                # We need to manually update the cache - store in session state temporarily
+                st.session_state["merged_calls"] = all_calls_merged
+                st.session_state["merged_errors"] = new_errors if new_errors else []
+                # Update processed keys tracking
+                if "processed_s3_keys" not in st.session_state:
+                    st.session_state["processed_s3_keys"] = set()
+                new_keys = {
+                    call.get("_s3_key") for call in new_calls if call.get("_s3_key")
+                }
+                st.session_state["processed_s3_keys"].update(new_keys)
+                st.success(
+                    f" Added {new_count} new call(s)! Total: {len(all_calls_merged)} calls"
+                )
+                if new_errors:
+                    st.warning(f" {len(new_errors)} file(s) had errors")
+                # Clear notification count after successful refresh
+                st.session_state.new_csvs_notification_count = 0
 
             # CRITICAL FIX: Increment cache version and clear Streamlit cache before rerun
             # This forces Streamlit cache to reload from S3 cache (source of truth) on next call
@@ -6033,10 +6257,10 @@ if is_super_admin():
                 )
                 # Continue anyway - cache_version parameter will force refresh
 
-            # Clear refresh flag before rerun
-            st.session_state["refresh_in_progress"] = False
-            # Rerun to show updated data (Streamlit cache will reload from _merged_cache_data)
-            st.rerun()
+                # Clear refresh flag before rerun
+                st.session_state["refresh_in_progress"] = False
+                # Rerun to show updated data (Streamlit cache will reload from _merged_cache_data)
+                st.rerun()
         else:
             # No new files found and no errors
             st.session_state["refresh_in_progress"] = False  # Clear flag
@@ -6231,6 +6455,9 @@ if not data_already_loaded:
                 config=config,
             )
 
+            # Get S3 bucket name from secrets
+            s3_bucket_name = st.secrets["s3"]["bucket_name"]
+
             status_text.text(" Testing S3 connection...")
             logger.debug(f"Testing connection to bucket: {s3_bucket_name}")
 
@@ -6382,7 +6609,7 @@ try:
                 else:
                     cached_data = cached_result
                     cached_errors = st.session_state.get("_last_load_errors", [])
-                
+
                 # Only use cached data if it's substantial (at least 100 calls)
                 # This prevents using stale/partial data from previous sessions
                 if cached_data and len(cached_data) >= 100:
@@ -6626,40 +6853,40 @@ except Exception as e:
         st.code(traceback.format_exc())
     st.stop()
 
-# CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
-# This ensures cached data with old agent IDs gets normalized consistently
-# This fixes the issue where cached DataFrames have wrong agent IDs
-# CRITICAL FIX: Add type checking to ensure call_data is a list before operations
-if call_data and isinstance(call_data, list) and len(call_data) > 0:
-    agent_normalized_count = 0
-    for call in call_data:
-        if isinstance(call, dict) and "agent" in call:
-            original_agent = call.get("agent")
-            normalized_agent = normalize_agent_id(original_agent)
-            if original_agent != normalized_agent:
-                call["agent"] = normalized_agent
-                agent_normalized_count += 1
-        # Also check for "Agent" key (capitalized)
-        if isinstance(call, dict) and "Agent" in call and "agent" not in call:
-            original_agent = call.get("Agent")
-            normalized_agent = normalize_agent_id(original_agent)
-            if original_agent != normalized_agent:
-                call["Agent"] = normalized_agent
-                agent_normalized_count += 1
+    # CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
+    # This ensures cached data with old agent IDs gets normalized consistently
+    # This fixes the issue where cached DataFrames have wrong agent IDs
+    # CRITICAL FIX: Add type checking to ensure call_data is a list before operations
+    if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        agent_normalized_count = 0
+        for call in call_data:
+            if isinstance(call, dict) and "agent" in call:
+                original_agent = call.get("agent")
+                normalized_agent = normalize_agent_id(original_agent)
+                if original_agent != normalized_agent:
+                    call["agent"] = normalized_agent
+                    agent_normalized_count += 1
+            # Also check for "Agent" key (capitalized)
+            if isinstance(call, dict) and "Agent" in call and "agent" not in call:
+                original_agent = call.get("Agent")
+                normalized_agent = normalize_agent_id(original_agent)
+                if original_agent != normalized_agent:
+                    call["Agent"] = normalized_agent
+                    agent_normalized_count += 1
 
     if agent_normalized_count > 0:
         logger.info(
             f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
         )
 
-# CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
-# Handle None, empty list, or invalid types safely
-if call_data and isinstance(call_data, list) and len(call_data) > 0:
-    meta_df = pd.DataFrame(call_data)
-else:
-    # Create empty DataFrame with expected structure if no data
-    logger.warning("No valid call_data available, creating empty DataFrame")
-    meta_df = pd.DataFrame()
+    # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
+    # Handle None, empty list, or invalid types safely
+    if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        meta_df = pd.DataFrame(call_data)
+    else:
+        # Create empty DataFrame with expected structure if no data
+        logger.warning("No valid call_data available, creating empty DataFrame")
+        meta_df = pd.DataFrame()
 
 # --- ANONYMIZATION FUNCTIONS ---
 # Note: is_anonymous_user is already defined earlier in the code
@@ -7058,7 +7285,7 @@ if ("Call Date" not in meta_df.columns) or meta_df["Call Date"].isna().all():
         )
         st.stop()
 
-meta_df.dropna(subset=["Call Date"], inplace=True)
+        meta_df.dropna(subset=["Call Date"], inplace=True)
 
 # Normalize agent IDs AFTER column rename (works for both cached and new data)
 # This ensures normalization works regardless of whether data came from cache or fresh load
@@ -7488,10 +7715,6 @@ if "Rubric Details" in meta_df.columns:
         selected_rubric_codes = []
         selected_failed_codes = []
         rubric_filter_type = "Any Status"
-else:
-    selected_rubric_codes = []
-    selected_failed_codes = []
-    rubric_filter_type = "Any Status"
 
 # Performance alerts threshold
 st.sidebar.markdown("---")
@@ -7733,6 +7956,13 @@ if user_agent_id:
 else:
     st.title(" QA Rubric Dashboard")
 
+# Data Loading Note
+if MAX_DAYS_TO_LOAD is not None:
+    st.info(
+        f"ℹ️ **Note:** Only calls from the last {MAX_DAYS_TO_LOAD} days are loaded by default to improve performance. "
+        "Use the date filter in the sidebar to view data from a different time period."
+    )
+
 # Monitoring Dashboard (Chloe, Shannon, and Jerson only)
 if is_super_admin():
     with st.expander(
@@ -7780,7 +8010,15 @@ if is_super_admin():
                     )
                 ]
             )
-            st.dataframe(feature_df, hide_index=True)
+            # Ensure all columns have proper types
+            feature_df["Feature"] = feature_df["Feature"].astype(str)
+            feature_df["Usage Count"] = feature_df["Usage Count"].astype(int)
+            # Reset index and fill NaN values
+            feature_df = feature_df.reset_index(drop=True).fillna(
+                {"Feature": "", "Usage Count": 0}
+            )
+            # Use markdown table to avoid width calculation issues
+            st.markdown(feature_df.to_markdown(index=False))
 
         # Show recent errors
         if metrics.get("errors"):
@@ -7800,7 +8038,17 @@ if is_super_admin():
                     )[:10]
                 ]
             )
-            st.dataframe(error_df, hide_index=True)
+            # Ensure all columns have proper types
+            error_df["Error"] = error_df["Error"].astype(str)
+            error_df["Message"] = error_df["Message"].astype(str)
+            error_df["Count"] = error_df["Count"].astype(int)
+            error_df["Last Seen"] = error_df["Last Seen"].astype(str)
+            # Reset index and fill NaN values
+            error_df = error_df.reset_index(drop=True).fillna(
+                {"Error": "", "Message": "", "Count": 0, "Last Seen": ""}
+            )
+            # Use markdown table to avoid width calculation issues
+            st.markdown(error_df.to_markdown(index=False))
 
         if st.button("Refresh Metrics"):
             st.rerun()
@@ -7826,7 +8074,14 @@ if is_super_admin():
                         audit_df = pd.DataFrame(recent_entries)
                         audit_df["timestamp"] = pd.to_datetime(audit_df["timestamp"])
                         audit_df = audit_df.sort_values("timestamp", ascending=False)
-                        st.dataframe(audit_df, hide_index=True)
+                        # Ensure all columns have proper types
+                        for col in audit_df.columns:
+                            if col != "timestamp" and audit_df[col].dtype == "object":
+                                audit_df[col] = audit_df[col].astype(str)
+                        # Reset index and fill NaN values
+                        audit_df = audit_df.reset_index(drop=True).fillna("")
+                        # Use markdown table to avoid width calculation issues
+                        st.markdown(audit_df.to_markdown(index=False))
 
                         # Filter by action type
                         action_types = audit_df["action"].unique().tolist()
@@ -7837,7 +8092,21 @@ if is_super_admin():
                             filtered_audit = audit_df[
                                 audit_df["action"] == selected_action
                             ]
-                            st.dataframe(filtered_audit, hide_index=True)
+                            # Ensure all columns have proper types
+                            for col in filtered_audit.columns:
+                                if (
+                                    col != "timestamp"
+                                    and filtered_audit[col].dtype == "object"
+                                ):
+                                    filtered_audit[col] = filtered_audit[col].astype(
+                                        str
+                                    )
+                            # Reset index and fill NaN values
+                            filtered_audit = filtered_audit.reset_index(
+                                drop=True
+                            ).fillna("")
+                            # Use markdown table to avoid width calculation issues
+                            st.markdown(filtered_audit.to_markdown(index=False))
                     else:
                         st.info("No audit entries yet.")
                 except Exception as e:
@@ -7933,7 +8202,17 @@ if is_super_admin():
                     for k, v in validation_stats.items()
                 ]
             )
-            st.dataframe(stats_df, hide_index=True)
+            # Ensure all columns have proper types
+            stats_df["Field"] = stats_df["Field"].astype(str)
+            stats_df["Missing/Invalid Count"] = stats_df[
+                "Missing/Invalid Count"
+            ].astype(int)
+            # Reset index and fill NaN values
+            stats_df = stats_df.reset_index(drop=True).fillna(
+                {"Field": "", "Missing/Invalid Count": 0}
+            )
+            # Use markdown table to avoid width calculation issues
+            st.markdown(stats_df.to_markdown(index=False))
 
 # Summary Metrics
 if show_comparison and user_agent_id:
@@ -8036,6 +8315,10 @@ if show_comparison and user_agent_id:
                 "QA Score": [my_avg_score, overall_avg_score],
             }
         )
+        # Ensure proper types before plotting
+        comparison_data["Metric"] = comparison_data["Metric"].astype(str)
+        comparison_data["QA Score"] = comparison_data["QA Score"].astype(float)
+        comparison_data = comparison_data.reset_index(drop=True)
         fig_comp, ax_comp = plt.subplots(figsize=(8, 5))
         comparison_data.plot(
             x="Metric",
@@ -8066,6 +8349,10 @@ if show_comparison and user_agent_id:
                 "Pass Rate": [my_pass_rate, overall_pass_rate],
             }
         )
+        # Ensure proper types before plotting
+        pass_comparison["Metric"] = pass_comparison["Metric"].astype(str)
+        pass_comparison["Pass Rate"] = pass_comparison["Pass Rate"].astype(float)
+        pass_comparison = pass_comparison.reset_index(drop=True)
         fig_pass, ax_pass = plt.subplots(figsize=(8, 5))
         pass_comparison.plot(
             x="Metric",
@@ -8089,6 +8376,10 @@ if show_comparison and user_agent_id:
                     "AHT (min)": [my_avg_aht, overall_avg_aht],
                 }
             )
+            # Ensure proper types before plotting
+            aht_comparison["Metric"] = aht_comparison["Metric"].astype(str)
+            aht_comparison["AHT (min)"] = aht_comparison["AHT (min)"].astype(float)
+            aht_comparison = aht_comparison.reset_index(drop=True)
             fig_aht, ax_aht = plt.subplots(figsize=(8, 5))
             aht_comparison.plot(
                 x="Metric",
@@ -8325,12 +8616,55 @@ if not user_agent_id:
             "Percentile_Rank",
             "Avg_Call_Duration",
         ]
-        st.dataframe(agent_performance[display_cols].round(1), hide_index=True)
+        # Ensure all columns have proper types
+        agent_perf_display = agent_performance[display_cols].copy()
+        agent_perf_display["Agent"] = agent_perf_display["Agent"].astype(str)
+        agent_perf_display["Total_Calls"] = agent_perf_display["Total_Calls"].astype(
+            int
+        )
+        agent_perf_display["Avg_QA_Score"] = agent_perf_display["Avg_QA_Score"].astype(
+            float
+        )
+        agent_perf_display["Pass_Rate"] = agent_perf_display["Pass_Rate"].astype(float)
+        agent_perf_display["Percentile_Rank"] = agent_perf_display[
+            "Percentile_Rank"
+        ].astype(str)
+        agent_perf_display["Avg_Call_Duration"] = agent_perf_display[
+            "Avg_Call_Duration"
+        ].astype(float)
+        # Round numeric columns
+        agent_perf_display = agent_perf_display.round(1)
+        # Reset index and fill NaN values
+        agent_perf_display = agent_perf_display.reset_index(drop=True).fillna(
+            {
+                "Agent": "",
+                "Total_Calls": 0,
+                "Avg_QA_Score": 0.0,
+                "Pass_Rate": 0.0,
+                "Percentile_Rank": "",
+                "Avg_Call_Duration": 0.0,
+            }
+        )
+        # Use markdown table to avoid width calculation issues
+        st.markdown(agent_perf_display.to_markdown(index=False))
     else:
         agent_performance = agent_performance.sort_values(
             "Avg_QA_Score", ascending=False
         )
-        st.dataframe(agent_performance.round(1), hide_index=True)
+        # Ensure all columns have proper types
+        for col in agent_performance.columns:
+            if col == "Agent" or col == "Percentile_Rank":
+                agent_performance[col] = agent_performance[col].astype(str)
+            elif col in ["Total_Calls", "Total_Pass", "Total_Fail"]:
+                agent_performance[col] = agent_performance[col].astype(int)
+            else:
+                agent_performance[col] = agent_performance[col].astype(float)
+        # Round numeric columns
+        agent_performance = agent_performance.round(1)
+        # Reset index and fill NaN values
+        agent_performance = agent_performance.reset_index(drop=True).fillna("")
+        # Use markdown table to avoid width calculation issues
+        st.markdown(agent_performance.to_markdown(index=False))
 
 # --- At-Risk Agent Detection (Predictive Analytics) ---
 if not user_agent_id:  # Admin view only
@@ -8362,7 +8696,24 @@ if not user_agent_id:  # Admin view only
                 )
 
             risk_df = pd.DataFrame(risk_data)
-            st.dataframe(risk_df, hide_index=True)
+            # Ensure all columns have proper types
+            risk_df["Agent"] = risk_df["Agent"].astype(str)
+            risk_df["Risk Score"] = risk_df["Risk Score"].astype(str)
+            risk_df["Recent Avg Score"] = risk_df["Recent Avg Score"].astype(str)
+            risk_df["Trend"] = risk_df["Trend"].astype(str)
+            risk_df["Recent Calls"] = risk_df["Recent Calls"].astype(int)
+            # Reset index and fill NaN values
+            risk_df = risk_df.reset_index(drop=True).fillna(
+                {
+                    "Agent": "",
+                    "Risk Score": "0/100",
+                    "Recent Avg Score": "0.0%",
+                    "Trend": "",
+                    "Recent Calls": 0,
+                }
+            )
+            # Use markdown table to avoid width calculation issues
+            st.markdown(risk_df.to_markdown(index=False))
 
             # Show risk factors for top at-risk agent
             if at_risk_agents:
@@ -8434,7 +8785,14 @@ else:
         }
     )
 
-    st.dataframe(comparison_table, hide_index=True)
+    # Ensure all columns are strings (they already are, but be explicit)
+    comparison_table["Metric"] = comparison_table["Metric"].astype(str)
+    comparison_table["My Performance"] = comparison_table["My Performance"].astype(str)
+    comparison_table["Team Average"] = comparison_table["Team Average"].astype(str)
+    # Reset index and fill NaN values
+    comparison_table = comparison_table.reset_index(drop=True).fillna("")
+    # Use markdown table to avoid width calculation issues
+    st.markdown(comparison_table.to_markdown(index=False))
 
 # --- Call Reason & Outcome Analysis ---
 with st.expander("Call Reason & Outcome Analysis", expanded=False):
@@ -9123,7 +9481,14 @@ if (
                     else "N/A",
                 ],
             }
-            st.dataframe(pd.DataFrame(summary_stats), hide_index=True)
+            summary_stats_df = pd.DataFrame(summary_stats)
+            # Ensure all columns are strings (they already are, but be explicit)
+            summary_stats_df["Metric"] = summary_stats_df["Metric"].astype(str)
+            summary_stats_df["Value"] = summary_stats_df["Value"].astype(str)
+            # Reset index and fill NaN values
+            summary_stats_df = summary_stats_df.reset_index(drop=True).fillna("")
+            # Use markdown table to avoid width calculation issues
+            st.markdown(summary_stats_df.to_markdown(index=False))
 
             # --- Visualizations and Detailed Analysis ---
             st.markdown("---")
@@ -9206,7 +9571,30 @@ if (
                 .head(10)
             )
             if len(agent_aht_analysis) > 0:
-                st.dataframe(agent_aht_analysis.round(2), hide_index=True)
+                # Ensure all columns have proper types
+                agent_aht_analysis["Agent"] = agent_aht_analysis["Agent"].astype(str)
+                agent_aht_analysis["Long_AHT_Calls"] = agent_aht_analysis[
+                    "Long_AHT_Calls"
+                ].astype(int)
+                agent_aht_analysis["Avg_AHT"] = agent_aht_analysis["Avg_AHT"].astype(
+                    float
+                )
+                agent_aht_analysis["Avg_QA_Score"] = agent_aht_analysis[
+                    "Avg_QA_Score"
+                ].astype(float)
+                # Round numeric columns
+                agent_aht_analysis = agent_aht_analysis.round(2)
+                # Reset index and fill NaN values
+                agent_aht_analysis = agent_aht_analysis.reset_index(drop=True).fillna(
+                    {
+                        "Agent": "",
+                        "Long_AHT_Calls": 0,
+                        "Avg_AHT": 0.0,
+                        "Avg_QA_Score": 0.0,
+                    }
+                )
+                # Use markdown table to avoid width calculation issues
+                st.markdown(agent_aht_analysis.to_markdown(index=False))
 
             # --- Root Cause Analysis: Coaching Suggestions & Challenges ---
             st.markdown("---")
@@ -9415,7 +9803,17 @@ if (
                         )
 
                     coaching_df = pd.DataFrame(coaching_comparison)
-                    st.dataframe(coaching_df, hide_index=True)
+                    # Ensure all columns are explicitly typed as strings
+                    coaching_df["Category"] = coaching_df["Category"].astype(str)
+                    coaching_df["All Calls"] = coaching_df["All Calls"].astype(str)
+                    coaching_df["High AHT Calls"] = coaching_df[
+                        "High AHT Calls"
+                    ].astype(str)
+                    coaching_df["Difference"] = coaching_df["Difference"].astype(str)
+                    # Reset index and fill NaN values
+                    coaching_df = coaching_df.reset_index(drop=True).fillna("")
+                    # Use markdown table to avoid width calculation issues
+                    st.markdown(coaching_df.to_markdown(index=False))
 
                     # Visualization
                     col_coach1, col_coach2 = st.columns(2)
@@ -9529,7 +9927,17 @@ if (
                         )
 
                     challenge_df = pd.DataFrame(challenge_comparison)
-                    st.dataframe(challenge_df, hide_index=True)
+                    # Ensure all columns are explicitly typed as strings
+                    challenge_df["Category"] = challenge_df["Category"].astype(str)
+                    challenge_df["All Calls"] = challenge_df["All Calls"].astype(str)
+                    challenge_df["High AHT Calls"] = challenge_df[
+                        "High AHT Calls"
+                    ].astype(str)
+                    challenge_df["Difference"] = challenge_df["Difference"].astype(str)
+                    # Reset index and fill NaN values
+                    challenge_df = challenge_df.reset_index(drop=True).fillna("")
+                    # Use markdown table to avoid width calculation issues
+                    st.markdown(challenge_df.to_markdown(index=False))
 
             # --- Rubric Code Correlation with AHT ---
             st.markdown("---")
@@ -9566,11 +9974,37 @@ if (
                         )
 
                     rubric_aht_df = pd.DataFrame(rubric_aht_list)
+                    # Ensure all columns have proper types
+                    rubric_aht_df["Rubric Code"] = rubric_aht_df["Rubric Code"].astype(
+                        str
+                    )
+                    rubric_aht_df["Total Fails"] = rubric_aht_df["Total Fails"].astype(
+                        int
+                    )
+                    rubric_aht_df["High AHT Fails"] = rubric_aht_df[
+                        "High AHT Fails"
+                    ].astype(int)
+                    rubric_aht_df["% High AHT"] = rubric_aht_df["% High AHT"].astype(
+                        str
+                    )
+                    rubric_aht_df["Avg AHT (when failed)"] = rubric_aht_df[
+                        "Avg AHT (when failed)"
+                    ].astype(str)
                     rubric_aht_df = rubric_aht_df.sort_values(
                         "High AHT Fails", ascending=False
                     ).head(15)
-
-                    st.dataframe(rubric_aht_df, hide_index=True)
+                    # Reset index and fill NaN values
+                    rubric_aht_df = rubric_aht_df.reset_index(drop=True).fillna(
+                        {
+                            "Rubric Code": "",
+                            "Total Fails": 0,
+                            "High AHT Fails": 0,
+                            "% High AHT": "0.0%",
+                            "Avg AHT (when failed)": "0.0 min",
+                        }
+                    )
+                    # Use markdown table to avoid width calculation issues
+                    st.markdown(rubric_aht_df.to_markdown(index=False))
 
                     # Visualization
                     if len(rubric_aht_df) > 0:
@@ -9741,18 +10175,38 @@ with st.expander("Rubric Code Analysis", expanded=False):
             # Top 10 Failed Rubric Codes - full width
             st.write("**Top 10 Failed Rubric Codes**")
             top_failed = rubric_analysis.head(10)
-            st.dataframe(
-                top_failed[
-                    [
-                        "Code",
-                        "Total",
-                        "Fail",
-                        "Fail_Rate",
-                        "Most_Common_Fail_Reason",
-                    ]
-                ],
-                hide_index=True,
+            # Select columns and ensure proper types
+            top_failed_display = top_failed[
+                [
+                    "Code",
+                    "Total",
+                    "Fail",
+                    "Fail_Rate",
+                    "Most_Common_Fail_Reason",
+                ]
+            ].copy()
+            # Ensure all columns have proper types
+            top_failed_display["Code"] = top_failed_display["Code"].astype(str)
+            top_failed_display["Total"] = top_failed_display["Total"].astype(int)
+            top_failed_display["Fail"] = top_failed_display["Fail"].astype(int)
+            top_failed_display["Fail_Rate"] = top_failed_display["Fail_Rate"].astype(
+                float
             )
+            top_failed_display["Most_Common_Fail_Reason"] = top_failed_display[
+                "Most_Common_Fail_Reason"
+            ].astype(str)
+            # Reset index and fill NaN values
+            top_failed_display = top_failed_display.reset_index(drop=True).fillna(
+                {
+                    "Code": "",
+                    "Total": 0,
+                    "Fail": 0,
+                    "Fail_Rate": 0.0,
+                    "Most_Common_Fail_Reason": "",
+                }
+            )
+            # Use markdown table to avoid width calculation issues
+            st.markdown(top_failed_display.to_markdown(index=False))
 
             # Category-level analysis
             if code_stats:
@@ -9799,6 +10253,14 @@ with st.expander("Rubric Code Analysis", expanded=False):
                     category_df = category_df.sort_values(
                         "Avg_Fail_Rate", ascending=False
                     )
+                    # Ensure all columns have proper types before plotting
+                    category_df["Category"] = category_df["Category"].astype(str)
+                    category_df["Total"] = category_df["Total"].astype(int)
+                    category_df["Total_Fail"] = category_df["Total_Fail"].astype(int)
+                    category_df["Avg_Fail_Rate"] = category_df["Avg_Fail_Rate"].astype(
+                        float
+                    )
+                    category_df = category_df.reset_index(drop=True)
 
                     # Put Fail Rate Distribution and Fail Rate by Rubric Category side by side
                     rubric_col1, rubric_col2 = st.columns(2)
@@ -9806,6 +10268,10 @@ with st.expander("Rubric Code Analysis", expanded=False):
                     with rubric_col1:
                         st.write("**Fail Rate Distribution**")
                         fig_rubric, ax_rubric = plt.subplots(figsize=(8, 6))
+                        # Ensure top_failed has proper types before plotting
+                        top_failed["Code"] = top_failed["Code"].astype(str)
+                        top_failed["Fail_Rate"] = top_failed["Fail_Rate"].astype(float)
+                        top_failed = top_failed.reset_index(drop=True)
                         top_failed.plot(
                             x="Code",
                             y="Fail_Rate",
@@ -10274,40 +10740,48 @@ else:
                     compare_data = filtered_df[
                         filtered_df["Agent"].isin(compare_agents)
                     ]
-                    agent_comparison = (
-                        compare_data.groupby("Agent")
-                        .agg(
-                            Avg_QA_Score=("QA Score", "mean"),
-                            Total_Calls=("Call ID", "count"),
-                            Pass_Rate=(
-                                "Rubric Pass Count",
-                                lambda x: (
-                                    x.sum()
-                                    / (
-                                        x.sum()
-                                        + compare_data.loc[
-                                            x.index, "Rubric Fail Count"
-                                        ].sum()
-                                    )
-                                    * 100
-                                )
-                                if (
-                                    x.sum()
-                                    + compare_data.loc[
-                                        x.index, "Rubric Fail Count"
-                                    ].sum()
-                                )
-                                > 0
-                                else 0,
-                            ),
-                        )
-                        .reset_index()
-                    )
+                    # Create dataframe with immediate conversion to dict to avoid Streamlit serialization issues
+                    # Use manual aggregation to avoid Streamlit trying to serialize intermediate dataframes
+                    agent_comparison_list = []
+                    for agent in compare_agents:
+                        agent_data = compare_data[compare_data["Agent"] == agent]
+                        if len(agent_data) > 0:
+                            avg_qa_score = (
+                                float(agent_data["QA Score"].mean())
+                                if "QA Score" in agent_data.columns
+                                else 0.0
+                            )
+                            total_calls = int(len(agent_data))
+                            pass_count = (
+                                int(agent_data["Rubric Pass Count"].sum())
+                                if "Rubric Pass Count" in agent_data.columns
+                                else 0
+                            )
+                            fail_count = (
+                                int(agent_data["Rubric Fail Count"].sum())
+                                if "Rubric Fail Count" in agent_data.columns
+                                else 0
+                            )
+                            pass_rate = (
+                                float((pass_count / (pass_count + fail_count) * 100))
+                                if (pass_count + fail_count) > 0
+                                else 0.0
+                            )
+                            agent_comparison_list.append(
+                                {
+                                    "Agent": str(agent),
+                                    "Avg_QA_Score": avg_qa_score,
+                                    "Total_Calls": total_calls,
+                                    "Pass_Rate": pass_rate,
+                                }
+                            )
+                    # Create clean dataframe from list of dicts
+                    agent_comparison_clean = pd.DataFrame(agent_comparison_list)
 
                     fig_compare, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
                     # QA Score comparison
-                    agent_comparison.plot(
+                    agent_comparison_clean.plot(
                         x="Agent",
                         y="Avg_QA_Score",
                         kind="bar",
@@ -10320,7 +10794,7 @@ else:
                     plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
                     # Pass Rate comparison
-                    agent_comparison.plot(
+                    agent_comparison_clean.plot(
                         x="Agent", y="Pass_Rate", kind="bar", ax=ax2, color="green"
                     )
                     ax2.set_ylabel("Pass Rate (%)")
@@ -10336,6 +10810,17 @@ else:
                             compare_data.groupby("Agent")
                             .agg(Avg_AHT=("Call Duration (min)", "mean"))
                             .reset_index()
+                        )
+                        # Ensure all columns have proper types before plotting
+                        agent_aht_comparison["Agent"] = agent_aht_comparison[
+                            "Agent"
+                        ].astype(str)
+                        agent_aht_comparison["Avg_AHT"] = agent_aht_comparison[
+                            "Avg_AHT"
+                        ].astype(float)
+                        # Reset index to ensure clean integer index
+                        agent_aht_comparison = agent_aht_comparison.reset_index(
+                            drop=True
                         )
                         if (
                             len(agent_aht_comparison) > 0
@@ -10567,32 +11052,97 @@ with st.expander("Coaching Insights", expanded=False):
             coaching_counts = Counter(all_coaching)
 
             if selected_insight == "Most Common Coaching Suggestions":
-                top_coaching = pd.DataFrame(
-                    coaching_counts.most_common(10),
-                    columns=["Coaching Suggestion", "Frequency"],
-                )
-                st.write("**Most Common Coaching Suggestions**")
-                st.dataframe(top_coaching, width="stretch")
+                # Convert Counter.most_common() result to proper DataFrame format
+                most_common_list = coaching_counts.most_common(10)
+                if most_common_list:
+                    # Create DataFrame from list of tuples, ensuring proper types
+                    data = [
+                        {"Coaching Suggestion": str(item), "Frequency": int(count)}
+                        for item, count in most_common_list
+                    ]
+                    top_coaching = pd.DataFrame(data)
+                    # Reset index to ensure clean integer index
+                    top_coaching = top_coaching.reset_index(drop=True)
+                    # Ensure all columns have proper types (use object for strings, not "string" dtype)
+                    top_coaching["Coaching Suggestion"] = top_coaching[
+                        "Coaching Suggestion"
+                    ].astype(str)
+                    top_coaching["Frequency"] = top_coaching["Frequency"].astype(int)
+                    # Fill any NaN values and ensure clean DataFrame
+                    top_coaching = top_coaching.fillna("")
+                    # Convert to dict format to avoid any DataFrame serialization issues
+                    st.write("**Most Common Coaching Suggestions**")
+                    # Display as markdown table to avoid Streamlit dataframe issues
+                    if len(top_coaching) > 0:
+                        st.markdown(top_coaching.to_markdown(index=False))
+                    else:
+                        st.info("No coaching suggestions found.")
+                else:
+                    st.info("No coaching suggestions found.")
 
             elif selected_insight == "Coaching by Category":
                 # Categorize all coaching suggestions
                 categorized_coaching = [categorize_coaching(c) for c in all_coaching]
                 category_counts = Counter(categorized_coaching)
 
-                category_df = pd.DataFrame(
-                    category_counts.most_common(), columns=["Category", "Frequency"]
-                )
-                category_df["Percentage"] = (
-                    category_df["Frequency"] / len(all_coaching) * 100
-                ).round(1)
+                # Convert to DataFrame and ensure Frequency is integer
+                category_data = category_counts.most_common()
+                if category_data:
+                    # Create DataFrame from list of tuples, ensuring proper types
+                    data = []
+                    for category, count in category_data:
+                        percentage = (
+                            (count / len(all_coaching) * 100)
+                            if len(all_coaching) > 0
+                            else 0.0
+                        )
+                        data.append(
+                            {
+                                "Category": str(category),
+                                "Frequency": int(count),
+                                "Percentage": float(round(percentage, 1)),
+                            }
+                        )
+                    category_df = pd.DataFrame(data)
+                    # Reset index to ensure clean integer index
+                    category_df = category_df.reset_index(drop=True)
+                    # Ensure all columns have proper types (use object for strings, not "string" dtype)
+                    category_df["Category"] = category_df["Category"].astype(str)
+                    category_df["Frequency"] = category_df["Frequency"].astype(int)
+                    category_df["Percentage"] = category_df["Percentage"].astype(float)
+                    # Fill any NaN values and ensure clean DataFrame
+                    category_df = category_df.fillna(
+                        {"Category": "", "Frequency": 0, "Percentage": 0.0}
+                    )
+                else:
+                    # Create empty DataFrame with proper dtypes
+                    category_df = pd.DataFrame(
+                        {
+                            "Category": pd.Series(dtype=str),
+                            "Frequency": pd.Series(dtype=int),
+                            "Percentage": pd.Series(dtype=float),
+                        }
+                    )
 
                 col_cat1, col_cat2 = st.columns(2)
                 with col_cat1:
                     st.write("**Coaching Suggestions by Category**")
-                    st.dataframe(category_df, width="stretch")
+                    if len(category_df) > 0:
+                        # Display as markdown table to avoid Streamlit dataframe issues
+                        st.markdown(category_df.to_markdown(index=False))
+                    else:
+                        st.info("No coaching suggestions found.")
 
                 with col_cat2:
                     fig_cat, ax_cat = plt.subplots(figsize=(8, 6))
+                    # Ensure category_df has proper types before plotting
+                    if len(category_df) > 0:
+                        category_df["Category"] = category_df["Category"].astype(str)
+                        category_df["Frequency"] = category_df["Frequency"].astype(int)
+                        category_df["Percentage"] = category_df["Percentage"].astype(
+                            float
+                        )
+                        category_df = category_df.reset_index(drop=True)
                     category_df.plot(
                         x="Category",
                         y="Frequency",
@@ -10606,10 +11156,20 @@ with st.expander("Coaching Insights", expanded=False):
                     st_pyplot_safe(fig_cat)
 
             elif selected_insight == "Top 10 Coaching Suggestions (Chart)":
-                top_coaching = pd.DataFrame(
-                    coaching_counts.most_common(10),
-                    columns=["Coaching Suggestion", "Frequency"],
-                )
+                # Create DataFrame from list of tuples, ensuring proper types
+                most_common_list = coaching_counts.most_common(10)
+                data = [
+                    {"Coaching Suggestion": str(item), "Frequency": int(count)}
+                    for item, count in most_common_list
+                ]
+                top_coaching = pd.DataFrame(data)
+                # Reset index to ensure clean integer index
+                top_coaching = top_coaching.reset_index(drop=True)
+                # Ensure all columns have proper types (use object for strings, not "string" dtype)
+                top_coaching["Coaching Suggestion"] = top_coaching[
+                    "Coaching Suggestion"
+                ].astype(str)
+                top_coaching["Frequency"] = top_coaching["Frequency"].astype(int)
                 fig_coach, ax_coach = plt.subplots(figsize=(10, 6))
                 top_coaching.plot(
                     x="Coaching Suggestion",
@@ -10624,17 +11184,42 @@ with st.expander("Coaching Insights", expanded=False):
                 st_pyplot_safe(fig_coach)
 
             elif selected_insight == "All Coaching Suggestions":
-                all_coaching_df = pd.DataFrame(
-                    coaching_counts.most_common(),
-                    columns=["Coaching Suggestion", "Frequency"],
+                # Create DataFrame from list of tuples, ensuring proper types
+                most_common_list = coaching_counts.most_common()
+                data = []
+                for item, count in most_common_list:
+                    percentage = (
+                        (count / len(all_coaching) * 100)
+                        if len(all_coaching) > 0
+                        else 0.0
+                    )
+                    data.append(
+                        {
+                            "Coaching Suggestion": str(item),
+                            "Frequency": int(count),
+                            "Percentage": float(round(percentage, 1)),
+                        }
+                    )
+                all_coaching_df = pd.DataFrame(data)
+                # Reset index to ensure clean integer index
+                all_coaching_df = all_coaching_df.reset_index(drop=True)
+                # Ensure all columns have proper types (use object for strings, not "string" dtype)
+                all_coaching_df["Coaching Suggestion"] = all_coaching_df[
+                    "Coaching Suggestion"
+                ].astype(str)
+                all_coaching_df["Frequency"] = all_coaching_df["Frequency"].astype(int)
+                all_coaching_df["Percentage"] = all_coaching_df["Percentage"].astype(
+                    float
                 )
-                all_coaching_df["Percentage"] = (
-                    all_coaching_df["Frequency"] / len(all_coaching) * 100
-                ).round(1)
+                # Fill any NaN values and ensure clean DataFrame
+                all_coaching_df = all_coaching_df.fillna(
+                    {"Coaching Suggestion": "", "Frequency": 0, "Percentage": 0.0}
+                )
                 st.write(
                     f"**All Coaching Suggestions ({len(all_coaching_df)} unique suggestions)**"
                 )
-                st.dataframe(all_coaching_df, width="stretch")
+                # Display as markdown table to avoid Streamlit dataframe issues
+                st.markdown(all_coaching_df.to_markdown(index=False))
         else:
             st.info("No coaching suggestions found in the filtered data.")
     else:
@@ -10884,21 +11469,33 @@ with st.expander("Individual Call Details", expanded=False):
                 st.write("**Rubric Details**")
                 rubric_details = call_details.get("Rubric Details", {})
                 if isinstance(rubric_details, dict) and rubric_details:
-                    rubric_df = pd.DataFrame(
-                        [
+                    # Create DataFrame from list of dicts, ensuring proper types
+                    data = []
+                    for code, details in rubric_details.items():
+                        status = (
+                            details.get("status", "N/A")
+                            if isinstance(details, dict)
+                            else "N/A"
+                        )
+                        note = (
+                            details.get("note", "") if isinstance(details, dict) else ""
+                        )
+                        data.append(
                             {
-                                "Code": code,
-                                "Status": details.get("status", "N/A")
-                                if isinstance(details, dict)
-                                else "N/A",
-                                "Note": details.get("note", "")
-                                if isinstance(details, dict)
-                                else "",
+                                "Code": str(code),
+                                "Status": str(status),
+                                "Note": str(note),
                             }
-                            for code, details in rubric_details.items()
-                        ]
-                    )
-                    st.dataframe(rubric_df)
+                        )
+                    rubric_df = pd.DataFrame(data)
+                    # Ensure all columns have proper types
+                    rubric_df["Code"] = rubric_df["Code"].astype(str)
+                    rubric_df["Status"] = rubric_df["Status"].astype(str)
+                    rubric_df["Note"] = rubric_df["Note"].astype(str)
+                    # Reset index and fill NaN values
+                    rubric_df = rubric_df.reset_index(drop=True).fillna("")
+                    # Display as markdown table to avoid Streamlit dataframe issues
+                    st.markdown(rubric_df.to_markdown(index=False))
 
                     # Export individual call report
                     st.markdown("---")
@@ -11154,7 +11751,26 @@ with analytics_tab1:
                     "Call Count",
                     "WoW Count Change",
                 ]
-                st.dataframe(wow_display, hide_index=True)
+                # Ensure all columns have proper types
+                wow_display["Week"] = wow_display["Week"].astype(str)
+                wow_display["Avg QA Score"] = wow_display["Avg QA Score"].astype(float)
+                wow_display["WoW Change"] = wow_display["WoW Change"].astype(str)
+                wow_display["Call Count"] = wow_display["Call Count"].astype(int)
+                wow_display["WoW Count Change"] = wow_display[
+                    "WoW Count Change"
+                ].astype(str)
+                # Reset index and fill NaN values
+                wow_display = wow_display.reset_index(drop=True).fillna(
+                    {
+                        "Week": "",
+                        "Avg QA Score": 0.0,
+                        "WoW Change": "0.0%",
+                        "Call Count": 0,
+                        "WoW Count Change": "0",
+                    }
+                )
+                # Use markdown table to avoid width calculation issues
+                st.markdown(wow_display.to_markdown(index=False))
 
             with wow_col2:
                 st.write("**Pass Rate Week-over-Week**")
@@ -11228,7 +11844,13 @@ with analytics_tab2:
                 key=lambda x: x.str.replace("%", "").str.replace("+", "").astype(float),
                 ascending=False,
             )
-            st.dataframe(improvement_df, hide_index=True)
+            # Ensure all columns have proper types (all should be strings based on the data)
+            for col in improvement_df.columns:
+                improvement_df[col] = improvement_df[col].astype(str)
+            # Reset index and fill NaN values
+            improvement_df = improvement_df.reset_index(drop=True).fillna("")
+            # Use markdown table to avoid width calculation issues
+            st.markdown(improvement_df.to_markdown(index=False))
 
             # Show trend chart for selected agents
             selected_agents_trend = st.multiselect(
@@ -11316,7 +11938,18 @@ with analytics_tab3:
                     )
 
                 failure_df = pd.DataFrame(failure_data)
-                st.dataframe(failure_df, hide_index=True)
+                # Ensure all columns have proper types
+                for col in failure_df.columns:
+                    if failure_df[col].dtype == "object":
+                        failure_df[col] = failure_df[col].astype(str)
+                    elif failure_df[col].dtype in ["int64", "int32"]:
+                        failure_df[col] = failure_df[col].astype(int)
+                    elif failure_df[col].dtype in ["float64", "float32"]:
+                        failure_df[col] = failure_df[col].astype(float)
+                # Reset index and fill NaN values
+                failure_df = failure_df.reset_index(drop=True).fillna("")
+                # Use markdown table to avoid width calculation issues
+                st.markdown(failure_df.to_markdown(index=False))
 
             with failure_col2:
                 st.write("**Failure Distribution**")
