@@ -6998,6 +6998,35 @@ elif is_regular_admin():
 else:
     st.sidebar.info("User View: All Data")
 
+# --- Lazy Loading Controls (Moved Early) ---
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Load Data & Sections")
+st.sidebar.info("💡 Load data and sections on-demand to save memory")
+
+# Initialize lazy loading flags
+if "lazy_load_data" not in st.session_state:
+    st.session_state.lazy_load_data = False
+if "lazy_load_charts" not in st.session_state:
+    st.session_state.lazy_load_charts = False
+if "lazy_load_trends" not in st.session_state:
+    st.session_state.lazy_load_trends = False
+
+if st.sidebar.button(
+    "📊 Load Data",
+    help="Create DataFrame from loaded data. This may take 10-20 seconds.",
+    type="primary",
+):
+    st.session_state.lazy_load_data = True
+    st.rerun()
+
+if st.sidebar.button("📈 Load Charts", help="Load all charts and visualizations"):
+    st.session_state.lazy_load_charts = True
+    st.rerun()
+
+if st.sidebar.button("📉 Load Trends", help="Load trends over time analysis"):
+    st.session_state.lazy_load_trends = True
+    st.rerun()
+
 # Logout button
 st.sidebar.markdown("---")
 if st.sidebar.button("Logout", help="Log out of your account", type="secondary"):
@@ -8035,19 +8064,6 @@ if is_super_admin():
                 if "_data_load_in_progress" in st.session_state:
                     del st.session_state["_data_load_in_progress"]
 
-# --- Lazy Loading Controls ---
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Load Heavy Sections")
-st.sidebar.info("💡 Load sections on-demand to save memory")
-
-if st.sidebar.button("📊 Load Charts", help="Load all charts and visualizations"):
-    st.session_state.lazy_load_charts = True
-    st.rerun()
-
-if st.sidebar.button("📈 Load Trends", help="Load trends over time analysis"):
-    st.session_state.lazy_load_trends = True
-    st.rerun()
-
 
 # --- Load Rubric Reference ---
 @st.cache_data
@@ -8793,8 +8809,33 @@ except Exception as norm_error:
 # Handle None, empty list, or invalid types safely
 # Wrap in try/except to prevent crashes during DataFrame creation
 
+# LAZY LOADING: Only create DataFrame when user clicks "Load Data" button
+# Store call_data in session state for later use
+if call_data and isinstance(call_data, list) and len(call_data) > 0:
+    if "_call_data_for_df" not in st.session_state:
+        st.session_state["_call_data_for_df"] = call_data
+        logger.info(
+            f"Stored {len(call_data)} calls in session state for lazy DataFrame creation"
+        )
+
+# Check if user has requested DataFrame creation
+if not st.session_state.get("lazy_load_data", False):
+    # Show placeholder message - DataFrame not created yet
+    st.info(
+        "💡 **Click 'Load Data' in the sidebar to create the DataFrame and begin analysis.**"
+    )
+    st.info("This will process the loaded data and may take 10-20 seconds.")
+    # Stop execution here - don't create DataFrame or process anything
+    st.stop()
+
+# User has clicked "Load Data" - proceed with DataFrame creation
 # Send heartbeat before DataFrame creation validation starts
 send_heartbeat(force=True)
+
+# Get call_data from session state if available, otherwise use the variable
+if "_call_data_for_df" in st.session_state:
+    call_data = st.session_state["_call_data_for_df"]
+    logger.info(f"Using call_data from session state: {len(call_data)} calls")
 
 try:
     if call_data and isinstance(call_data, list) and len(call_data) > 0:
@@ -8803,24 +8844,59 @@ try:
 
         # CRITICAL: Validate that call_data contains dicts before creating DataFrame
         # Sample first few items to ensure they're dicts
+        # Add progress indicator and heartbeats during validation
+        validation_progress = st.progress(0)
+        validation_status = st.status("Validating call data...", expanded=False)
+
         sample_size = min(5, len(call_data))
+        validation_progress.progress(0.1)
+        send_heartbeat()
+
         non_dict_count = sum(
             1 for call in call_data[:sample_size] if not isinstance(call, dict)
         )
+        validation_progress.progress(0.3)
+        send_heartbeat()
+
         if non_dict_count > 0:
             logger.warning(
                 f"WARNING: Found {non_dict_count} non-dict items in call_data sample - DataFrame creation may fail"
             )
             # Filter to only dict items to prevent DataFrame creation failure
-            call_data = [call for call in call_data if isinstance(call, dict)]
+            validation_status.update(
+                label="Filtering non-dict items...", state="running"
+            )
+            # Add heartbeat during filtering loop
+            filtered_data = []
+            for idx, call in enumerate(call_data):
+                if isinstance(call, dict):
+                    filtered_data.append(call)
+                # Send heartbeat every 1000 items or every 2 seconds
+                if (idx + 1) % 1000 == 0 or (idx > 0 and idx % 5000 == 0):
+                    send_heartbeat()
+                    validation_progress.progress(0.3 + (idx / len(call_data)) * 0.3)
+            call_data = filtered_data
             logger.info(
                 f"Filtered call_data to {len(call_data)} dict items before DataFrame creation"
             )
 
+        validation_progress.progress(0.6)
+        send_heartbeat()
+        validation_status.update(label="Validation complete", state="complete")
+        validation_progress.empty()
+        validation_status = None
+
         # Create DataFrame with memory-efficient approach
         try:
+            # Show progress indicator for DataFrame creation
+            df_progress = st.progress(0)
+            df_status = st.status(
+                "Creating DataFrame... This may take 10-20 seconds.", expanded=True
+            )
+
             # Send heartbeat before DataFrame creation (can take 8+ seconds)
             send_heartbeat(force=True)
+            df_progress.progress(0.1)
 
             # Check memory before DataFrame creation - warn if already high
             current_mem_before_df = get_memory_usage_mb()
@@ -8829,13 +8905,24 @@ try:
                     f"High memory usage ({current_mem_before_df:.1f}MB) before DataFrame creation - may cause issues"
                 )
 
+            df_status.update(
+                label="Creating DataFrame from call data...", state="running"
+            )
+            df_progress.progress(0.2)
+            send_heartbeat()
+
+            # Create DataFrame - this is the heavy operation
             meta_df = pd.DataFrame(call_data)
+            df_progress.progress(0.7)
+            send_heartbeat()
+
             logger.info(
                 f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
             )
 
             # Send heartbeat after DataFrame creation completes
             send_heartbeat()
+            df_progress.progress(0.8)
 
             # Log memory usage after DataFrame creation
             memory_after_df = log_memory_usage(
@@ -8878,15 +8965,20 @@ try:
 
             # CRITICAL: Force aggressive garbage collection after DataFrame creation
             # This helps free memory from intermediate structures
+            # Add heartbeats during garbage collection to prevent timeout
+            send_heartbeat()
             gc.collect()
+            send_heartbeat()
             # Run garbage collection twice to ensure cleanup
             gc.collect()
+            send_heartbeat()
             logger.debug(
                 "Forced aggressive garbage collection after DataFrame creation to free memory"
             )
 
             # Send heartbeat after memory cleanup
             send_heartbeat()
+            df_progress.progress(0.9)
 
             # Log final memory state
             final_mem = get_memory_usage_mb()
@@ -8895,133 +8987,164 @@ try:
                     f"Final memory usage after DataFrame creation: {final_mem:.1f}MB"
                 )
 
-            # OPTIMIZATION: Optimize DataFrame memory usage with multiple strategies
-            # This can reduce memory usage by 30-70% overall
-            try:
+            # OPTIMIZATION: Optimize DataFrame memory usage - ONLY when user wants charts
+            # This can reduce memory usage by 30-70% overall, but is expensive
+            # Defer until user explicitly requests charts to save memory
+            if st.session_state.get("lazy_load_charts", False):
+                df_status.update(
+                    label="Optimizing DataFrame for charts...", state="running"
+                )
                 # Send heartbeat before optimization starts
                 send_heartbeat(force=True)
 
-                memory_before_optimization = get_memory_usage_mb()
+                try:
+                    memory_before_optimization = get_memory_usage_mb()
 
-                # Strategy 1: Convert object columns to category (more aggressive threshold)
-                # Exclude date columns and columns used for min/max operations
-                object_columns = meta_df.select_dtypes(include=["object"]).columns
-                # Exclude columns that look like dates or are commonly used for min/max
-                date_related_columns = [
-                    "Call Date",
-                    "call_date",
-                    "date",
-                    "Date",
-                    "timestamp",
-                    "Timestamp",
-                ]
-                # Filter out date-related columns
-                object_columns = [
-                    col
-                    for col in object_columns
-                    if col not in date_related_columns
-                    and not col.lower().endswith("_date")
-                    and not col.lower().endswith("date")
-                ]
+                    # Strategy 1: Convert object columns to category (more aggressive threshold)
+                    # Exclude date columns and columns used for min/max operations
+                    object_columns = meta_df.select_dtypes(include=["object"]).columns
+                    # Exclude columns that look like dates or are commonly used for min/max
+                    date_related_columns = [
+                        "Call Date",
+                        "call_date",
+                        "date",
+                        "Date",
+                        "timestamp",
+                        "Timestamp",
+                    ]
+                    # Filter out date-related columns
+                    object_columns = [
+                        col
+                        for col in object_columns
+                        if col not in date_related_columns
+                        and not col.lower().endswith("_date")
+                        and not col.lower().endswith("date")
+                    ]
 
-                if len(object_columns) > 0:
-                    logger.debug(
-                        f"Optimizing {len(object_columns)} object columns to reduce memory usage"
-                    )
-                    last_heartbeat_time = time.time()
-                    for idx, col in enumerate(object_columns):
-                        try:
-                            # Convert to category if it has repeated values (memory efficient)
-                            # Lower threshold to 30% (more aggressive) for better memory savings
-                            unique_ratio = meta_df[col].nunique() / len(meta_df)
-                            if unique_ratio < 0.3 and meta_df[col].nunique() > 0:
-                                meta_df[col] = meta_df[col].astype("category")
+                    if len(object_columns) > 0:
+                        logger.debug(
+                            f"Optimizing {len(object_columns)} object columns to reduce memory usage"
+                        )
+                        last_heartbeat_time = time.time()
+                        for idx, col in enumerate(object_columns):
+                            try:
+                                # Convert to category if it has repeated values (memory efficient)
+                                # Lower threshold to 30% (more aggressive) for better memory savings
+                                unique_ratio = meta_df[col].nunique() / len(meta_df)
+                                if unique_ratio < 0.3 and meta_df[col].nunique() > 0:
+                                    meta_df[col] = meta_df[col].astype("category")
+                                    logger.debug(
+                                        f"Converted {col} to category (unique ratio: {unique_ratio:.2f})"
+                                    )
+                            except Exception as col_error:
+                                # Skip columns that can't be converted (e.g., mixed types)
                                 logger.debug(
-                                    f"Converted {col} to category (unique ratio: {unique_ratio:.2f})"
+                                    f"Could not convert {col} to category: {col_error}"
                                 )
-                        except Exception as col_error:
-                            # Skip columns that can't be converted (e.g., mixed types)
-                            logger.debug(
-                                f"Could not convert {col} to category: {col_error}"
+
+                            # Send heartbeat every 5 seconds or every 10 columns during optimization
+                            current_time = time.time()
+                            if (
+                                current_time - last_heartbeat_time >= 5
+                                or (idx + 1) % 10 == 0
+                            ):
+                                send_heartbeat()
+                                last_heartbeat_time = current_time
+
+                    # Strategy 2: Downcast numeric types to smaller dtypes
+                    # int64 -> int32/int16/int8, float64 -> float32
+                    numeric_columns = meta_df.select_dtypes(
+                        include=["int64", "float64"]
+                    ).columns
+                    if len(numeric_columns) > 0:
+                        logger.debug(
+                            f"Downcasting {len(numeric_columns)} numeric columns to reduce memory usage"
+                        )
+                        last_heartbeat_time = time.time()
+                        for idx, col in enumerate(numeric_columns):
+                            try:
+                                col_min = meta_df[col].min()
+                                col_max = meta_df[col].max()
+
+                                if meta_df[col].dtype == "int64":
+                                    # Downcast integers
+                                    if col_min >= -128 and col_max <= 127:
+                                        meta_df[col] = meta_df[col].astype("int8")
+                                        logger.debug(f"Downcasted {col} to int8")
+                                    elif col_min >= -32768 and col_max <= 32767:
+                                        meta_df[col] = meta_df[col].astype("int16")
+                                        logger.debug(f"Downcasted {col} to int16")
+                                    elif (
+                                        col_min >= -2147483648 and col_max <= 2147483647
+                                    ):
+                                        meta_df[col] = meta_df[col].astype("int32")
+                                        logger.debug(f"Downcasted {col} to int32")
+                                elif meta_df[col].dtype == "float64":
+                                    # Downcast floats to float32 (saves 50% memory)
+                                    meta_df[col] = meta_df[col].astype("float32")
+                                    logger.debug(f"Downcasted {col} to float32")
+                            except Exception as col_error:
+                                # Skip columns that can't be downcast
+                                logger.debug(f"Could not downcast {col}: {col_error}")
+
+                            # Send heartbeat every 5 seconds or every 10 columns during optimization
+                            current_time = time.time()
+                            if (
+                                current_time - last_heartbeat_time >= 5
+                                or (idx + 1) % 10 == 0
+                            ):
+                                send_heartbeat()
+                                last_heartbeat_time = current_time
+
+                    # Strategy 3: Optimize boolean columns (if any)
+                    bool_columns = meta_df.select_dtypes(include=["bool"]).columns
+                    if len(bool_columns) > 0:
+                        for col in bool_columns:
+                            try:
+                                # Convert bool to int8 (smaller than bool in some cases)
+                                meta_df[col] = meta_df[col].astype("int8")
+                                logger.debug(f"Converted {col} from bool to int8")
+                            except Exception:
+                                pass
+
+                    memory_after_optimization = get_memory_usage_mb()
+                    if memory_after_optimization > 0 and memory_before_optimization > 0:
+                        memory_saved = (
+                            memory_before_optimization - memory_after_optimization
+                        )
+                        if memory_saved > 0:
+                            logger.info(
+                                f"DataFrame dtype optimization saved {memory_saved:.1f}MB"
                             )
 
-                        # Send heartbeat every 5 seconds or every 10 columns during optimization
-                        current_time = time.time()
-                        if (
-                            current_time - last_heartbeat_time >= 5
-                            or (idx + 1) % 10 == 0
-                        ):
-                            send_heartbeat()
-                            last_heartbeat_time = current_time
-
-                # Strategy 2: Downcast numeric types to smaller dtypes
-                # int64 -> int32/int16/int8, float64 -> float32
-                numeric_columns = meta_df.select_dtypes(
-                    include=["int64", "float64"]
-                ).columns
-                if len(numeric_columns) > 0:
-                    logger.debug(
-                        f"Downcasting {len(numeric_columns)} numeric columns to reduce memory usage"
+                    # Send heartbeat after optimization completes
+                    send_heartbeat()
+                    df_progress.progress(1.0)
+                    df_status.update(
+                        label="DataFrame creation and optimization complete!",
+                        state="complete",
                     )
-                    last_heartbeat_time = time.time()
-                    for idx, col in enumerate(numeric_columns):
-                        try:
-                            col_min = meta_df[col].min()
-                            col_max = meta_df[col].max()
-
-                            if meta_df[col].dtype == "int64":
-                                # Downcast integers
-                                if col_min >= -128 and col_max <= 127:
-                                    meta_df[col] = meta_df[col].astype("int8")
-                                    logger.debug(f"Downcasted {col} to int8")
-                                elif col_min >= -32768 and col_max <= 32767:
-                                    meta_df[col] = meta_df[col].astype("int16")
-                                    logger.debug(f"Downcasted {col} to int16")
-                                elif col_min >= -2147483648 and col_max <= 2147483647:
-                                    meta_df[col] = meta_df[col].astype("int32")
-                                    logger.debug(f"Downcasted {col} to int32")
-                            elif meta_df[col].dtype == "float64":
-                                # Downcast floats to float32 (saves 50% memory)
-                                meta_df[col] = meta_df[col].astype("float32")
-                                logger.debug(f"Downcasted {col} to float32")
-                        except Exception as col_error:
-                            # Skip columns that can't be downcast
-                            logger.debug(f"Could not downcast {col}: {col_error}")
-
-                        # Send heartbeat every 5 seconds or every 10 columns during optimization
-                        current_time = time.time()
-                        if (
-                            current_time - last_heartbeat_time >= 5
-                            or (idx + 1) % 10 == 0
-                        ):
-                            send_heartbeat()
-                            last_heartbeat_time = current_time
-
-                # Strategy 3: Optimize boolean columns (if any)
-                bool_columns = meta_df.select_dtypes(include=["bool"]).columns
-                if len(bool_columns) > 0:
-                    for col in bool_columns:
-                        try:
-                            # Convert bool to int8 (smaller than bool in some cases)
-                            meta_df[col] = meta_df[col].astype("int8")
-                            logger.debug(f"Converted {col} from bool to int8")
-                        except Exception:
-                            pass
-
-                memory_after_optimization = get_memory_usage_mb()
-                if memory_after_optimization > 0 and memory_before_optimization > 0:
-                    memory_saved = (
-                        memory_before_optimization - memory_after_optimization
-                    )
-                    if memory_saved > 0:
-                        logger.info(
-                            f"DataFrame dtype optimization saved {memory_saved:.1f}MB"
-                        )
-
-                # Send heartbeat after optimization completes
-                send_heartbeat()
-            except Exception as opt_error:
-                logger.debug(f"Could not optimize DataFrame dtypes: {opt_error}")
+                    # Clean up progress indicators
+                    if "df_progress" in locals():
+                        df_progress.empty()
+                    if "df_status" in locals() and df_status is not None:
+                        df_status = None
+                except Exception as opt_error:
+                    logger.debug(f"Could not optimize DataFrame dtypes: {opt_error}")
+                    # Clean up progress indicators even on error
+                    if "df_progress" in locals():
+                        df_progress.empty()
+                    if "df_status" in locals() and df_status is not None:
+                        df_status = None
+            else:
+                # Optimization deferred - just mark DataFrame creation as complete
+                df_progress.progress(1.0)
+                df_status.update(
+                    label="DataFrame creation complete! Click 'Load Charts' to optimize and view charts.",
+                    state="complete",
+                )
+                df_progress.empty()
+                df_status = None
 
         except MemoryError as mem_error:
             memory_after_error = log_memory_usage(
@@ -9217,7 +9340,8 @@ def anonymize_dataframe(df, create_mappings_from=None):
 
 
 # Convert call_date to datetime if it's not already
-if "call_date" in meta_df.columns:
+# Only process if DataFrame exists (user clicked "Load Data")
+if "meta_df" in locals() and not meta_df.empty and "call_date" in meta_df.columns:
     # If call_date is already datetime, keep it; otherwise try to parse
     if meta_df["call_date"].dtype == "object":
         meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
@@ -9375,28 +9499,30 @@ def extract_products_from_text(text):
 
 
 # --- Normalize QA fields ---
-meta_df.rename(
-    columns={
-        "company": "Company",
-        "agent": "Agent",
-        "call_date": "Call Date",
-        "date_raw": "Date Raw",
-        "time": "Call Time",
-        "call_id": "Call ID",
-        "qa_score": "QA Score",
-        "label": "Label",
-        "reason": "Reason",
-        "outcome": "Outcome",
-        "summary": "Summary",
-        "strengths": "Strengths",
-        "challenges": "Challenges",
-        "coaching_suggestions": "Coaching Suggestions",
-        "rubric_details": "Rubric Details",
-        "rubric_pass_count": "Rubric Pass Count",
-        "rubric_fail_count": "Rubric Fail Count",
-    },
-    inplace=True,
-)
+# Only process if DataFrame exists (user clicked "Load Data")
+if "meta_df" in locals() and not meta_df.empty:
+    meta_df.rename(
+        columns={
+            "company": "Company",
+            "agent": "Agent",
+            "call_date": "Call Date",
+            "date_raw": "Date Raw",
+            "time": "Call Time",
+            "call_id": "Call ID",
+            "qa_score": "QA Score",
+            "label": "Label",
+            "reason": "Reason",
+            "outcome": "Outcome",
+            "summary": "Summary",
+            "strengths": "Strengths",
+            "challenges": "Challenges",
+            "coaching_suggestions": "Coaching Suggestions",
+            "rubric_details": "Rubric Details",
+            "rubric_pass_count": "Rubric Pass Count",
+            "rubric_fail_count": "Rubric Fail Count",
+        },
+        inplace=True,
+    )
 
 
 def normalize_categories_in_dataframe(df, column_name):
@@ -9882,7 +10008,14 @@ if is_anonymous_user:
 # user_agent_id is already normalized above (when set from user mapping)
 
 # If user has agent_id, automatically filter to their data
+# Only process if DataFrame exists (user clicked "Load Data")
 if user_agent_id:
+    if "meta_df" not in locals() or meta_df.empty:
+        # DataFrame not created yet - show placeholder
+        st.info(
+            "💡 **Click 'Load Data' in the sidebar to create the DataFrame and begin analysis.**"
+        )
+        st.stop()
     # Agent view - filter to their calls only
     agent_calls_df = meta_df[meta_df["Agent"] == user_agent_id].copy()
 
@@ -9899,9 +10032,17 @@ if user_agent_id:
     st.sidebar.info(f" Showing your calls only ({len(agent_calls_df)} calls)")
 else:
     # Admin/All data view
-    filter_df = meta_df
-    show_comparison = False
-    st.sidebar.info(f" Showing all data ({len(meta_df)} calls)")
+    # Only create filter_df if DataFrame exists (user clicked "Load Data")
+    if "meta_df" in locals() and not meta_df.empty:
+        filter_df = meta_df
+        show_comparison = False
+        st.sidebar.info(f" Showing all data ({len(meta_df)} calls)")
+    else:
+        # DataFrame not created yet - show placeholder
+        st.info(
+            "💡 **Click 'Load Data' in the sidebar to create the DataFrame and begin analysis.**"
+        )
+        st.stop()
 
 # --- Sidebar Filters ---
 st.sidebar.header(" Filter Data")
@@ -10270,12 +10411,19 @@ elif preset_filters == "Recent Issues (Last 7 Days)":
     if "QA Score" in filter_df.columns:
         filter_df = filter_df[filter_df["QA Score"] < 70].copy()
 
-# Apply basic filters
-filtered_df = filter_df[
-    (filter_df["Agent"].isin(selected_agents))
-    & (filter_df["Call Date"].dt.date >= start_date)
-    & (filter_df["Call Date"].dt.date <= end_date)
-].copy()
+# Apply basic filters - only if filter_df exists (DataFrame was created)
+if "filter_df" in locals() and not filter_df.empty:
+    filtered_df = filter_df[
+        (filter_df["Agent"].isin(selected_agents))
+        & (filter_df["Call Date"].dt.date >= start_date)
+        & (filter_df["Call Date"].dt.date <= end_date)
+    ].copy()
+else:
+    # DataFrame not created yet - show placeholder
+    st.info(
+        "💡 **Click 'Load Data' in the sidebar to create the DataFrame and begin analysis.**"
+    )
+    st.stop()
 
 # Apply QA Score filter
 if score_range:
