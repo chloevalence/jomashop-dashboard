@@ -2568,7 +2568,7 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
 # First load will take time, subsequent loads will be instant
 # Use "Refresh New Data" button when new CSV files are added to S3 - it only loads new files (PDFs are ignored)
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
-@st.cache_data(ttl=None, max_entries=1, show_spinner=True)
+@st.cache_data(ttl=None, max_entries=1, show_spinner=False)
 def load_all_calls_cached(cache_version=0):
     """Cached wrapper - loads ALL data once, then serves from cache indefinitely until manually refreshed.
     Performs one-time cache cleanup before loading to remove PDF-sourced calls.
@@ -6497,7 +6497,8 @@ if not data_already_loaded:
             try:
                 test_client.head_bucket(Bucket=s3_bucket_name)
                 logger.debug("S3 connection test successful")
-                status_text.text(" Connected! Loading data...")
+                # Loading message handled by cycling messages below
+                # status_text.text(" Connected! Loading data...")
                 st.session_state[s3_test_key] = True  # Mark as tested
             except Exception as bucket_error:
                 logger.error(f"S3 bucket access failed: {bucket_error}")
@@ -6514,8 +6515,8 @@ if not data_already_loaded:
                 status_text.text(" Attempting to load from cache...")
                 st.session_state[s3_test_key] = True  # Mark as tested even on failure
         else:
-            # Already tested, just show loading message
-            status_text.text(" Loading data...")
+            # Already tested, loading message handled by cycling messages below
+            # status_text.text(" Loading data...")
             logger.debug("S3 connection already tested, skipping test")
 
         # Skip CSV count for faster startup - just load data directly
@@ -6565,7 +6566,8 @@ errors = []
 # Initialize meta_df to prevent NameError
 meta_df = pd.DataFrame()
 try:
-    status_text.text(" Loading CSV files from S3...")
+    # Loading message is now handled by cycling messages in the loading section below
+    # status_text.text(" Loading CSV files from S3...")  # Removed - using cycling messages instead
     logger.debug("Status text updated, starting timer...")
 
     t0 = time.time()
