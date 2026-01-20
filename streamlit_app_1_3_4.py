@@ -3144,6 +3144,15 @@ def load_all_calls_cached(cache_version=0):
                 del st.session_state[load_in_progress_key]
             if load_start_time_key in st.session_state:
                 del st.session_state[load_start_time_key]
+            
+            # CRITICAL FIX: Also clear stale S3 cache result so it reloads from S3
+            # This prevents using stale empty cache data after timeout
+            if "_s3_cache_result" in st.session_state:
+                del st.session_state["_s3_cache_result"]
+                logger.debug("Cleared stale _s3_cache_result to force reload from S3 after timeout")
+            if "_s3_cache_timestamp" in st.session_state:
+                del st.session_state["_s3_cache_timestamp"]
+                logger.debug("Cleared stale _s3_cache_timestamp to force reload from S3 after timeout")
         else:
             logger.warning(
                 f"Data load already in progress (started {load_duration:.1f}s ago), "
@@ -8814,7 +8823,7 @@ try:
             if current_mem_before_df > 0 and current_mem_before_df > 2000:
                 logger.warning(
                     f"High memory usage ({current_mem_before_df:.1f}MB) before DataFrame creation - may cause issues"
-            )
+                )
 
             meta_df = pd.DataFrame(call_data)
             logger.info(
@@ -8910,7 +8919,7 @@ try:
                     and not col.lower().endswith("_date")
                     and not col.lower().endswith("date")
                 ]
-                
+
                 if len(object_columns) > 0:
                     logger.debug(
                         f"Optimizing {len(object_columns)} object columns to reduce memory usage"
