@@ -3718,9 +3718,9 @@ def load_all_calls_cached(cache_version=0):
                             )
                             # Use memory-efficient chunked loading for large files
                             try:
-                            response = s3_client.get_object(
-                                Bucket=s3_bucket, Key=S3_CACHE_KEY
-                            )
+                                response = s3_client.get_object(
+                                    Bucket=s3_bucket, Key=S3_CACHE_KEY
+                                )
                                 body = response["Body"]
                                 # Use memory-efficient parsing function
                                 s3_cached_data = parse_json_streaming(
@@ -3743,7 +3743,7 @@ def load_all_calls_cached(cache_version=0):
                                     # Clear the parsed dict immediately to free memory
                                     del s3_cached_data
                                     gc.collect()
-                                        logger.debug(
+                                    logger.debug(
                                         "Cleared parsed JSON dict after extracting data"
                                     )
 
@@ -8048,6 +8048,7 @@ if st.sidebar.button("📈 Load Trends", help="Load trends over time analysis"):
     st.session_state.lazy_load_trends = True
     st.rerun()
 
+
 # --- Load Rubric Reference ---
 @st.cache_data
 def load_rubric():
@@ -8610,8 +8611,8 @@ try:
                         st.info("2. **Refresh the page** to retry")
                         st.info("3. **Wait a few minutes** and try again")
                     else:
-                    st.error(" **Error Loading Data**")
-                    st.error(f"**Error:** {str(e)}")
+                        st.error(" **Error Loading Data**")
+                        st.error(f"**Error:** {str(e)}")
                         st.error(
                             "The app may be trying to load too many files at once."
                         )
@@ -8826,12 +8827,12 @@ try:
             if current_mem_before_df > 0 and current_mem_before_df > 2000:
                 logger.warning(
                     f"High memory usage ({current_mem_before_df:.1f}MB) before DataFrame creation - may cause issues"
-            )
+                )
 
-        meta_df = pd.DataFrame(call_data)
-        logger.info(
-            f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
-        )
+            meta_df = pd.DataFrame(call_data)
+            logger.info(
+                f"DataFrame created successfully: {len(meta_df)} rows, {len(meta_df.columns)} columns"
+            )
 
             # Send heartbeat after DataFrame creation completes
             send_heartbeat()
@@ -10783,85 +10784,85 @@ if show_comparison and user_agent_id:
     # Comparison section
     if st.session_state.get("lazy_load_charts", False):
         log_memory_usage("After loading charts")
-    st.subheader("My Performance vs. Team Average")
-    comp_col1, comp_col2, comp_col3 = st.columns(3)
+        st.subheader("My Performance vs. Team Average")
+        comp_col1, comp_col2, comp_col3 = st.columns(3)
 
-    with comp_col1:
-        st.write("**QA Score Comparison**")
-        comparison_data = pd.DataFrame(
-            {
-                "Metric": ["My Average", "Team Average"],
-                "QA Score": [my_avg_score, overall_avg_score],
-            }
-        )
-        fig_comp, ax_comp = plt.subplots(figsize=(8, 5))
-        comparison_data.plot(
-            x="Metric",
-            y="QA Score",
-            kind="bar",
-            ax=ax_comp,
-            color=["steelblue", "orange"],
-        )
-        ax_comp.set_ylabel("QA Score (%)")
-        ax_comp.set_title("My Score vs Team Average")
-        ax_comp.axhline(
-            y=alert_threshold,
-            color="r",
-            linestyle="--",
-            alpha=0.5,
-            label=f"Threshold ({alert_threshold}%)",
-        )
-        ax_comp.legend()
-        plt.xticks(rotation=0)
-        plt.tight_layout()
-        st_pyplot_safe(fig_comp)
-
-    with comp_col2:
-        st.write("**Pass Rate Comparison**")
-        pass_comparison = pd.DataFrame(
-            {
-                "Metric": ["My Pass Rate", "Team Pass Rate"],
-                "Pass Rate": [my_pass_rate, overall_pass_rate],
-            }
-        )
-        fig_pass, ax_pass = plt.subplots(figsize=(8, 5))
-        pass_comparison.plot(
-            x="Metric",
-            y="Pass Rate",
-            kind="bar",
-            ax=ax_pass,
-            color=["green", "lightgreen"],
-        )
-        ax_pass.set_ylabel("Pass Rate (%)")
-        ax_pass.set_title("My Pass Rate vs Team Average")
-        plt.xticks(rotation=0)
-        plt.tight_layout()
-        st_pyplot_safe(fig_pass)
-
-    with comp_col3:
-        st.write("**AHT Comparison**")
-        if my_avg_aht is not None and overall_avg_aht is not None:
-            aht_comparison = pd.DataFrame(
+        with comp_col1:
+            st.write("**QA Score Comparison**")
+            comparison_data = pd.DataFrame(
                 {
-                    "Metric": ["My Avg AHT", "Team Avg AHT"],
-                    "AHT (min)": [my_avg_aht, overall_avg_aht],
+                    "Metric": ["My Average", "Team Average"],
+                    "QA Score": [my_avg_score, overall_avg_score],
                 }
             )
-            fig_aht, ax_aht = plt.subplots(figsize=(8, 5))
-            aht_comparison.plot(
+            fig_comp, ax_comp = plt.subplots(figsize=(8, 5))
+            comparison_data.plot(
                 x="Metric",
-                y="AHT (min)",
+                y="QA Score",
                 kind="bar",
-                ax=ax_aht,
-                color=["purple", "lavender"],
+                ax=ax_comp,
+                color=["steelblue", "orange"],
             )
-            ax_aht.set_ylabel("Average Handle Time (min)")
-            ax_aht.set_title("My AHT vs Team Average")
+            ax_comp.set_ylabel("QA Score (%)")
+            ax_comp.set_title("My Score vs Team Average")
+            ax_comp.axhline(
+                y=alert_threshold,
+                color="r",
+                linestyle="--",
+                alpha=0.5,
+                label=f"Threshold ({alert_threshold}%)",
+            )
+            ax_comp.legend()
             plt.xticks(rotation=0)
             plt.tight_layout()
-            st_pyplot_safe(fig_aht)
-        else:
-            st.info("AHT data not available")
+            st_pyplot_safe(fig_comp)
+
+        with comp_col2:
+            st.write("**Pass Rate Comparison**")
+            pass_comparison = pd.DataFrame(
+                {
+                    "Metric": ["My Pass Rate", "Team Pass Rate"],
+                    "Pass Rate": [my_pass_rate, overall_pass_rate],
+                }
+            )
+            fig_pass, ax_pass = plt.subplots(figsize=(8, 5))
+            pass_comparison.plot(
+                x="Metric",
+                y="Pass Rate",
+                kind="bar",
+                ax=ax_pass,
+                color=["green", "lightgreen"],
+            )
+            ax_pass.set_ylabel("Pass Rate (%)")
+            ax_pass.set_title("My Pass Rate vs Team Average")
+            plt.xticks(rotation=0)
+            plt.tight_layout()
+            st_pyplot_safe(fig_pass)
+
+        with comp_col3:
+            st.write("**AHT Comparison**")
+            if my_avg_aht is not None and overall_avg_aht is not None:
+                aht_comparison = pd.DataFrame(
+                    {
+                        "Metric": ["My Avg AHT", "Team Avg AHT"],
+                        "AHT (min)": [my_avg_aht, overall_avg_aht],
+                    }
+                )
+                fig_aht, ax_aht = plt.subplots(figsize=(8, 5))
+                aht_comparison.plot(
+                    x="Metric",
+                    y="AHT (min)",
+                    kind="bar",
+                    ax=ax_aht,
+                    color=["purple", "lavender"],
+                )
+                ax_aht.set_ylabel("Average Handle Time (min)")
+                ax_aht.set_title("My AHT vs Team Average")
+                plt.xticks(rotation=0)
+                plt.tight_layout()
+                st_pyplot_safe(fig_aht)
+            else:
+                st.info("AHT data not available")
     else:
         st.subheader("My Performance vs. Team Average")
         st.info("💡 Click 'Load Charts' in sidebar to view performance comparisons")
@@ -10981,48 +10982,53 @@ with st.expander(" Historical Baseline Comparisons", expanded=False):
     # Benchmark visualization chart
     if baselines and current_avg_score:
         if st.session_state.get("lazy_load_charts", False):
-        st.markdown("### Benchmark Comparison Chart")
-        baseline_names = []
-        baseline_scores = []
+            st.markdown("### Benchmark Comparison Chart")
+            baseline_names = []
+            baseline_scores = []
 
-        if "last_30_days" in baselines and baselines["last_30_days"]["avg_score"]:
-            baseline_names.append("Last 30 Days")
-            baseline_scores.append(baselines["last_30_days"]["avg_score"])
+            if "last_30_days" in baselines and baselines["last_30_days"]["avg_score"]:
+                baseline_names.append("Last 30 Days")
+                baseline_scores.append(baselines["last_30_days"]["avg_score"])
 
-        if "last_90_days" in baselines and baselines["last_90_days"]["avg_score"]:
-            baseline_names.append("Last 90 Days")
-            baseline_scores.append(baselines["last_90_days"]["avg_score"])
+            if "last_90_days" in baselines and baselines["last_90_days"]["avg_score"]:
+                baseline_names.append("Last 90 Days")
+                baseline_scores.append(baselines["last_90_days"]["avg_score"])
 
-        if "year_over_year" in baselines and baselines["year_over_year"]["avg_score"]:
-            baseline_names.append("Same Period Last Year")
-            baseline_scores.append(baselines["year_over_year"]["avg_score"])
+            if (
+                "year_over_year" in baselines
+                and baselines["year_over_year"]["avg_score"]
+            ):
+                baseline_names.append("Same Period Last Year")
+                baseline_scores.append(baselines["year_over_year"]["avg_score"])
 
-        if baseline_names:
-            baseline_names.append("Current Period")
-            baseline_scores.append(current_avg_score)
+            if baseline_names:
+                baseline_names.append("Current Period")
+                baseline_scores.append(current_avg_score)
 
-            fig_bench, ax_bench = plt.subplots(figsize=(8, 5))
-            colors = [
-                "steelblue" if i < len(baseline_names) - 1 else "orange"
-                for i in range(len(baseline_names))
-            ]
-            bars = ax_bench.bar(baseline_names, baseline_scores, color=colors)
-            ax_bench.set_ylabel("Average QA Score (%)")
-            ax_bench.set_title("Current Performance vs Historical Baselines")
-            ax_bench.axhline(
-                y=alert_threshold,
-                color="r",
-                linestyle="--",
-                alpha=0.5,
-                label=f"Threshold ({alert_threshold}%)",
-            )
-            ax_bench.legend()
-            plt.xticks(rotation=45, ha="right")
-            plt.tight_layout()
-            st_pyplot_safe(fig_bench)
+                fig_bench, ax_bench = plt.subplots(figsize=(8, 5))
+                colors = [
+                    "steelblue" if i < len(baseline_names) - 1 else "orange"
+                    for i in range(len(baseline_names))
+                ]
+                bars = ax_bench.bar(baseline_names, baseline_scores, color=colors)
+                ax_bench.set_ylabel("Average QA Score (%)")
+                ax_bench.set_title("Current Performance vs Historical Baselines")
+                ax_bench.axhline(
+                    y=alert_threshold,
+                    color="r",
+                    linestyle="--",
+                    alpha=0.5,
+                    label=f"Threshold ({alert_threshold}%)",
+                )
+                ax_bench.legend()
+                plt.xticks(rotation=45, ha="right")
+                plt.tight_layout()
+                st_pyplot_safe(fig_bench)
         else:
             st.markdown("### Benchmark Comparison Chart")
-            st.info("💡 Click 'Load Charts' in sidebar to view benchmark comparison chart")
+            st.info(
+                "💡 Click 'Load Charts' in sidebar to view benchmark comparison chart"
+            )
 
 # --- Agent Leaderboard ---
 if not user_agent_id:
@@ -11205,18 +11211,18 @@ else:
 with st.expander("Call Reason & Outcome Analysis", expanded=False):
     st.subheader("Call Reason & Outcome Analysis")
     if st.session_state.get("lazy_load_charts", False):
-    if (
-        "Reason" in filtered_df.columns
-        or "Outcome" in filtered_df.columns
-        or "Summary" in filtered_df.columns
-    ):
-        reason_tab1, reason_tab2, reason_tab3 = st.tabs(
-            ["Reasons", "Outcomes", "Products"]
-        )
+        if (
+            "Reason" in filtered_df.columns
+            or "Outcome" in filtered_df.columns
+            or "Summary" in filtered_df.columns
+        ):
+            reason_tab1, reason_tab2, reason_tab3 = st.tabs(
+                ["Reasons", "Outcomes", "Products"]
+            )
 
-        with reason_tab1:
-            if "Reason" in filtered_df.columns:
-                reason_col1, reason_col2 = st.columns(2)
+            with reason_tab1:
+                if "Reason" in filtered_df.columns:
+                    reason_col1, reason_col2 = st.columns(2)
 
                 with reason_col1:
                     st.write("**Most Common Call Reasons**")
@@ -11317,9 +11323,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         plt.tight_layout()
                         st_pyplot_safe(fig_reason_trend)
 
-        with reason_tab2:
-            if "Outcome" in filtered_df.columns:
-                outcome_col1, outcome_col2 = st.columns(2)
+            with reason_tab2:
+                if "Outcome" in filtered_df.columns:
+                    outcome_col1, outcome_col2 = st.columns(2)
 
                 with outcome_col1:
                     st.write("**Most Common Outcomes**")
@@ -11422,15 +11428,15 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         plt.tight_layout()
                         st_pyplot_safe(fig_outcome_trend)
 
-        with reason_tab3:
-            # Extract products from Summary, Reason, and Outcome fields
-            if (
-                "Summary" in filtered_df.columns
-                or "Reason" in filtered_df.columns
-                or "Outcome" in filtered_df.columns
-            ):
-                # OPTIMIZED: Use vectorized apply and caching instead of iterrows()
-                df_hash = get_df_hash(filtered_df)
+            with reason_tab3:
+                # Extract products from Summary, Reason, and Outcome fields
+                if (
+                    "Summary" in filtered_df.columns
+                    or "Reason" in filtered_df.columns
+                    or "Outcome" in filtered_df.columns
+                ):
+                    # OPTIMIZED: Use vectorized apply and caching instead of iterrows()
+                    df_hash = get_df_hash(filtered_df)
                 cache_key = f"product_data_{df_hash}"
 
                 def extract_products_from_row(row):
@@ -11615,9 +11621,13 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         "No products found in call data. Products are extracted from Summary, Reason, and Outcome fields."
                     )
         else:
-            st.info("💡 Click 'Load Charts' in sidebar to view call reason and outcome analysis")
+            st.info(
+                "💡 Click 'Load Charts' in sidebar to view call reason and outcome analysis"
+            )
     else:
-        st.info("💡 Click 'Load Charts' in sidebar to view call reason and outcome analysis")
+        st.info(
+            "💡 Click 'Load Charts' in sidebar to view call reason and outcome analysis"
+        )
 
 # --- AHT Root Cause Analysis ---
 if (
@@ -12513,8 +12523,8 @@ if (
 with st.expander("QA Score Trends Over Time", expanded=False):
     if st.session_state.get("lazy_load_trends", False):
         log_memory_usage("After loading trends")
-    st.subheader("QA Score Trends Over Time")
-    col_trend1, col_trend2 = st.columns(2)
+        st.subheader("QA Score Trends Over Time")
+        col_trend1, col_trend2 = st.columns(2)
 
     with col_trend1:
         st.write("**QA Score Trend**")
@@ -12598,32 +12608,32 @@ with st.expander("QA Score Trends Over Time", expanded=False):
             plt.xticks(rotation=45)
             plt.tight_layout()
             st_pyplot_safe(fig_pf)
-    else:
-        st.subheader("QA Score Trends Over Time")
-        st.info("💡 Click 'Load Trends' in sidebar to view trends over time")
+        else:
+            st.subheader("QA Score Trends Over Time")
+            st.info("💡 Click 'Load Trends' in sidebar to view trends over time")
 
 # --- Rubric Code Analysis ---
 with st.expander("Rubric Code Analysis", expanded=False):
     st.subheader("Rubric Code Analysis")
     if st.session_state.get("lazy_load_charts", False):
-    if "Rubric Details" in filtered_df.columns:
-        # OPTIMIZED: Collect all rubric code statistics using vectorized operations
-        df_hash = get_df_hash(filtered_df)
-        cache_key_code_stats = f"code_stats_{df_hash}"
+        if "Rubric Details" in filtered_df.columns:
+            # OPTIMIZED: Collect all rubric code statistics using vectorized operations
+            df_hash = get_df_hash(filtered_df)
+            cache_key_code_stats = f"code_stats_{df_hash}"
 
-        def analyze_rubric_stats(row):
-            """Analyze rubric details for statistics collection"""
-            rubric_details = row.get("Rubric Details", {})
-            row_stats = {}
+            def analyze_rubric_stats(row):
+                """Analyze rubric details for statistics collection"""
+                rubric_details = row.get("Rubric Details", {})
+                row_stats = {}
 
-            if isinstance(rubric_details, dict):
-                for code, details in rubric_details.items():
-                    if isinstance(details, dict):
-                        status = details.get("status", "N/A")
-                        note = details.get("note", "")
-                        row_stats[code] = {"status": status, "note": note}
+                if isinstance(rubric_details, dict):
+                    for code, details in rubric_details.items():
+                        if isinstance(details, dict):
+                            status = details.get("status", "N/A")
+                            note = details.get("note", "")
+                            row_stats[code] = {"status": status, "note": note}
 
-            return row_stats
+                return row_stats
 
         def compute_code_stats():
             """Compute rubric code statistics with progress indicator"""
@@ -12807,9 +12817,12 @@ with st.expander("Trend Forecasting", expanded=False):
     )
 
     if st.session_state.get("lazy_load_trends", False):
-    forecast_days = st.selectbox(
-        "Forecast Period", [7, 14, 30], index=0, help="Number of days to forecast ahead"
-    )
+        forecast_days = st.selectbox(
+            "Forecast Period",
+            [7, 14, 30],
+            index=0,
+            help="Number of days to forecast ahead",
+        )
 
     if (
         len(filtered_df) > 0
