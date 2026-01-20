@@ -3868,16 +3868,65 @@ def load_all_calls_cached(cache_version=0):
                                         and isinstance(cache_data, list)
                                         and len(cache_data) > 0
                                     ):
+                                        # Log memory before filtering
+                                        memory_before_filter = log_memory_usage(
+                                            "Before date filtering (large file)"
+                                        )
                                         original_count = len(cache_data)
-                                        cache_data = filter_calls_by_date(
+                                        filtered_data = filter_calls_by_date(
                                             cache_data, MAX_DAYS_TO_LOAD, load_all_data
                                         )
+
+                                        # CRITICAL: Replace s3_cache_result[0] with filtered data to free original list
+                                        # This prevents both original and filtered lists from existing in memory simultaneously
+                                        if len(s3_cache_result) > 0:
+                                            # Delete original reference before replacing
+                                            original_list = s3_cache_result[0]
+                                            s3_cache_result = (
+                                                filtered_data,
+                                                s3_cache_result[1]
+                                                if len(s3_cache_result) > 1
+                                                else [],
+                                            )
+                                            # Explicitly delete original list reference
+                                            del original_list
+                                        else:
+                                            s3_cache_result = (filtered_data, [])
+
+                                        cache_data = filtered_data
+
                                         # Clear the load_all_data flag after filtering
                                         if "load_all_data" in st.session_state:
                                             del st.session_state["load_all_data"]
-                                        # Force garbage collection to free memory from original list
+
+                                        # Clear references and force garbage collection to free memory from original list
                                         del original_count
+                                        del filtered_data
                                         gc.collect()
+
+                                        # Log memory after filtering to verify memory is freed
+                                        memory_after_filter = log_memory_usage(
+                                            "After date filtering (large file)"
+                                        )
+                                        if (
+                                            memory_before_filter > 0
+                                            and memory_after_filter > 0
+                                        ):
+                                            memory_freed = (
+                                                memory_before_filter
+                                                - memory_after_filter
+                                            )
+                                            if memory_freed > 0:
+                                                logger.info(
+                                                    f"Memory freed after filtering: {memory_freed:.1f}MB "
+                                                    f"({memory_before_filter:.1f}MB → {memory_after_filter:.1f}MB)"
+                                                )
+                                            else:
+                                                logger.warning(
+                                                    f"Memory not freed after filtering: "
+                                                    f"{memory_before_filter:.1f}MB → {memory_after_filter:.1f}MB "
+                                                    f"(delta: {memory_freed:.1f}MB)"
+                                                )
 
                                     cache_data_len = (
                                         len(cache_data)
@@ -3985,16 +4034,61 @@ def load_all_calls_cached(cache_version=0):
                                 and isinstance(cache_data, list)
                                 and len(cache_data) > 0
                             ):
+                                # Log memory before filtering
+                                memory_before_filter = log_memory_usage(
+                                    "Before date filtering (small file)"
+                                )
                                 original_count = len(cache_data)
-                                cache_data = filter_calls_by_date(
+                                filtered_data = filter_calls_by_date(
                                     cache_data, MAX_DAYS_TO_LOAD, load_all_data
                                 )
+
+                                # CRITICAL: Replace s3_cache_result[0] with filtered data to free original list
+                                # This prevents both original and filtered lists from existing in memory simultaneously
+                                if len(s3_cache_result) > 0:
+                                    # Delete original reference before replacing
+                                    original_list = s3_cache_result[0]
+                                    s3_cache_result = (
+                                        filtered_data,
+                                        s3_cache_result[1]
+                                        if len(s3_cache_result) > 1
+                                        else [],
+                                    )
+                                    # Explicitly delete original list reference
+                                    del original_list
+                                else:
+                                    s3_cache_result = (filtered_data, [])
+
+                                cache_data = filtered_data
+
                                 # Clear the load_all_data flag after filtering
                                 if "load_all_data" in st.session_state:
                                     del st.session_state["load_all_data"]
-                                # Force garbage collection to free memory from original list
+
+                                # Clear references and force garbage collection to free memory from original list
                                 del original_count
+                                del filtered_data
                                 gc.collect()
+
+                                # Log memory after filtering to verify memory is freed
+                                memory_after_filter = log_memory_usage(
+                                    "After date filtering (small file)"
+                                )
+                                if memory_before_filter > 0 and memory_after_filter > 0:
+                                    memory_freed = (
+                                        memory_before_filter - memory_after_filter
+                                    )
+                                    if memory_freed > 0:
+                                        logger.info(
+                                            f"Memory freed after filtering: {memory_freed:.1f}MB "
+                                            f"({memory_before_filter:.1f}MB → {memory_after_filter:.1f}MB)"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"Memory not freed after filtering: "
+                                            f"{memory_before_filter:.1f}MB → {memory_after_filter:.1f}MB "
+                                            f"(delta: {memory_freed:.1f}MB)"
+                                        )
 
                             cache_data_len = (
                                 len(cache_data) if isinstance(cache_data, list) else 0
