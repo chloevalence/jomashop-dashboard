@@ -6888,6 +6888,12 @@ except Exception as e:
         logger.warning("No valid call_data available, creating empty DataFrame")
         meta_df = pd.DataFrame()
 
+    # Convert call_date to datetime if it's not already (before column rename)
+    if "call_date" in meta_df.columns:
+        # If call_date is already datetime, keep it; otherwise try to parse
+        if meta_df["call_date"].dtype == "object":
+            meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
+
 # --- ANONYMIZATION FUNCTIONS ---
 # Note: is_anonymous_user is already defined earlier in the code
 
@@ -6988,13 +6994,6 @@ def anonymize_dataframe(df, create_mappings_from=None):
             )
 
     return df
-
-
-# Convert call_date to datetime if it's not already
-if "call_date" in meta_df.columns:
-    # If call_date is already datetime, keep it; otherwise try to parse
-    if meta_df["call_date"].dtype == "object":
-        meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
 
 
 # --- Product Extraction Function ---
