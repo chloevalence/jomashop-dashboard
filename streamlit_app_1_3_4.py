@@ -7149,6 +7149,10 @@ def extract_products_from_text(text):
 
 
 # --- Normalize QA fields ---
+# Ensure meta_df is defined before using it
+if 'meta_df' not in globals() or meta_df is None:
+    meta_df = pd.DataFrame()
+
 meta_df.rename(
     columns={
         "company": "Company",
