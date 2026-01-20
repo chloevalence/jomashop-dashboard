@@ -7489,19 +7489,6 @@ if "selected_rubric_codes" not in st.session_state:
 if "rubric_filter_type" not in st.session_state:
     st.session_state.rubric_filter_type = "Any Status"
 
-# Keyboard shortcuts info
-with st.sidebar.expander(" Keyboard Shortcuts"):
-    st.markdown("""
-    **Navigation:**
-    - `Ctrl/Cmd + R` - Refresh page
-    - `Ctrl/Cmd + F` - Focus search box
-    
-    **Tips:**
-    - Use filter presets for quick filtering
-    - Select multiple calls for batch export
-    - Use full-text search across all call details
-    """)
-
 # Maximum date range allowed (30 days to prevent memory issues)
 MAX_DATE_RANGE_DAYS = 30
 
@@ -7615,32 +7602,61 @@ elif date_range_mode == "Last Month":
 
 else:  # Pick Your Dates
     # Restore last custom date range or use default (last 30 days)
-    default_date_range = (
+    # If last_date_range exists and is valid, use it; otherwise use last 30 days
+    if (
         st.session_state.last_date_range
-        if st.session_state.last_date_range
         and isinstance(st.session_state.last_date_range, tuple)
-        else (
-            max(min(dates), (max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS))),
+        and len(st.session_state.last_date_range) == 2
+    ):
+        # Validate the stored range doesn't exceed 30 days
+        stored_range = st.session_state.last_date_range
+        stored_days = (stored_range[1] - stored_range[0]).days
+        if stored_days <= MAX_DATE_RANGE_DAYS:
+            default_date_range = stored_range
+        else:
+            # Reset to last 30 days if stored range is invalid
+            default_date_range = (
+                max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS),
+                max(dates),
+            )
+            st.session_state.last_date_range = default_date_range
+    else:
+        default_date_range = (
+            max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS),
             max(dates),
         )
-    )
+    
+    # Use a key to force update when we need to reset the date input
+    date_input_key = f"date_picker_{st.session_state.get('_date_picker_key', 0)}"
+    
     custom_input = st.sidebar.date_input(
         "Pick Your Dates",
         value=default_date_range,
-        help="Select your date range. Maximum 30 days allowed.",
+        help=f"⚠️ Maximum {MAX_DATE_RANGE_DAYS} days allowed. Selecting more will be automatically adjusted.",
+        key=date_input_key,
     )
+    
     if isinstance(custom_input, tuple) and len(custom_input) == 2:
         selected_dates = custom_input
-        # Check and warn if more than 30 days
+        # Check and enforce 30-day maximum
         days_diff = (selected_dates[1] - selected_dates[0]).days
         if days_diff > MAX_DATE_RANGE_DAYS:
+            # Show error and reset to valid range
             st.sidebar.error(
                 f"⚠️ **Cannot select more than {MAX_DATE_RANGE_DAYS} days at once.** "
-                f"Your selection is {days_diff} days. Please choose a smaller range."
+                f"Your selection was {days_diff} days. Automatically adjusted to {MAX_DATE_RANGE_DAYS} days from end date."
             )
-            # Don't auto-adjust, let user fix it
-            st.stop()
-        st.session_state.last_date_range = selected_dates  # Save selection
+            # Reset to valid range (last 30 days from end date)
+            selected_dates = (
+                selected_dates[1] - timedelta(days=MAX_DATE_RANGE_DAYS),
+                selected_dates[1],
+            )
+            st.session_state.last_date_range = selected_dates
+            # Force date input to update by incrementing key
+            st.session_state._date_picker_key = st.session_state.get("_date_picker_key", 0) + 1
+            st.rerun()  # Rerun to update the date input with corrected value
+        else:
+            st.session_state.last_date_range = selected_dates  # Save selection
     elif isinstance(custom_input, date):
         selected_dates = (custom_input, custom_input)
         st.session_state.last_date_range = selected_dates  # Save selection
@@ -7651,16 +7667,23 @@ else:  # Pick Your Dates
 # Extract start_date and end_date from selected_dates
 start_date, end_date = selected_dates
 
-# Final validation: ensure range doesn't exceed 30 days
+# Final validation: ensure range doesn't exceed 30 days (safety check)
 days_in_range = (end_date - start_date).days
 if days_in_range > MAX_DATE_RANGE_DAYS:
+    # This should not happen if validation above works, but add safety check
     st.sidebar.error(
         f"⚠️ Date range exceeds {MAX_DATE_RANGE_DAYS} days. "
-        f"Please select a smaller range to avoid memory issues."
+        f"Auto-adjusting to last {MAX_DATE_RANGE_DAYS} days from end date."
     )
     # Auto-adjust to last 30 days from end date
     start_date = end_date - timedelta(days=MAX_DATE_RANGE_DAYS)
     selected_dates = (start_date, end_date)
+    # Update session state
+    if date_range_mode == "Pick Your Dates":
+        st.session_state.last_date_range = selected_dates
+    else:
+        st.session_state.current_date_range_start = start_date
+        st.session_state.current_date_range_end = end_date
 
 # Note: Since we enforce 30-day maximum on all date ranges, we don't need to trigger
 # reloads for date ranges outside loaded data. The 30-day limit ensures memory stays manageable.
