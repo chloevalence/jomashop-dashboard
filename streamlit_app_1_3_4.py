@@ -7937,7 +7937,7 @@ else:
 # Data Loading Note
 if MAX_DAYS_TO_LOAD is not None:
     st.info(
-        f"ℹ️ **Note:** Only calls from the last {MAX_DAYS_TO_LOAD} days are loaded by default to improve performance. "
+        f"**Note:** Only calls from the last {MAX_DAYS_TO_LOAD} days are loaded by default to improve performance. "
         "Use the date filter in the sidebar to view data from a different time period."
     )
 
