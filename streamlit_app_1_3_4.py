@@ -9016,11 +9016,24 @@ if not user_agent_id:
                 "Avg_Call_Duration": 0.0,
             }
         )
-        # Display as sortable dataframe
+        # Ensure clean numeric types after fillna
+        agent_perf_display["Total_Calls"] = agent_perf_display["Total_Calls"].astype(int)
+        agent_perf_display["Avg_QA_Score"] = agent_perf_display["Avg_QA_Score"].astype(float)
+        agent_perf_display["Pass_Rate"] = agent_perf_display["Pass_Rate"].astype(float)
+        agent_perf_display["Avg_Call_Duration"] = agent_perf_display["Avg_Call_Duration"].astype(float)
+        # Display as sortable dataframe with column configuration
         st.dataframe(
             agent_perf_display,
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "Agent": st.column_config.TextColumn("Agent", width="medium"),
+                "Total_Calls": st.column_config.NumberColumn("Total Calls", format="%d"),
+                "Avg_QA_Score": st.column_config.NumberColumn("Avg QA Score", format="%.1f"),
+                "Pass_Rate": st.column_config.NumberColumn("Pass Rate", format="%.1f"),
+                "Percentile_Rank": st.column_config.TextColumn("Percentile Rank", width="medium"),
+                "Avg_Call_Duration": st.column_config.NumberColumn("Avg Call Duration", format="%.1f"),
+            },
         )
     else:
         agent_performance = agent_performance.sort_values(
@@ -9038,6 +9051,14 @@ if not user_agent_id:
         agent_performance = agent_performance.round(1)
         # Reset index and fill NaN values
         agent_performance = agent_performance.reset_index(drop=True).fillna("")
+        # Ensure clean types after fillna
+        for col in agent_performance.columns:
+            if col == "Agent" or col == "Percentile_Rank":
+                agent_performance[col] = agent_performance[col].astype(str)
+            elif col in ["Total_Calls", "Total_Pass", "Total_Fail"]:
+                agent_performance[col] = agent_performance[col].astype(int)
+            else:
+                agent_performance[col] = agent_performance[col].astype(float)
         # Display as sortable dataframe
         st.dataframe(
             agent_performance,
