@@ -1976,7 +1976,7 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
             effective_max_days = None
         elif MAX_DAYS_TO_LOAD is not None:
             effective_max_days = MAX_DAYS_TO_LOAD
-        
+
         if cached_data and effective_max_days is not None:
             original_count = len(cached_data)
             cached_data = filter_calls_by_date(cached_data, effective_max_days)
@@ -3043,12 +3043,14 @@ def load_all_calls_cached(cache_version=0):
                             # CRITICAL: Filter calls to last 30 days BEFORE storing in session state
                             # Check if user requested a date range that requires all data
                             effective_max_days = None
-                            if st.session_state.get("_load_all_data_for_date_range", False):
+                            if st.session_state.get(
+                                "_load_all_data_for_date_range", False
+                            ):
                                 # User selected a date range outside loaded data - don't filter
                                 effective_max_days = None
                             elif MAX_DAYS_TO_LOAD is not None:
                                 effective_max_days = MAX_DAYS_TO_LOAD
-                            
+
                             if cache_data and effective_max_days is not None:
                                 original_count = len(cache_data)
                                 filtered_cache_data = filter_calls_by_date(
@@ -3557,7 +3559,7 @@ def load_all_calls_cached(cache_version=0):
                 logger.info("Loading all data to satisfy requested date range")
             elif MAX_DAYS_TO_LOAD is not None:
                 effective_max_days = MAX_DAYS_TO_LOAD
-            
+
             if final_call_data and effective_max_days is not None:
                 original_count = len(final_call_data)
                 final_call_data = filter_calls_by_date(
@@ -3613,7 +3615,7 @@ def load_all_calls_cached(cache_version=0):
                 logger.info("Loading all data to satisfy requested date range")
             elif MAX_DAYS_TO_LOAD is not None:
                 effective_max_days = MAX_DAYS_TO_LOAD
-            
+
             if final_call_data and effective_max_days is not None:
                 original_count = len(final_call_data)
                 final_call_data = filter_calls_by_date(
@@ -6897,8 +6899,12 @@ try:
             if requested_range and len(meta_df) > 0:
                 # Check if the loaded data now covers the requested range
                 if "Call Date" in meta_df.columns or "call_date" in meta_df.columns:
-                    date_col = "Call Date" if "Call Date" in meta_df.columns else "call_date"
-                    loaded_dates = pd.to_datetime(meta_df[date_col], errors="coerce").dt.date.dropna()
+                    date_col = (
+                        "Call Date" if "Call Date" in meta_df.columns else "call_date"
+                    )
+                    loaded_dates = pd.to_datetime(
+                        meta_df[date_col], errors="coerce"
+                    ).dt.date.dropna()
                     if len(loaded_dates) > 0:
                         loaded_min = loaded_dates.min()
                         loaded_max = loaded_dates.max()
@@ -6906,7 +6912,9 @@ try:
                         if loaded_min <= req_start and loaded_max >= req_end:
                             # Data now covers the requested range - clear the flag
                             st.session_state["_load_all_data_for_date_range"] = False
-                            logger.info(f"Successfully loaded data covering requested date range {req_start} to {req_end}")
+                            logger.info(
+                                f"Successfully loaded data covering requested date range {req_start} to {req_end}"
+                            )
 
         # Convert call_date to datetime if it's not already (before column rename)
         if "call_date" in meta_df.columns:
@@ -7497,38 +7505,58 @@ with st.sidebar.expander(" Keyboard Shortcuts"):
 
 preset_option = st.sidebar.selectbox(
     "📆 Date Range",
-    options=["All Time", "This Week", "Last 7 Days", "Last 30 Days", "Custom"],
-    index=["All Time", "This Week", "Last 7 Days", "Last 30 Days", "Custom"].index(
+    options=["This Week", "Last 7 Days", "Last 30 Days", "Custom"],
+    index=["This Week", "Last 7 Days", "Last 30 Days", "Custom"].index(
         st.session_state.last_date_preset
     )
     if st.session_state.last_date_preset
-    in ["All Time", "This Week", "Last 7 Days", "Last 30 Days", "Custom"]
-    else 3,  # Default to "Last 30 Days" (index 3) to match data loading default
+    in ["This Week", "Last 7 Days", "Last 30 Days", "Custom"]
+    else 2,  # Default to "Last 30 Days" (index 2) to match data loading default
 )
+
+# Maximum date range allowed (30 days to prevent memory issues)
+MAX_DATE_RANGE_DAYS = 30
 
 if preset_option != "Custom":
     today = datetime.today().date()
-    if preset_option == "All Time":
-        selected_dates = (min(dates), max(dates))
-    elif preset_option == "This Week":
-        selected_dates = (today - timedelta(days=today.weekday()), today)
+    if preset_option == "This Week":
+        week_start = today - timedelta(days=today.weekday())
+        # Ensure week doesn't exceed 30 days
+        if (today - week_start).days > MAX_DATE_RANGE_DAYS:
+            week_start = today - timedelta(days=MAX_DATE_RANGE_DAYS)
+        selected_dates = (week_start, today)
     elif preset_option == "Last 7 Days":
         selected_dates = (today - timedelta(days=7), today)
     elif preset_option == "Last 30 Days":
         selected_dates = (today - timedelta(days=30), today)
     st.session_state.last_date_preset = preset_option  # Save selection
 else:
-    # Restore last custom date range or use default
+    # Restore last custom date range or use default (last 30 days)
     default_date_range = (
         st.session_state.last_date_range
         if st.session_state.last_date_range
         and isinstance(st.session_state.last_date_range, tuple)
-        else (min(dates), max(dates))
+        else (max(min(dates), (max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS))), max(dates))
     )
-    custom_input = st.sidebar.date_input("Select Date Range", value=default_date_range)
+    custom_input = st.sidebar.date_input(
+        f"Select Date Range (max {MAX_DATE_RANGE_DAYS} days)",
+        value=default_date_range,
+        help=f"Maximum date range is {MAX_DATE_RANGE_DAYS} days to prevent memory issues"
+    )
     if isinstance(custom_input, tuple) and len(custom_input) == 2:
         selected_dates = custom_input
-        st.session_state.last_date_range = custom_input  # Save selection
+        # Enforce 30-day maximum
+        days_diff = (selected_dates[1] - selected_dates[0]).days
+        if days_diff > MAX_DATE_RANGE_DAYS:
+            st.sidebar.warning(
+                f"⚠️ Date range limited to {MAX_DATE_RANGE_DAYS} days. "
+                f"Selected range was {days_diff} days. Using last {MAX_DATE_RANGE_DAYS} days from end date."
+            )
+            selected_dates = (
+                selected_dates[1] - timedelta(days=MAX_DATE_RANGE_DAYS),
+                selected_dates[1]
+            )
+        st.session_state.last_date_range = selected_dates  # Save selection
     elif isinstance(custom_input, date):
         selected_dates = (custom_input, custom_input)
         st.session_state.last_date_range = selected_dates  # Save selection
@@ -7539,34 +7567,19 @@ else:
 # Extract start_date and end_date from selected_dates (works for both preset and custom)
 start_date, end_date = selected_dates
 
-# Check if selected date range is outside loaded data range and trigger reload if needed
-available_min_date = min(dates) if dates else None
-available_max_date = max(dates) if dates else None
-if available_min_date and available_max_date:
-    if start_date < available_min_date or end_date > available_max_date:
-        # Selected date range is outside loaded data - need to load more data
-        # Check if we've already triggered a reload for this date range
-        last_reload_date_range = st.session_state.get("_last_reload_date_range", None)
-        current_date_range = (start_date, end_date)
-        
-        if last_reload_date_range != current_date_range:
-            # This is a new date range that requires more data
-            # Set flag to load all data (not just last 30 days)
-            st.session_state["_load_all_data_for_date_range"] = True
-            st.session_state["_requested_date_range"] = current_date_range
-            st.session_state["_last_reload_date_range"] = current_date_range
-            
-            # Clear existing data caches to force reload
-            if "merged_calls" in st.session_state:
-                del st.session_state["merged_calls"]
-            if "s3_cache_result" in st.session_state:
-                del st.session_state["s3_cache_result"]
-            
-            st.sidebar.info(
-                f"📅 **Loading data for selected date range:** {start_date} to {end_date}. "
-                "This may take a moment..."
-            )
-            st.rerun()
+# Final validation: ensure range doesn't exceed 30 days
+days_in_range = (end_date - start_date).days
+if days_in_range > MAX_DATE_RANGE_DAYS:
+    st.sidebar.error(
+        f"⚠️ Date range exceeds {MAX_DATE_RANGE_DAYS} days. "
+        f"Please select a smaller range to avoid memory issues."
+    )
+    # Auto-adjust to last 30 days from end date
+    start_date = end_date - timedelta(days=MAX_DATE_RANGE_DAYS)
+    selected_dates = (start_date, end_date)
+
+# Note: Since we enforce 30-day maximum on all date ranges, we don't need to trigger
+# reloads for date ranges outside loaded data. The 30-day limit ensures memory stays manageable.
 
 # Agent filter (only for admin view)
 if not user_agent_id:
@@ -7775,6 +7788,107 @@ if "Rubric Details" in meta_df.columns:
         selected_failed_codes = []
         rubric_filter_type = "Any Status"
 
+# Day of Week filter
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📅 Additional Filters")
+
+if "last_selected_days" not in st.session_state:
+    st.session_state.last_selected_days = []
+
+day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+default_days = (
+    st.session_state.last_selected_days
+    if st.session_state.last_selected_days
+    and all(day in day_names for day in st.session_state.last_selected_days)
+    else day_names  # Default to all days
+)
+selected_days = st.sidebar.multiselect(
+    " Day of Week",
+    options=day_names,
+    default=default_days,
+    help="Filter calls by day of week",
+)
+st.session_state.last_selected_days = selected_days
+
+# Time of Day filter (hour ranges)
+if "last_time_range" not in st.session_state:
+    st.session_state.last_time_range = (0, 23)
+
+time_range = st.sidebar.slider(
+    " Time of Day (Hour)",
+    min_value=0,
+    max_value=23,
+    value=st.session_state.last_time_range,
+    help="Filter calls by hour of day (24-hour format)",
+)
+st.session_state.last_time_range = time_range
+
+# AHT/Duration filter (if column exists)
+selected_aht_range = None
+if "AHT" in meta_df.columns or "Average Handle Time" in meta_df.columns or "Duration" in meta_df.columns:
+    aht_col = "AHT" if "AHT" in meta_df.columns else ("Average Handle Time" if "Average Handle Time" in meta_df.columns else "Duration")
+    if not meta_df[aht_col].isna().all():
+        aht_min = float(meta_df[aht_col].min())
+        aht_max = float(meta_df[aht_col].max())
+        if "last_aht_range" not in st.session_state:
+            st.session_state.last_aht_range = (aht_min, aht_max)
+        
+        default_aht_range = (
+            st.session_state.last_aht_range
+            if st.session_state.last_aht_range
+            and st.session_state.last_aht_range[0] >= aht_min
+            and st.session_state.last_aht_range[1] <= aht_max
+            else (aht_min, aht_max)
+        )
+        selected_aht_range = st.sidebar.slider(
+            f" {aht_col} Range (seconds)",
+            min_value=aht_min,
+            max_value=aht_max,
+            value=default_aht_range,
+            step=1.0,
+            help=f"Filter calls by {aht_col}",
+        )
+        st.session_state.last_aht_range = selected_aht_range
+
+# Product/Category filter (if column exists)
+selected_products = []
+if "Product" in meta_df.columns:
+    available_products = meta_df["Product"].dropna().unique().tolist()
+    if available_products:
+        if "last_products" not in st.session_state:
+            st.session_state.last_products = []
+        default_products = (
+            st.session_state.last_products
+            if st.session_state.last_products
+            and all(p in available_products for p in st.session_state.last_products)
+            else available_products
+        )
+        selected_products = st.sidebar.multiselect(
+            " Product",
+            options=available_products,
+            default=default_products,
+            help="Filter calls by product",
+        )
+        st.session_state.last_products = selected_products
+elif "Category" in meta_df.columns:
+    available_categories = meta_df["Category"].dropna().unique().tolist()
+    if available_categories:
+        if "last_categories" not in st.session_state:
+            st.session_state.last_categories = []
+        default_categories = (
+            st.session_state.last_categories
+            if st.session_state.last_categories
+            and all(c in available_categories for c in st.session_state.last_categories)
+            else available_categories
+        )
+        selected_products = st.sidebar.multiselect(
+            " Category",
+            options=available_categories,
+            default=default_categories,
+            help="Filter calls by category",
+        )
+        st.session_state.last_categories = selected_products
+
 # Performance alerts threshold
 st.sidebar.markdown("---")
 alert_threshold = st.sidebar.slider(
@@ -7884,6 +7998,38 @@ if selected_failed_codes:
                         break
 
     filtered_df = filtered_df[failed_mask].copy()
+
+# Apply Day of Week filter
+if selected_days and len(selected_days) < len(day_names):
+    if "Call Date" in filtered_df.columns:
+        filtered_df["DayOfWeek"] = pd.to_datetime(filtered_df["Call Date"]).dt.day_name()
+        filtered_df = filtered_df[filtered_df["DayOfWeek"].isin(selected_days)].copy()
+        filtered_df = filtered_df.drop(columns=["DayOfWeek"], errors="ignore")
+
+# Apply Time of Day filter
+if time_range and (time_range[0] > 0 or time_range[1] < 23):
+    if "Call Date" in filtered_df.columns:
+        filtered_df["Hour"] = pd.to_datetime(filtered_df["Call Date"]).dt.hour
+        filtered_df = filtered_df[
+            (filtered_df["Hour"] >= time_range[0]) & (filtered_df["Hour"] <= time_range[1])
+        ].copy()
+        filtered_df = filtered_df.drop(columns=["Hour"], errors="ignore")
+
+# Apply AHT/Duration filter
+if selected_aht_range:
+    aht_col = "AHT" if "AHT" in filtered_df.columns else ("Average Handle Time" if "Average Handle Time" in filtered_df.columns else "Duration")
+    if aht_col in filtered_df.columns:
+        filtered_df = filtered_df[
+            (filtered_df[aht_col] >= selected_aht_range[0])
+            & (filtered_df[aht_col] <= selected_aht_range[1])
+        ].copy()
+
+# Apply Product/Category filter
+if selected_products:
+    if "Product" in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df["Product"].isin(selected_products)].copy()
+    elif "Category" in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df["Category"].isin(selected_products)].copy()
 
 # Calculate overall averages for comparison (from all data, not filtered)
 if show_comparison and user_agent_id:
