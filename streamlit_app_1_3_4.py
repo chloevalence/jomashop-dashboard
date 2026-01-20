@@ -8755,15 +8755,51 @@ except Exception as e:
         st.code(traceback.format_exc())
     st.stop()
 
+# LAZY LOADING: Only create DataFrame when user clicks "Load Data" button
+# Store call_data in session state for later use (without processing)
+if call_data and isinstance(call_data, list) and len(call_data) > 0:
+    if "_call_data_for_df" not in st.session_state:
+        st.session_state["_call_data_for_df"] = call_data
+        logger.info(
+            f"Stored {len(call_data)} calls in session state for lazy DataFrame creation"
+        )
+
+# Check if user has requested DataFrame creation
+if not st.session_state.get("lazy_load_data", False):
+    # Show placeholder message - DataFrame not created yet
+    st.info(
+        "💡 **Click 'Load Data' in the sidebar to create the DataFrame and begin analysis.**"
+    )
+    st.info("This will process the loaded data and may take 10-20 seconds.")
+    # Stop execution here - don't create DataFrame or process anything
+    st.stop()
+
+# User has clicked "Load Data" - proceed with DataFrame creation
+# Send heartbeat before DataFrame creation validation starts
+send_heartbeat(force=True)
+
+# Get call_data from session state if available, otherwise use the variable
+if "_call_data_for_df" in st.session_state:
+    call_data = st.session_state["_call_data_for_df"]
+    logger.info(f"Using call_data from session state: {len(call_data)} calls")
+
 # CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
 # This ensures cached data with old agent IDs gets normalized consistently
 # This fixes the issue where cached DataFrames have wrong agent IDs
 # CRITICAL FIX: Add type checking to ensure call_data is a list before operations
 # Wrap in try/except to prevent crashes during normalization
+# DEFERRED: Only normalize when user clicks "Load Data" to prevent crashes
 try:
     if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        # Show progress indicator for agent normalization
+        norm_progress = st.progress(0)
+        norm_status = st.status("Normalizing agent IDs...", expanded=False)
+
         agent_normalized_count = 0
-        for call in call_data:
+        total_calls = len(call_data)
+        last_heartbeat_time = time.time()
+
+        for idx, call in enumerate(call_data):
             # CRITICAL: Defensive check for each call item
             if isinstance(call, dict) and "agent" in call:
                 try:
@@ -8792,10 +8828,26 @@ try:
                     )
                     continue
 
-    if agent_normalized_count > 0:
-        logger.info(
-            f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
-        )
+            # Update progress and send heartbeats
+            if (idx + 1) % 1000 == 0 or (idx + 1) % 5000 == 0:
+                progress_pct = (idx + 1) / total_calls
+                norm_progress.progress(progress_pct)
+                send_heartbeat()
+                last_heartbeat_time = time.time()
+            # Also send heartbeat every 2 seconds
+            elif time.time() - last_heartbeat_time >= 2:
+                send_heartbeat()
+                last_heartbeat_time = time.time()
+
+        norm_progress.progress(1.0)
+        norm_status.update(label="Agent ID normalization complete", state="complete")
+        norm_progress.empty()
+        norm_status = None
+
+        if agent_normalized_count > 0:
+            logger.info(
+                f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
+            )
 except Exception as norm_error:
     logger.exception(f" CRITICAL: Agent normalization failed: {norm_error}")
     logger.warning(
@@ -8804,38 +8856,15 @@ except Exception as norm_error:
     logger.debug(
         f"call_data type: {type(call_data)}, len: {len(call_data) if call_data else 0}"
     )
+    # Clean up progress indicators on error
+    if "norm_progress" in locals():
+        norm_progress.empty()
+    if "norm_status" in locals() and norm_status is not None:
+        norm_status = None
 
 # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
 # Handle None, empty list, or invalid types safely
 # Wrap in try/except to prevent crashes during DataFrame creation
-
-# LAZY LOADING: Only create DataFrame when user clicks "Load Data" button
-# Store call_data in session state for later use
-if call_data and isinstance(call_data, list) and len(call_data) > 0:
-    if "_call_data_for_df" not in st.session_state:
-        st.session_state["_call_data_for_df"] = call_data
-        logger.info(
-            f"Stored {len(call_data)} calls in session state for lazy DataFrame creation"
-        )
-
-# Check if user has requested DataFrame creation
-if not st.session_state.get("lazy_load_data", False):
-    # Show placeholder message - DataFrame not created yet
-    st.info(
-        "💡 **Click 'Load Data' in the sidebar to create the DataFrame and begin analysis.**"
-    )
-    st.info("This will process the loaded data and may take 10-20 seconds.")
-    # Stop execution here - don't create DataFrame or process anything
-    st.stop()
-
-# User has clicked "Load Data" - proceed with DataFrame creation
-# Send heartbeat before DataFrame creation validation starts
-send_heartbeat(force=True)
-
-# Get call_data from session state if available, otherwise use the variable
-if "_call_data_for_df" in st.session_state:
-    call_data = st.session_state["_call_data_for_df"]
-    logger.info(f"Using call_data from session state: {len(call_data)} calls")
 
 try:
     if call_data and isinstance(call_data, list) and len(call_data) > 0:
