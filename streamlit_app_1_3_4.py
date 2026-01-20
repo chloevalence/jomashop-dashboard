@@ -6757,19 +6757,19 @@ try:
                         "Annotating the chaos…",
                         "Crunching the numbers…",
                     ]
-                    
+
                     # Try to load with better error visibility
                     loading_placeholder = st.empty()
-                    
+
                     # Use cache_version to force cache refresh when refresh completes
                     cache_version = st.session_state.get("_cache_version", 0)
-                    
+
                     # Set up threading for loading with message updates
                     result_queue = queue.Queue()
                     exception_queue = queue.Queue()
                     message_queue = queue.Queue()
                     stop_flag = threading.Event()
-                    
+
                     def load_data_thread():
                         """Load data in a separate thread"""
                         try:
@@ -6777,7 +6777,7 @@ try:
                             result_queue.put(result)
                         except Exception as e:
                             exception_queue.put(e)
-                    
+
                     def message_cycling_thread():
                         """Cycle through loading messages"""
                         message_idx = 0
@@ -6789,14 +6789,16 @@ try:
                             message_idx = int(elapsed / 2) % len(loading_messages)
                             message_queue.put(message_idx)
                             time.sleep(0.5)  # Check every 0.5 seconds
-                    
+
                     # Start threads
                     load_thread = threading.Thread(target=load_data_thread, daemon=True)
-                    message_thread = threading.Thread(target=message_cycling_thread, daemon=True)
-                    
+                    message_thread = threading.Thread(
+                        target=message_cycling_thread, daemon=True
+                    )
+
                     load_thread.start()
                     message_thread.start()
-                    
+
                     # Display cycling messages while loading
                     last_message_idx = -1
                     while load_thread.is_alive():
@@ -6808,28 +6810,28 @@ try:
                                     f'<div style="text-align: center; padding: 20px;">'
                                     f'<div style="font-size: 18px; color: #1f77b4;">{loading_messages[message_idx]}</div>'
                                     f'<div style="margin-top: 10px;">⏳</div>'
-                                    f'</div>',
-                                    unsafe_allow_html=True
+                                    f"</div>",
+                                    unsafe_allow_html=True,
                                 )
                                 last_message_idx = message_idx
                         except queue.Empty:
                             pass
-                        
+
                         time.sleep(0.2)  # Small delay to avoid busy waiting
-                    
+
                     # Stop message thread
                     stop_flag.set()
-                    
+
                     # Wait for load thread to finish
                     load_thread.join(timeout=1.0)
-                    
+
                     # Check for exceptions
                     try:
                         exception = exception_queue.get_nowait()
                         raise exception
                     except queue.Empty:
                         pass
-                    
+
                     # Get result
                     try:
                         call_data, errors = result_queue.get(timeout=0.1)
@@ -7665,18 +7667,23 @@ if date_range_mode == "Last Week":
         week_end = st.session_state.current_date_range_end
 
     # Navigation buttons for week
-    col1, col2, col3 = st.sidebar.columns([1, 2, 1])
+    col1, col2, col3 = st.sidebar.columns([1, 3, 1], gap="small")
     with col1:
-        if st.button("◀ Week", help="Go back one week"):
+        if st.button("◀", help="Go back one week", use_container_width=True):
             week_start = week_start - timedelta(days=7)
             week_end = week_end - timedelta(days=7)
             st.session_state.current_date_range_start = week_start
             st.session_state.current_date_range_end = week_end
             st.rerun()
     with col2:
-        st.sidebar.write(f"**{week_start} to {week_end}**")
+        st.sidebar.markdown(
+            f'<div style="text-align: center; font-size: 0.9em; padding: 0.3em 0;">'
+            f'<strong>{week_start.strftime("%m/%d")} to {week_end.strftime("%m/%d")}</strong>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     with col3:
-        if st.button("Week ▶", help="Go forward one week"):
+        if st.button("▶", help="Go forward one week", use_container_width=True):
             # Don't go beyond today
             new_week_start = week_start + timedelta(days=7)
             new_week_end = week_end + timedelta(days=7)
@@ -7706,18 +7713,23 @@ elif date_range_mode == "Last Month":
         month_end = st.session_state.current_date_range_end
 
     # Navigation buttons for month
-    col1, col2, col3 = st.sidebar.columns([1, 2, 1])
+    col1, col2, col3 = st.sidebar.columns([1, 3, 1], gap="small")
     with col1:
-        if st.button("◀ Month", help="Go back one month"):
+        if st.button("◀", help="Go back one month", use_container_width=True):
             month_start = month_start - timedelta(days=30)
             month_end = month_end - timedelta(days=30)
             st.session_state.current_date_range_start = month_start
             st.session_state.current_date_range_end = month_end
             st.rerun()
     with col2:
-        st.sidebar.write(f"**{month_start} to {month_end}**")
+        st.sidebar.markdown(
+            f'<div style="text-align: center; font-size: 0.9em; padding: 0.3em 0;">'
+            f'<strong>{month_start.strftime("%m/%d")} to {month_end.strftime("%m/%d")}</strong>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     with col3:
-        if st.button("Month ▶", help="Go forward one month"):
+        if st.button("▶", help="Go forward one month", use_container_width=True):
             # Don't go beyond today
             new_month_start = month_start + timedelta(days=30)
             new_month_end = month_end + timedelta(days=30)
