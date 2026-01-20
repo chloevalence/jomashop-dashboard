@@ -6490,7 +6490,8 @@ if not data_already_loaded:
             # Get S3 bucket name from secrets
             s3_bucket_name = st.secrets["s3"]["bucket_name"]
 
-            status_text.text(" Testing S3 connection...")
+            # Testing message removed - cycling messages will show instead
+            # status_text.text(" Testing S3 connection...")
             logger.debug(f"Testing connection to bucket: {s3_bucket_name}")
 
             # Quick test - just check if we can access the bucket with timeout
@@ -6760,9 +6761,6 @@ try:
                         "Crunching the numbers…",
                     ]
 
-                    # Try to load with better error visibility
-                    loading_placeholder = st.empty()
-
                     # Use cache_version to force cache refresh when refresh completes
                     cache_version = st.session_state.get("_cache_version", 0)
 
@@ -6801,20 +6799,14 @@ try:
                     load_thread.start()
                     message_thread.start()
 
-                    # Display cycling messages while loading
+                    # Display cycling messages while loading using status_text (same location as old messages)
                     last_message_idx = -1
                     while load_thread.is_alive():
                         # Update message if changed
                         try:
                             message_idx = message_queue.get_nowait()
                             if message_idx != last_message_idx:
-                                loading_placeholder.markdown(
-                                    f'<div style="text-align: center; padding: 20px;">'
-                                    f'<div style="font-size: 18px; color: #1f77b4;">{loading_messages[message_idx]}</div>'
-                                    f'<div style="margin-top: 10px;">⏳</div>'
-                                    f"</div>",
-                                    unsafe_allow_html=True,
-                                )
+                                status_text.text(f" {loading_messages[message_idx]}")
                                 last_message_idx = message_idx
                         except queue.Empty:
                             pass
