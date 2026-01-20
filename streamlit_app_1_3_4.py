@@ -6832,32 +6832,10 @@ try:
                 )
         # If call_data exists but we don't need to show processing messages, just continue silently
         # The data is loaded and will be used below
-    else:
-        # call_data is empty or falsy - show error
-        st.error(" No call data found!")
-        st.error("Possible issues:")
-        st.error("1. No CSV files in S3 bucket (check bucket name and prefix)")
-        st.error("2. CSV files couldn't be parsed")
-        st.error("3. Check the prefix path if CSV files are in a subfolder")
-        st.stop()
-except Exception as e:
-    status_text.empty()
-    st.error(f" Error loading data: {e}")
-    st.error("Please check:")
-    st.error("1. S3 credentials in secrets.toml")
-    st.error("2. Bucket name and region")
-    st.error("3. AWS permissions")
-    import traceback
-
-    with st.expander("Show full error"):
-        st.code(traceback.format_exc())
-    st.stop()
-
-    # CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
-    # This ensures cached data with old agent IDs gets normalized consistently
-    # This fixes the issue where cached DataFrames have wrong agent IDs
-    # CRITICAL FIX: Add type checking to ensure call_data is a list before operations
-    if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        
+        # CRITICAL: Normalize all agent IDs in call_data BEFORE creating DataFrame
+        # This ensures cached data with old agent IDs gets normalized consistently
+        # This fixes the issue where cached DataFrames have wrong agent IDs
         agent_normalized_count = 0
         for call in call_data:
             if isinstance(call, dict) and "agent" in call:
@@ -6874,25 +6852,44 @@ except Exception as e:
                     call["Agent"] = normalized_agent
                     agent_normalized_count += 1
 
-    if agent_normalized_count > 0:
-        logger.info(
-            f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
-        )
+        if agent_normalized_count > 0:
+            logger.info(
+                f" Normalized {agent_normalized_count} agent IDs before DataFrame creation"
+            )
 
-    # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
-    # Handle None, empty list, or invalid types safely
-    if call_data and isinstance(call_data, list) and len(call_data) > 0:
+        # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
+        # Handle None, empty list, or invalid types safely
         meta_df = pd.DataFrame(call_data)
-    else:
-        # Create empty DataFrame with expected structure if no data
-        logger.warning("No valid call_data available, creating empty DataFrame")
-        meta_df = pd.DataFrame()
 
-    # Convert call_date to datetime if it's not already (before column rename)
-    if "call_date" in meta_df.columns:
-        # If call_date is already datetime, keep it; otherwise try to parse
-        if meta_df["call_date"].dtype == "object":
-            meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
+        # Convert call_date to datetime if it's not already (before column rename)
+        if "call_date" in meta_df.columns:
+            # If call_date is already datetime, keep it; otherwise try to parse
+            if meta_df["call_date"].dtype == "object":
+                meta_df["call_date"] = pd.to_datetime(meta_df["call_date"], errors="coerce")
+    else:
+        # call_data is empty or falsy - show error
+        st.error(" No call data found!")
+        st.error("Possible issues:")
+        st.error("1. No CSV files in S3 bucket (check bucket name and prefix)")
+        st.error("2. CSV files couldn't be parsed")
+        st.error("3. Check the prefix path if CSV files are in a subfolder")
+        st.stop()
+        # Create empty DataFrame to prevent NameError
+        meta_df = pd.DataFrame()
+except Exception as e:
+    status_text.empty()
+    st.error(f" Error loading data: {e}")
+    st.error("Please check:")
+    st.error("1. S3 credentials in secrets.toml")
+    st.error("2. Bucket name and region")
+    st.error("3. AWS permissions")
+    import traceback
+
+    with st.expander("Show full error"):
+        st.code(traceback.format_exc())
+    st.stop()
+    # Create empty DataFrame to prevent NameError if execution somehow continues
+    meta_df = pd.DataFrame()
 
 # --- ANONYMIZATION FUNCTIONS ---
 # Note: is_anonymous_user is already defined earlier in the code
