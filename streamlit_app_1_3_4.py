@@ -60,6 +60,100 @@ MAX_FILES_FOR_TESTING = None  # Set to None to disable limit
 MAX_DAYS_TO_LOAD = 30  # Load only calls from last 30 days
 
 
+def filter_calls_by_date_range(call_data, start_date, end_date):
+    """Filter calls to only include those within a specific date range.
+
+    Args:
+        call_data: List of call dictionaries
+        start_date: Start date (date object)
+        end_date: End date (date object)
+
+    Returns:
+        Filtered list of calls, or original list if dates are None
+    """
+    if not call_data or start_date is None or end_date is None:
+        return call_data
+
+    # Convert date objects to datetime for comparison
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+
+    original_count = len(call_data)
+    filtered_calls = []
+
+    for call in call_data:
+        # Try to get call date from various possible fields
+        call_date = None
+        date_fields_to_check = [
+            "Call Date",
+            "call_date",
+            "date",
+            "timestamp",
+            "Date",
+            "callDate",
+            "CallDate",
+        ]
+        # Also check any field with "date" in the name (case insensitive)
+        for key in call.keys():
+            if "date" in key.lower() and key not in date_fields_to_check:
+                date_fields_to_check.append(key)
+
+        for date_field in date_fields_to_check:
+            if date_field in call and call[date_field]:
+                try:
+                    date_value = call[date_field]
+                    # Handle different date formats
+                    if isinstance(date_value, str):
+                        try:
+                            date_str = (
+                                date_value.split("T")[0]
+                                if "T" in date_value
+                                else date_value.split(" ")[0]
+                            )
+                            call_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        except ValueError:
+                            try:
+                                call_date = datetime.strptime(
+                                    date_value, "%Y-%m-%d %H:%M:%S"
+                                )
+                            except ValueError:
+                                try:
+                                    call_date = datetime.strptime(
+                                        date_value, "%m/%d/%Y"
+                                    )
+                                except ValueError:
+                                    continue
+                    elif isinstance(date_value, datetime):
+                        call_date = date_value
+                    elif isinstance(date_value, (int, float)):
+                        call_date = datetime.fromtimestamp(date_value)
+                    if call_date:
+                        break
+                except (ValueError, TypeError, AttributeError):
+                    continue
+
+        # If we found a date and it's within the range, include the call
+        if call_date:
+            call_date_only = (
+                call_date.date() if isinstance(call_date, datetime) else call_date
+            )
+            if isinstance(call_date_only, date):
+                if start_date <= call_date_only <= end_date:
+                    filtered_calls.append(call)
+        else:
+            # Include calls without dates to avoid data loss
+            filtered_calls.append(call)
+
+    filtered_count = len(filtered_calls)
+    if filtered_count < original_count:
+        logger.info(
+            f"Filtered calls from {original_count} to {filtered_count} "
+            f"(keeping dates from {start_date} to {end_date})"
+        )
+
+    return filtered_calls
+
+
 def filter_calls_by_date(call_data, max_days):
     """Filter calls to only include those from the last N days.
 
@@ -1973,13 +2067,29 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
         # CRITICAL: Apply date filtering even to cached data (in case cache was created before filtering was added)
         # Unless user has requested a specific date range that requires all data
         effective_max_days = None
+        requested_date_range = None
         if st.session_state.get("_load_all_data_for_date_range", False):
-            # User selected a date range outside loaded data - don't filter cached data
+            # User selected a date range outside loaded data - filter to requested range
             effective_max_days = None
+            requested_date_range = st.session_state.get("_requested_date_range", None)
         elif MAX_DAYS_TO_LOAD is not None:
             effective_max_days = MAX_DAYS_TO_LOAD
 
-        if cached_data and effective_max_days is not None:
+        # First apply date range filter if requested
+        if cached_data and requested_date_range:
+            req_start, req_end = requested_date_range
+            original_count = len(cached_data)
+            cached_data = filter_calls_by_date_range(cached_data, req_start, req_end)
+            filtered_count = len(cached_data)
+            if filtered_count < original_count:
+                logger.info(
+                    f"Filtered session cache from {original_count} to {filtered_count} calls "
+                    f"(date range: {req_start} to {req_end})"
+                )
+                # Update session state with filtered data
+                st.session_state[s3_cache_key] = (cached_data, cached_errors)
+        # Otherwise apply max days filter if set
+        elif cached_data and effective_max_days is not None:
             original_count = len(cached_data)
             cached_data = filter_calls_by_date(cached_data, effective_max_days)
             filtered_count = len(cached_data)
@@ -3555,14 +3665,34 @@ def load_all_calls_cached(cache_version=0):
             # Filter calls to last 30 days if MAX_DAYS_TO_LOAD is set
             # Unless user has requested a specific date range that requires all data
             effective_max_days = None
+            requested_date_range = None
             if st.session_state.get("_load_all_data_for_date_range", False):
-                # User selected a date range outside loaded data - load all data
+                # User selected a date range outside loaded data - load all data, then filter to requested range
                 effective_max_days = None
-                logger.info("Loading all data to satisfy requested date range")
+                requested_date_range = st.session_state.get(
+                    "_requested_date_range", None
+                )
+                logger.info(
+                    f"Loading all data to satisfy requested date range: {requested_date_range}"
+                )
             elif MAX_DAYS_TO_LOAD is not None:
                 effective_max_days = MAX_DAYS_TO_LOAD
 
-            if final_call_data and effective_max_days is not None:
+            # First apply date range filter if requested
+            if final_call_data and requested_date_range:
+                req_start, req_end = requested_date_range
+                original_count = len(final_call_data)
+                final_call_data = filter_calls_by_date_range(
+                    final_call_data, req_start, req_end
+                )
+                filtered_count = len(final_call_data)
+                if filtered_count < original_count:
+                    logger.info(
+                        f"Filtered {original_count} calls to {filtered_count} calls "
+                        f"(date range: {req_start} to {req_end})"
+                    )
+            # Otherwise apply max days filter if set
+            elif final_call_data and effective_max_days is not None:
                 original_count = len(final_call_data)
                 final_call_data = filter_calls_by_date(
                     final_call_data, effective_max_days
@@ -3611,14 +3741,34 @@ def load_all_calls_cached(cache_version=0):
             # Filter calls to last 30 days if MAX_DAYS_TO_LOAD is set
             # Unless user has requested a specific date range that requires all data
             effective_max_days = None
+            requested_date_range = None
             if st.session_state.get("_load_all_data_for_date_range", False):
-                # User selected a date range outside loaded data - load all data
+                # User selected a date range outside loaded data - load all data, then filter to requested range
                 effective_max_days = None
-                logger.info("Loading all data to satisfy requested date range")
+                requested_date_range = st.session_state.get(
+                    "_requested_date_range", None
+                )
+                logger.info(
+                    f"Loading all data to satisfy requested date range: {requested_date_range}"
+                )
             elif MAX_DAYS_TO_LOAD is not None:
                 effective_max_days = MAX_DAYS_TO_LOAD
 
-            if final_call_data and effective_max_days is not None:
+            # First apply date range filter if requested
+            if final_call_data and requested_date_range:
+                req_start, req_end = requested_date_range
+                original_count = len(final_call_data)
+                final_call_data = filter_calls_by_date_range(
+                    final_call_data, req_start, req_end
+                )
+                filtered_count = len(final_call_data)
+                if filtered_count < original_count:
+                    logger.info(
+                        f"Filtered {original_count} calls to {filtered_count} calls "
+                        f"(date range: {req_start} to {req_end})"
+                    )
+            # Otherwise apply max days filter if set
+            elif final_call_data and effective_max_days is not None:
                 original_count = len(final_call_data)
                 final_call_data = filter_calls_by_date(
                     final_call_data, effective_max_days
@@ -6786,7 +6936,7 @@ try:
                     message_idx = 0
                     start_time = time.time()
                     last_update_time = start_time
-                    
+
                     while load_thread.is_alive():
                         # Update message every 2 seconds
                         current_time = time.time()
@@ -7575,6 +7725,17 @@ st.sidebar.header(" Filter Data")
 # Date filter
 min_date = filter_df["Call Date"].min()
 max_date = filter_df["Call Date"].max()
+# Convert to date objects for consistent comparison
+if isinstance(min_date, pd.Timestamp):
+    min_date = min_date.date()
+elif hasattr(min_date, "date"):
+    min_date = min_date.date()
+if isinstance(max_date, pd.Timestamp):
+    max_date = max_date.date()
+elif hasattr(max_date, "date"):
+    max_date = max_date.date()
+# Get latest date from loaded data
+latest_data_date = max_date
 dates = filter_df["Call Date"].dropna().sort_values().dt.date.unique().tolist()
 
 if not dates:
@@ -7627,16 +7788,14 @@ date_range_mode = st.sidebar.radio(
 )
 st.session_state.date_range_mode = date_range_mode
 
-today = datetime.today().date()
-
 if date_range_mode == "Last Week":
     # Initialize or get current week range
     if (
         st.session_state.current_date_range_start is None
         or st.session_state.current_date_range_end is None
     ):
-        week_start = today - timedelta(days=7)
-        week_end = today
+        week_start = latest_data_date - timedelta(days=7)
+        week_end = latest_data_date
         st.session_state.current_date_range_start = week_start
         st.session_state.current_date_range_end = week_end
     else:
@@ -7661,17 +7820,13 @@ if date_range_mode == "Last Week":
         )
     with col3:
         if st.button("▶", help="Go forward one week", use_container_width=True):
-            # Don't go beyond today
             new_week_start = week_start + timedelta(days=7)
             new_week_end = week_end + timedelta(days=7)
-            if new_week_end <= today:
-                week_start = new_week_start
-                week_end = new_week_end
-                st.session_state.current_date_range_start = week_start
-                st.session_state.current_date_range_end = week_end
-                st.rerun()
-            else:
-                st.sidebar.warning("Cannot go beyond today")
+            week_start = new_week_start
+            week_end = new_week_end
+            st.session_state.current_date_range_start = week_start
+            st.session_state.current_date_range_end = week_end
+            st.rerun()
 
     selected_dates = (week_start, week_end)
 
@@ -7681,8 +7836,8 @@ elif date_range_mode == "Last Month":
         st.session_state.current_date_range_start is None
         or st.session_state.current_date_range_end is None
     ):
-        month_start = today - timedelta(days=30)
-        month_end = today
+        month_start = latest_data_date - timedelta(days=30)
+        month_end = latest_data_date
         st.session_state.current_date_range_start = month_start
         st.session_state.current_date_range_end = month_end
     else:
@@ -7707,17 +7862,13 @@ elif date_range_mode == "Last Month":
         )
     with col3:
         if st.button("▶", help="Go forward one month", use_container_width=True):
-            # Don't go beyond today
             new_month_start = month_start + timedelta(days=30)
             new_month_end = month_end + timedelta(days=30)
-            if new_month_end <= today:
-                month_start = new_month_start
-                month_end = new_month_end
-                st.session_state.current_date_range_start = month_start
-                st.session_state.current_date_range_end = month_end
-                st.rerun()
-            else:
-                st.sidebar.warning("Cannot go beyond today")
+            month_start = new_month_start
+            month_end = new_month_end
+            st.session_state.current_date_range_start = month_start
+            st.session_state.current_date_range_end = month_end
+            st.rerun()
 
     selected_dates = (month_start, month_end)
 
@@ -7808,8 +7959,32 @@ if days_in_range > MAX_DATE_RANGE_DAYS:
         st.session_state.current_date_range_start = start_date
         st.session_state.current_date_range_end = end_date
 
-# Note: Since we enforce 30-day maximum on all date ranges, we don't need to trigger
-# reloads for date ranges outside loaded data. The 30-day limit ensures memory stays manageable.
+# Check if selected date range extends beyond loaded data and trigger reload if needed
+# Get the date range of currently loaded meta_df
+if "Call Date" in meta_df.columns and not meta_df["Call Date"].isna().all():
+    loaded_min_date = meta_df["Call Date"].min()
+    loaded_max_date = meta_df["Call Date"].max()
+    # Convert to date objects for comparison
+    if isinstance(loaded_min_date, pd.Timestamp):
+        loaded_min_date = loaded_min_date.date()
+    elif hasattr(loaded_min_date, "date"):
+        loaded_min_date = loaded_min_date.date()
+    if isinstance(loaded_max_date, pd.Timestamp):
+        loaded_max_date = loaded_max_date.date()
+    elif hasattr(loaded_max_date, "date"):
+        loaded_max_date = loaded_max_date.date()
+
+    # Check if selected range extends beyond loaded data
+    if start_date < loaded_min_date or end_date > loaded_max_date:
+        # Request data reload for the selected 30-day window
+        st.session_state._load_all_data_for_date_range = True
+        st.session_state._requested_date_range = (start_date, end_date)
+        # Clear caches to force reload
+        if "merged_calls" in st.session_state:
+            del st.session_state.merged_calls
+        if "s3_cache_result" in st.session_state:
+            del st.session_state.s3_cache_result
+        st.rerun()
 
 # Agent filter (only for admin view)
 if not user_agent_id:
