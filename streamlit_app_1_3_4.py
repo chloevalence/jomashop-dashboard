@@ -3402,9 +3402,22 @@ def load_all_calls_cached(cache_version=0):
             # Skip session cache if user requested a date range outside loaded data
             skip_session_cache = st.session_state.get("_load_all_data_for_date_range", False)
             
-            # Also check if we need a different month than what's in session cache
+            # If we need to load a different month, skip session cache entirely
             requested_range = st.session_state.get("_requested_date_range", None)
-            if requested_range and not skip_session_cache:
+            if requested_range:
+                # Always skip session cache when we have a specific date range request
+                # This ensures we load the correct month from S3
+                skip_session_cache = True
+                # Also clear session cache to be safe
+                if s3_cache_key in st.session_state:
+                    del st.session_state[s3_cache_key]
+                if s3_timestamp_key in st.session_state:
+                    del st.session_state[s3_timestamp_key]
+                logger.info(
+                    f"Requested date range {requested_range} - skipping session cache to load correct month"
+                )
+            elif not skip_session_cache:
+                # Only check month mismatch if we're not already skipping session cache
                 # Check if session cache is for the wrong month
                 if s3_cache_key in st.session_state:
                     cached_result = st.session_state[s3_cache_key]
@@ -7355,8 +7368,26 @@ try:
             )
             # Check if data is already loaded and not stale - skip reload if so
             # Only use cached data if it's substantial (at least 100 calls) to avoid using stale/partial data
+            # BUT: Skip if we need to load a different month
+            requested_range = st.session_state.get("_requested_date_range", None)
+            should_skip_session_cache = (
+                st.session_state.get("_load_all_data_for_date_range", False)
+                or requested_range is not None
+            )
+            
+            if should_skip_session_cache:
+                logger.info(
+                    f"Skipping session cache - need to load data for requested date range: {requested_range}"
+                )
+                # Clear session cache to ensure we load fresh data
+                if "_s3_cache_result" in st.session_state:
+                    del st.session_state["_s3_cache_result"]
+                if "_s3_cache_timestamp" in st.session_state:
+                    del st.session_state["_s3_cache_timestamp"]
+            
             if (
-                "_s3_cache_result" in st.session_state
+                not should_skip_session_cache
+                and "_s3_cache_result" in st.session_state
                 and st.session_state["_s3_cache_result"] is not None
                 and not st.session_state.get("reload_all_triggered", False)
                 and not st.session_state.get("_data_load_in_progress", False)
