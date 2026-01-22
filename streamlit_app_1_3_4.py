@@ -29,6 +29,7 @@ import warnings
 # Memory tracking imports
 try:
     import psutil
+
     HAS_PSUTIL = True
 except ImportError:
     HAS_PSUTIL = False
@@ -36,7 +37,7 @@ except ImportError:
 
 def log_memory_usage(context=""):
     """Log current memory usage for debugging.
-    
+
     Args:
         context: Description of what's happening (e.g., "Before loading monthly cache")
     """
@@ -50,16 +51,31 @@ def log_memory_usage(context=""):
                 f"💾 Memory [{context}]: {memory_mb:.1f} MB ({memory_percent:.1f}% of system)"
             )
         else:
-            # Fallback to basic tracking
-            import sys
-            # Estimate memory for session state
-            session_size = sum(
-                sys.getsizeof(v) if hasattr(v, "__sizeof__") else 0
-                for v in st.session_state.values()
-            )
-            logger.info(
-                f"💾 Memory [{context}]: Session state ~{session_size / 1024 / 1024:.1f} MB (psutil not available)"
-            )
+            # Fallback: try resource module for process memory, then session state estimate
+            try:
+                import resource
+
+                # Get process memory usage in KB, convert to MB
+                memory_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                # On macOS/Linux, ru_maxrss is in KB; on some systems it's in bytes
+                if memory_kb < 1000000:  # If less than 1GB, assume it's in KB
+                    memory_mb = memory_kb / 1024
+                else:  # Otherwise assume bytes
+                    memory_mb = memory_kb / 1024 / 1024
+                logger.info(
+                    f"💾 Memory [{context}]: ~{memory_mb:.1f} MB (resource module, psutil not available)"
+                )
+            except (ImportError, AttributeError):
+                # Final fallback: estimate session state
+                import sys
+
+                session_size = sum(
+                    sys.getsizeof(v) if hasattr(v, "__sizeof__") else 0
+                    for v in st.session_state.values()
+                )
+                logger.info(
+                    f"💾 Memory [{context}]: Session state ~{session_size / 1024 / 1024:.1f} MB (psutil/resource not available)"
+                )
     except Exception as e:
         logger.debug(f"Could not log memory usage: {e}")
 
@@ -3749,11 +3765,15 @@ def load_all_calls_cached(cache_version=0):
                     )
 
                 # Load the specific month's cache
-                log_memory_usage(f"Before loading month cache {load_year}-{load_month:02d}")
+                log_memory_usage(
+                    f"Before loading month cache {load_year}-{load_month:02d}"
+                )
                 month_calls, month_errors, month_timestamp = load_month_cache_from_s3(
                     load_year, load_month
                 )
-                log_memory_usage(f"After loading month cache {load_year}-{load_month:02d} ({len(month_calls) if month_calls else 0} calls)")
+                log_memory_usage(
+                    f"After loading month cache {load_year}-{load_month:02d} ({len(month_calls) if month_calls else 0} calls)"
+                )
 
                 if month_calls is not None:
                     log_memory_usage(f"Month cache loaded ({len(month_calls)} calls)")
@@ -3883,7 +3903,9 @@ def load_all_calls_cached(cache_version=0):
                             s3_cache_result[0], start_date, end_date
                         )
                         filtered_count = len(filtered_calls)
-                        log_memory_usage(f"After filtering ({original_count} -> {filtered_count} calls)")
+                        log_memory_usage(
+                            f"After filtering ({original_count} -> {filtered_count} calls)"
+                        )
                         if filtered_count < original_count:
                             logger.info(
                                 f"Filtered month cache from {original_count} to {filtered_count} calls "
@@ -3918,7 +3940,9 @@ def load_all_calls_cached(cache_version=0):
                     st.session_state[s3_cache_key] = s3_cache_result
                     if s3_cache_timestamp:
                         st.session_state[s3_timestamp_key] = s3_cache_timestamp
-                    log_memory_usage(f"After storing in session state ({len(s3_cache_result[0])} calls)")
+                    log_memory_usage(
+                        f"After storing in session state ({len(s3_cache_result[0])} calls)"
+                    )
 
         # CRITICAL: If S3 cache exists, check if Streamlit cache is stale
         # (Skip this check if we just deleted caches due to reload_all_triggered)
@@ -7638,7 +7662,9 @@ try:
                                 )
                     elapsed = time.time() - t0
                     status_text.empty()
-                    log_memory_usage(f"Using cached data from session ({len(call_data)} calls)")
+                    log_memory_usage(
+                        f"Using cached data from session ({len(call_data)} calls)"
+                    )
                     logger.info(
                         f"Using cached data from session: {len(call_data)} calls"
                     )
@@ -7784,7 +7810,9 @@ try:
                     logger.info(
                         f"Data loaded. Got {len(call_data) if call_data else 0} calls"
                     )
-                    log_memory_usage(f"Data loading complete ({len(call_data) if call_data else 0} calls)")
+                    log_memory_usage(
+                        f"Data loading complete ({len(call_data) if call_data else 0} calls)"
+                    )
 
                     # Clear loading messages
                     if status_text is not None:
@@ -8840,10 +8868,47 @@ if start_date > end_date:
     st.sidebar.error("⚠️ Invalid date range: start date is after end date.")
     st.stop()
 
-# Always set requested date range to trigger monthly cache loading
-# This ensures we load the correct month's cache
+# Check if we need to reload data - only reload if switching to a DIFFERENT month
+# This prevents reload loops when just changing the date range within the same month
 current_requested_range = st.session_state.get("_requested_date_range", None)
+requested_month = (start_date.year, start_date.month)
+
+# Determine what month is currently loaded (if any)
+currently_loaded_month = None
+if (
+    len(meta_df) > 0
+    and "Call Date" in meta_df.columns
+    and not meta_df["Call Date"].isna().all()
+):
+    loaded_min_date = meta_df["Call Date"].min()
+    if isinstance(loaded_min_date, pd.Timestamp):
+        loaded_min_date = loaded_min_date.date()
+    currently_loaded_month = (loaded_min_date.year, loaded_min_date.month)
+
+# Only reload if:
+# 1. Date range tuple changed AND
+# 2. (No data loaded yet OR we're switching to a different month)
+should_reload = False
 if current_requested_range != (start_date, end_date):
+    if currently_loaded_month is None:
+        # No data loaded yet, always reload
+        should_reload = True
+        logger.info(
+            f"No data currently loaded. Will load month cache for {start_date.year}-{start_date.month:02d}"
+        )
+    elif currently_loaded_month != requested_month:
+        # Switching to a different month, reload
+        should_reload = True
+        logger.info(
+            f"Switching months: {currently_loaded_month[0]}-{currently_loaded_month[1]:02d} -> {requested_month[0]}-{requested_month[1]:02d}. Will reload."
+        )
+    else:
+        # Same month, just updating the date range tuple - no reload needed
+        logger.debug(
+            f"Date range changed within same month ({requested_month[0]}-{requested_month[1]:02d}). Updating range without reload."
+        )
+
+if should_reload:
     log_memory_usage(f"Date range changing to {start_date} to {end_date}")
     # Date range changed - set flags to load the correct month
     st.session_state._requested_date_range = (start_date, end_date)
@@ -8867,6 +8932,9 @@ if current_requested_range != (start_date, end_date):
         f"Date range changed to {start_date} to {end_date}. Cleared caches, will load month cache for {start_date.year}-{start_date.month:02d}"
     )
     st.rerun()
+else:
+    # Just update the requested range without reloading
+    st.session_state._requested_date_range = (start_date, end_date)
 
 # Check if selected date range extends beyond loaded data and trigger reload if needed
 # Only check if we're not already loading data and meta_df has data
