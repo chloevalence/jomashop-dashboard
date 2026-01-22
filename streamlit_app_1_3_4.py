@@ -3837,6 +3837,17 @@ def load_all_calls_cached(cache_version=0):
                     )
                     s3_cache_result = ([], [])
                     s3_cache_timestamp = None
+                    # CRITICAL: If a specific month was requested but doesn't exist, return empty immediately
+                    # Do NOT fall back to disk cache which may contain data from a different month
+                    # Store empty result in session state to prevent retrying
+                    st.session_state[s3_cache_key] = s3_cache_result
+                    if s3_cache_timestamp:
+                        st.session_state[s3_timestamp_key] = s3_cache_timestamp
+                    logger.info(
+                        f"Returning empty data for requested month {load_year}-{load_month:02d} (cache not found, not falling back to disk cache)"
+                    )
+                    # Return empty data immediately - don't fall through to disk cache
+                    return [], []
 
                 # CRITICAL: Filter monthly cache to exact requested date range BEFORE storing in session state
                 if s3_cache_result and s3_cache_result[0]:
@@ -4009,6 +4020,20 @@ def load_all_calls_cached(cache_version=0):
         ):
             # Migrate old cache format to new format
             migrated_calls = migrate_old_cache_format(s3_cache_result[0])
+
+            # CRITICAL: If we have a specific month requested and S3 cache is empty,
+            # return empty data immediately - don't fall back to disk cache
+            # which may contain data from a different month
+            requested_range = st.session_state.get("_requested_date_range", None)
+            if requested_range and len(migrated_calls) == 0:
+                logger.info(
+                    " S3 cache is empty for requested month - returning empty data (not falling back to disk cache)"
+                )
+                # Store timestamp for future comparison
+                if s3_cache_timestamp:
+                    st.session_state["_s3_cache_timestamp"] = s3_cache_timestamp
+                return [], []
+
             logger.info(
                 f" Using S3 cache (source of truth): {len(migrated_calls)} calls"
             )
@@ -4021,6 +4046,14 @@ def load_all_calls_cached(cache_version=0):
             )
 
         # Fall back to disk cache only if S3 unavailable (backup only)
+        # BUT: If a specific month was requested, don't fall back to disk cache
+        # (disk cache may contain data from a different month)
+        requested_range = st.session_state.get("_requested_date_range", None)
+        if requested_range:
+            logger.info(
+                f" No S3 cache for requested month {requested_range[0].year}-{requested_range[0].month:02d} - returning empty data (not falling back to disk cache)"
+            )
+            return [], []
         # NOTE: We don't call load_cached_data_from_disk() here because it also loads from S3
         # We'll call it later only if needed, and it will check session state first
         # Disk cache is just a local backup, not the source of truth
