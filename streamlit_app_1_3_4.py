@@ -1579,6 +1579,7 @@ def load_month_cache_from_s3(year, month):
         return None, None, None
     
     cache_key = get_s3_cache_key_for_month(year, month)
+    logger.debug(f"Attempting to load month cache: s3://{s3_bucket}/{cache_key}")
     
     try:
         response = s3_client.get_object(Bucket=s3_bucket, Key=cache_key)
@@ -3400,6 +3401,57 @@ def load_all_calls_cached(cache_version=0):
             
             # Skip session cache if user requested a date range outside loaded data
             skip_session_cache = st.session_state.get("_load_all_data_for_date_range", False)
+            
+            # Also check if we need a different month than what's in session cache
+            requested_range = st.session_state.get("_requested_date_range", None)
+            if requested_range and not skip_session_cache:
+                # Check if session cache is for the wrong month
+                if s3_cache_key in st.session_state:
+                    cached_result = st.session_state[s3_cache_key]
+                    if cached_result and isinstance(cached_result, tuple) and len(cached_result) > 0:
+                        cached_calls = cached_result[0] if cached_result[0] else []
+                        if cached_calls:
+                            # Get date range from cached calls
+                            try:
+                                # Try to find date field
+                                first_call = cached_calls[0]
+                                cached_date = None
+                                for date_field in ["Call Date", "call_date", "date"]:
+                                    if date_field in first_call and first_call[date_field]:
+                                        try:
+                                            date_val = first_call[date_field]
+                                            if isinstance(date_val, str):
+                                                date_val = datetime.strptime(date_val.split()[0], "%Y-%m-%d")
+                                            cached_date = date_val if isinstance(date_val, datetime) else None
+                                            if cached_date:
+                                                break
+                                        except Exception:
+                                            continue
+                                
+                                if cached_date:
+                                    cached_month = (cached_date.year, cached_date.month)
+                                    start_date, end_date = requested_range
+                                    requested_month = (start_date.year, start_date.month)
+                                    
+                                    if cached_month != requested_month:
+                                        logger.info(
+                                            f"Session cache is for month {cached_month[0]}-{cached_month[1]:02d}, "
+                                            f"but need {requested_month[0]}-{requested_month[1]:02d}. Clearing caches."
+                                        )
+                                        skip_session_cache = True
+                                        # Clear session cache
+                                        if s3_cache_key in st.session_state:
+                                            del st.session_state[s3_cache_key]
+                                        if s3_timestamp_key in st.session_state:
+                                            del st.session_state[s3_timestamp_key]
+                                        # Also clear Streamlit cache to force reload
+                                        try:
+                                            load_all_calls_cached.clear()
+                                            logger.info("Cleared Streamlit cache for month switch")
+                                        except Exception as clear_error:
+                                            logger.debug(f"Could not clear Streamlit cache: {clear_error}")
+                            except Exception as e:
+                                logger.debug(f"Could not check cached month: {e}")
 
             if (
                 not skip_session_cache
@@ -8554,6 +8606,12 @@ if (
             # Also clear Streamlit cache key to force reload
             if "_s3_cache_timestamp" in st.session_state:
                 del st.session_state._s3_cache_timestamp
+            # Clear Streamlit cache to force reload of correct month
+            try:
+                load_all_calls_cached.clear()
+                logger.info("Cleared Streamlit cache to load different month")
+            except Exception as clear_error:
+                logger.debug(f"Could not clear Streamlit cache: {clear_error}")
             logger.info(
                 f"Date range {start_date} to {end_date} extends beyond loaded data "
                 f"({loaded_min_date} to {loaded_max_date}). Loading month cache from S3."
