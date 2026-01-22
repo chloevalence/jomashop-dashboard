@@ -1564,6 +1564,60 @@ def get_months_for_date_range(start_date, end_date):
     return months
 
 
+def get_month_start_end(year, month):
+    """Get the first and last day of a calendar month.
+    
+    Args:
+        year: Year (int)
+        month: Month (int, 1-12)
+    
+    Returns:
+        Tuple of (first_day, last_day) as date objects
+    """
+    # First day of month
+    first_day = date(year, month, 1)
+    
+    # Last day of month
+    if month == 12:
+        last_day = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(year, month + 1, 1) - timedelta(days=1)
+    
+    return first_day, last_day
+
+
+def get_previous_month(year, month):
+    """Get the previous calendar month.
+    
+    Args:
+        year: Year (int)
+        month: Month (int, 1-12)
+    
+    Returns:
+        Tuple of (year, month) for previous month
+    """
+    if month == 1:
+        return year - 1, 12
+    else:
+        return year, month - 1
+
+
+def get_next_month(year, month):
+    """Get the next calendar month.
+    
+    Args:
+        year: Year (int)
+        month: Month (int, 1-12)
+    
+    Returns:
+        Tuple of (year, month) for next month
+    """
+    if month == 12:
+        return year + 1, 1
+    else:
+        return year, month + 1
+
+
 def load_month_cache_from_s3(year, month):
     """Load a specific month's cache from S3.
     
@@ -3629,8 +3683,44 @@ def load_all_calls_cached(cache_version=0):
                     cache_data = month_calls
                     cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
                     logger.info(
-                        f" Loaded from S3 month cache {load_year}-{load_month:02d} (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
+                        f" ✅ Loaded from S3 month cache {load_year}-{load_month:02d} (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
                     )
+                    # Log date range of loaded data for debugging
+                    if cache_data_len > 0:
+                        try:
+                            # Get date from first and last calls
+                            first_call = cache_data[0]
+                            last_call = cache_data[-1]
+                            first_date = None
+                            last_date = None
+                            for date_field in ["Call Date", "call_date", "date"]:
+                                if date_field in first_call and first_call[date_field]:
+                                    try:
+                                        date_val = first_call[date_field]
+                                        if isinstance(date_val, str):
+                                            first_date = datetime.strptime(date_val.split()[0], "%Y-%m-%d").date()
+                                        elif isinstance(date_val, datetime):
+                                            first_date = date_val.date()
+                                        break
+                                    except Exception:
+                                        continue
+                            for date_field in ["Call Date", "call_date", "date"]:
+                                if date_field in last_call and last_call[date_field]:
+                                    try:
+                                        date_val = last_call[date_field]
+                                        if isinstance(date_val, str):
+                                            last_date = datetime.strptime(date_val.split()[0], "%Y-%m-%d").date()
+                                        elif isinstance(date_val, datetime):
+                                            last_date = date_val.date()
+                                        break
+                                    except Exception:
+                                        continue
+                            if first_date and last_date:
+                                logger.info(
+                                    f"   Loaded data date range: {first_date} to {last_date}"
+                                )
+                        except Exception as e:
+                            logger.debug(f"Could not determine date range of loaded data: {e}")
                 else:
                     # Monthly cache doesn't exist - try legacy single cache as fallback, or return empty
                     logger.warning(
@@ -7751,19 +7841,28 @@ try:
                         loaded_min = loaded_dates.min()
                         loaded_max = loaded_dates.max()
                         req_start, req_end = requested_range
-                        if loaded_min <= req_start and loaded_max >= req_end:
+                        # Check if data covers the requested range (with some tolerance for exact matches)
+                        # Since we filter to exact date range, loaded data should match or be very close
+                        covers_range = (
+                            loaded_min <= req_start and loaded_max >= req_end
+                        ) or (
+                            # Allow exact match (filtered data might have min/max equal to req_start/req_end)
+                            abs((loaded_min - req_start).days) <= 1
+                            and abs((loaded_max - req_end).days) <= 1
+                        )
+                        
+                        if covers_range:
                             # Data now covers the requested range - clear the flag
                             st.session_state["_load_all_data_for_date_range"] = False
                             # Set temporary flag to skip date range check on next rerun
                             st.session_state["_just_cleared_date_range_flag"] = True
-                            # Clear the requested date range to prevent re-triggering
-                            if "_requested_date_range" in st.session_state:
-                                del st.session_state["_requested_date_range"]
-                            # Clear the last checked range so future date changes can trigger reloads
+                            # Keep _requested_date_range so we know which month is loaded
+                            # Only clear _last_checked_date_range so future date changes can trigger reloads
                             if "_last_checked_date_range" in st.session_state:
                                 del st.session_state["_last_checked_date_range"]
                             logger.info(
-                                f"Successfully loaded data covering requested date range {req_start} to {req_end}"
+                                f"Successfully loaded data covering requested date range {req_start} to {req_end} "
+                                f"(loaded: {loaded_min} to {loaded_max})"
                             )
                         else:
                             # Data doesn't fully cover the range yet - keep flag set
@@ -8426,162 +8525,195 @@ if date_range_mode == "Last Week":
     selected_dates = (week_start, week_end)
 
 elif date_range_mode == "Last Month":
-    # Initialize or get current month range
+    # Initialize or get current month (use actual calendar month, not 30-day period)
     if (
         st.session_state.current_date_range_start is None
         or st.session_state.current_date_range_end is None
     ):
-        month_start = latest_data_date - timedelta(days=30)
-        month_end = latest_data_date
+        # Default to current month
+        now = datetime.now()
+        month_start, month_end = get_month_start_end(now.year, now.month)
         st.session_state.current_date_range_start = month_start
         st.session_state.current_date_range_end = month_end
+        st.session_state._selected_year = now.year
+        st.session_state._selected_month = now.month
     else:
         month_start = st.session_state.current_date_range_start
         month_end = st.session_state.current_date_range_end
+        # Ensure we have year/month stored
+        if "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
+            st.session_state._selected_year = month_start.year
+            st.session_state._selected_month = month_start.month
+            # Recalculate to ensure it's a full month
+            month_start, month_end = get_month_start_end(
+                st.session_state._selected_year, st.session_state._selected_month
+            )
+            st.session_state.current_date_range_start = month_start
+            st.session_state.current_date_range_end = month_end
 
+    # Get current month from state
+    current_year = st.session_state.get("_selected_year", month_start.year)
+    current_month = st.session_state.get("_selected_month", month_start.month)
+    
     # Navigation buttons for month
     col1, col2, col3 = st.sidebar.columns([1, 3, 1], gap="small")
     with col1:
-        if st.button("◀", help="Go back one month", width='stretch'):
-            month_start = month_start - timedelta(days=30)
-            month_end = month_end - timedelta(days=30)
+        if st.button("◀", help="Go back one calendar month", width='stretch'):
+            prev_year, prev_month = get_previous_month(current_year, current_month)
+            month_start, month_end = get_month_start_end(prev_year, prev_month)
             st.session_state.current_date_range_start = month_start
             st.session_state.current_date_range_end = month_end
+            st.session_state._selected_year = prev_year
+            st.session_state._selected_month = prev_month
             st.rerun()
     with col2:
+        month_name = datetime(current_year, current_month, 1).strftime("%B %Y")
         st.sidebar.markdown(
             f'<div style="text-align: center; font-size: 0.9em; padding: 0.3em 0;">'
-            f"<strong>{month_start.strftime('%m/%d')} to {month_end.strftime('%m/%d')}</strong>"
+            f"<strong>{month_name}</strong>"
             f"</div>",
             unsafe_allow_html=True,
         )
     with col3:
-        if st.button("▶", help="Go forward one month", width='stretch'):
-            new_month_start = month_start + timedelta(days=30)
-            new_month_end = month_end + timedelta(days=30)
-            month_start = new_month_start
-            month_end = new_month_end
+        if st.button("▶", help="Go forward one calendar month", width='stretch'):
+            next_year, next_month = get_next_month(current_year, current_month)
+            month_start, month_end = get_month_start_end(next_year, next_month)
             st.session_state.current_date_range_start = month_start
             st.session_state.current_date_range_end = month_end
+            st.session_state._selected_year = next_year
+            st.session_state._selected_month = next_month
             st.rerun()
 
     selected_dates = (month_start, month_end)
 
-else:  # Pick Your Dates
-    # Restore last custom date range or use default (last 30 days)
-    # If last_date_range exists and is valid, use it; otherwise use last 30 days
+else:  # Pick Your Dates - Now only allows selecting full calendar months
+    # Initialize or get selected month
     if (
-        st.session_state.last_date_range
-        and isinstance(st.session_state.last_date_range, tuple)
-        and len(st.session_state.last_date_range) == 2
+        "_selected_year" not in st.session_state
+        or "_selected_month" not in st.session_state
     ):
-        # Validate the stored range doesn't exceed 30 days
-        stored_range = st.session_state.last_date_range
-        stored_days = (stored_range[1] - stored_range[0]).days
-        if stored_days <= MAX_DATE_RANGE_DAYS:
-            default_date_range = stored_range
+        # Default to current month
+        now = datetime.now()
+        st.session_state._selected_year = now.year
+        st.session_state._selected_month = now.month
+    
+    # Get available years and months from data
+    if len(meta_df) > 0 and "Call Date" in meta_df.columns:
+        # Get min and max dates from data
+        min_date = meta_df["Call Date"].min()
+        max_date = meta_df["Call Date"].max()
+        if isinstance(min_date, pd.Timestamp):
+            min_date = min_date.date()
+        if isinstance(max_date, pd.Timestamp):
+            max_date = max_date.date()
+        
+        # Generate list of available years
+        min_year = min_date.year
+        max_year = max_date.year
+        available_years = list(range(min_year, max_year + 1))
+        
+        # For selected year, get available months
+        selected_year = st.session_state._selected_year
+        if selected_year == min_year and selected_year == max_year:
+            # Same year - get months from data
+            year_dates = meta_df[meta_df["Call Date"].dt.year == selected_year]["Call Date"]
+            if len(year_dates) > 0:
+                available_months = sorted(year_dates.dt.month.unique().tolist())
+            else:
+                available_months = [st.session_state._selected_month]
+        elif selected_year == min_year:
+            # First year - months from min_date to December
+            min_month = min_date.month
+            available_months = list(range(min_month, 13))
+        elif selected_year == max_year:
+            # Last year - months from January to max_date
+            max_month = max_date.month
+            available_months = list(range(1, max_month + 1))
         else:
-            # Reset to last 30 days if stored range is invalid
-            default_date_range = (
-                max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS),
-                max(dates),
-            )
-            st.session_state.last_date_range = default_date_range
+            # Middle year - all months
+            available_months = list(range(1, 13))
     else:
-        default_date_range = (
-            max(dates) - timedelta(days=MAX_DATE_RANGE_DAYS),
-            max(dates),
+        # Fallback if no data
+        now = datetime.now()
+        available_years = list(range(2020, now.year + 1))
+        available_months = list(range(1, 13))
+    
+    # Month selector
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        selected_year = st.sidebar.selectbox(
+            "Year",
+            options=available_years,
+            index=available_years.index(st.session_state._selected_year) if st.session_state._selected_year in available_years else len(available_years) - 1,
+            key="_year_selector"
         )
-
-    # Use a key to force update when we need to reset the date input
-    date_input_key = f"date_picker_{st.session_state.get('_date_picker_key', 0)}"
-
-    custom_input = st.sidebar.date_input(
-        "Pick Your Dates",
-        value=default_date_range,
-        help=f"⚠️ Maximum {MAX_DATE_RANGE_DAYS} days allowed. Selecting more will be automatically adjusted.",
-        key=date_input_key,
-    )
-
-    if isinstance(custom_input, tuple) and len(custom_input) == 2:
-        selected_dates = custom_input
-        # Check and enforce 30-day maximum
-        days_diff = (selected_dates[1] - selected_dates[0]).days
-        if days_diff > MAX_DATE_RANGE_DAYS:
-            # Show error and reset to valid range
-            st.sidebar.error(
-                f"⚠️ **Cannot select more than {MAX_DATE_RANGE_DAYS} days at once.** "
-                f"Your selection was {days_diff} days. Automatically adjusted to {MAX_DATE_RANGE_DAYS} days from end date."
-            )
-            # Reset to valid range (last 30 days from end date)
-            selected_dates = (
-                selected_dates[1] - timedelta(days=MAX_DATE_RANGE_DAYS),
-                selected_dates[1],
-            )
-            st.session_state.last_date_range = selected_dates
-            # Force date input to update by incrementing key
-            st.session_state._date_picker_key = (
-                st.session_state.get("_date_picker_key", 0) + 1
-            )
-            st.rerun()  # Rerun to update the date input with corrected value
-        else:
-            st.session_state.last_date_range = selected_dates  # Save selection
-    elif isinstance(custom_input, date):
-        selected_dates = (custom_input, custom_input)
-        st.session_state.last_date_range = selected_dates  # Save selection
-    else:
-        st.warning(" Please select a valid date range.")
-        st.stop()
+    with col2:
+        month_names = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ]
+        month_options = [(i, month_names[i-1]) for i in available_months]
+        selected_month_idx = available_months.index(st.session_state._selected_month) if st.session_state._selected_month in available_months else 0
+        selected_month = st.sidebar.selectbox(
+            "Month",
+            options=[m[0] for m in month_options],
+            format_func=lambda x: month_names[x-1],
+            index=selected_month_idx,
+            key="_month_selector"
+        )
+    
+    # Update state if changed
+    if selected_year != st.session_state._selected_year or selected_month != st.session_state._selected_month:
+        st.session_state._selected_year = selected_year
+        st.session_state._selected_month = selected_month
+        st.rerun()
+    
+    # Get full month range
+    month_start, month_end = get_month_start_end(selected_year, selected_month)
+    selected_dates = (month_start, month_end)
+    
+    # Show selected month
+    month_name = datetime(selected_year, selected_month, 1).strftime("%B %Y")
+    st.sidebar.info(f"📅 Selected: **{month_name}** ({month_start.strftime('%m/%d')} - {month_end.strftime('%m/%d')})")
 
 # Extract start_date and end_date from selected_dates
 start_date, end_date = selected_dates
 
-# Final validation: ensure range doesn't exceed 30 days and is within a single month
-days_in_range = (end_date - start_date).days
-if days_in_range > MAX_DATE_RANGE_DAYS:
-    # This should not happen if validation above works, but add safety check
-    st.sidebar.error(
-        f"⚠️ Date range exceeds {MAX_DATE_RANGE_DAYS} days. "
-        f"Auto-adjusting to last {MAX_DATE_RANGE_DAYS} days from end date."
-    )
-    # Auto-adjust to last 30 days from end date
-    start_date = end_date - timedelta(days=MAX_DATE_RANGE_DAYS)
-    selected_dates = (start_date, end_date)
-    # Update session state
-    if date_range_mode == "Pick Your Dates":
-        st.session_state.last_date_range = selected_dates
-    else:
-        st.session_state.current_date_range_start = start_date
-        st.session_state.current_date_range_end = end_date
+# Since we now only allow full calendar months, no need for multi-month validation
+# But ensure dates are valid
+if start_date > end_date:
+    st.sidebar.error("⚠️ Invalid date range: start date is after end date.")
+    st.stop()
 
-# Ensure date range is within a single month (required for monthly cache loading)
-start_month = (start_date.year, start_date.month)
-end_month = (end_date.year, end_date.month)
-if start_month != end_month:
-    # Range spans multiple months - adjust to stay within the month containing start_date
-    # Set end_date to last day of start_date's month
-    if start_date.month == 12:
-        month_end_date = date(start_date.year + 1, 1, 1) - timedelta(days=1)
-    else:
-        month_end_date = date(start_date.year, start_date.month + 1, 1) - timedelta(days=1)
-    
-    # If the original end_date is before month_end_date, keep it; otherwise use month_end_date
-    if end_date > month_end_date:
-        end_date = month_end_date
-        selected_dates = (start_date, end_date)
-        st.sidebar.warning(
-            f"⚠️ Date range spans multiple months. Adjusted to stay within {start_date.strftime('%B %Y')}: "
-            f"{start_date.strftime('%m/%d')} to {end_date.strftime('%m/%d')}"
-        )
-        # Update session state
-        if date_range_mode == "Pick Your Dates":
-            st.session_state.last_date_range = selected_dates
-        else:
-            st.session_state.current_date_range_start = start_date
-            st.session_state.current_date_range_end = end_date
+# Always set requested date range to trigger monthly cache loading
+# This ensures we load the correct month's cache
+current_requested_range = st.session_state.get("_requested_date_range", None)
+if current_requested_range != (start_date, end_date):
+    # Date range changed - set flags to load the correct month
+    st.session_state._requested_date_range = (start_date, end_date)
+    st.session_state._load_all_data_for_date_range = True
+    # Clear all caches to force reload
+    if "merged_calls" in st.session_state:
+        del st.session_state.merged_calls
+    if "s3_cache_result" in st.session_state:
+        del st.session_state.s3_cache_result
+    if "_disk_cache_during_refresh" in st.session_state:
+        del st.session_state._disk_cache_during_refresh
+    if "_s3_cache_timestamp" in st.session_state:
+        del st.session_state._s3_cache_timestamp
+    # Clear Streamlit cache
+    try:
+        load_all_calls_cached.clear()
+    except Exception:
+        pass
+    logger.info(
+        f"Date range changed to {start_date} to {end_date}. Cleared caches, will load month cache for {start_date.year}-{start_date.month:02d}"
+    )
+    st.rerun()
 
 # Check if selected date range extends beyond loaded data and trigger reload if needed
 # Only check if we're not already loading data and meta_df has data
+# Note: This check is now secondary since we always set flags above when date range changes
 if (
     not st.session_state.get("_load_all_data_for_date_range", False)
     and not st.session_state.get("_just_cleared_date_range_flag", False)
