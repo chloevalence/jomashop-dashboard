@@ -7173,8 +7173,22 @@ try:
                         if loaded_min <= req_start and loaded_max >= req_end:
                             # Data now covers the requested range - clear the flag
                             st.session_state["_load_all_data_for_date_range"] = False
+                            # Set temporary flag to skip date range check on next rerun
+                            st.session_state["_just_cleared_date_range_flag"] = True
+                            # Clear the requested date range to prevent re-triggering
+                            if "_requested_date_range" in st.session_state:
+                                del st.session_state["_requested_date_range"]
+                            # Also clear the last requested range to allow future checks
+                            if "_last_requested_date_range" in st.session_state:
+                                del st.session_state["_last_requested_date_range"]
                             logger.info(
                                 f"Successfully loaded data covering requested date range {req_start} to {req_end}"
+                            )
+                        else:
+                            # Data doesn't fully cover the range yet - keep flag set
+                            logger.info(
+                                f"Data loaded but doesn't fully cover requested range. "
+                                f"Loaded: {loaded_min} to {loaded_max}, Requested: {req_start} to {req_end}"
                             )
 
         # Convert call_date to datetime if it's not already (before column rename)
@@ -7960,31 +7974,17 @@ if days_in_range > MAX_DATE_RANGE_DAYS:
         st.session_state.current_date_range_end = end_date
 
 # Check if selected date range extends beyond loaded data and trigger reload if needed
-# Get the date range of currently loaded meta_df
-if "Call Date" in meta_df.columns and not meta_df["Call Date"].isna().all():
-    loaded_min_date = meta_df["Call Date"].min()
-    loaded_max_date = meta_df["Call Date"].max()
-    # Convert to date objects for comparison
-    if isinstance(loaded_min_date, pd.Timestamp):
-        loaded_min_date = loaded_min_date.date()
-    elif hasattr(loaded_min_date, "date"):
-        loaded_min_date = loaded_min_date.date()
-    if isinstance(loaded_max_date, pd.Timestamp):
-        loaded_max_date = loaded_max_date.date()
-    elif hasattr(loaded_max_date, "date"):
-        loaded_max_date = loaded_max_date.date()
-
-    # Check if selected range extends beyond loaded data
-    if start_date < loaded_min_date or end_date > loaded_max_date:
-        # Request data reload for the selected 30-day window
-        st.session_state._load_all_data_for_date_range = True
-        st.session_state._requested_date_range = (start_date, end_date)
-        # Clear caches to force reload
-        if "merged_calls" in st.session_state:
-            del st.session_state.merged_calls
-        if "s3_cache_result" in st.session_state:
-            del st.session_state.s3_cache_result
-        st.rerun()
+# DISABLED: Automatic reload is causing infinite loops. Users can manually reload if needed.
+# The date filter will still work with currently loaded data.
+# TODO: Re-enable with better safeguards to prevent infinite loops
+# if (
+#     not st.session_state.get("_load_all_data_for_date_range", False)
+#     and not st.session_state.get("_just_cleared_date_range_flag", False)
+#     and len(meta_df) > 0
+#     and "Call Date" in meta_df.columns
+#     and not meta_df["Call Date"].isna().all()
+# ):
+#     ... (check logic disabled to prevent infinite loops)
 
 # Agent filter (only for admin view)
 if not user_agent_id:
