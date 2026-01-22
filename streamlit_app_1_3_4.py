@@ -3829,65 +3829,14 @@ def load_all_calls_cached(cache_version=0):
                                 f"Could not determine date range of loaded data: {e}"
                             )
                 else:
-                    # Monthly cache doesn't exist - try legacy single cache as fallback, or return empty
+                    # Monthly cache doesn't exist. Do NOT fall back to full legacy cache:
+                    # it is too large to load and causes OOM/crash. Return empty for this month.
                     logger.warning(
-                        f"Month cache {load_year}-{load_month:02d} not found, trying legacy cache as fallback"
+                        f"Month cache {load_year}-{load_month:02d} not found. "
+                        "No data for this month. Use 'Initialize Monthly Caches' (admin) to build monthly caches from legacy."
                     )
-                    s3_client, s3_bucket = get_s3_client_and_bucket()
-                    if s3_client and s3_bucket:
-                        try:
-                            response = s3_client.get_object(
-                                Bucket=s3_bucket, Key=S3_CACHE_KEY
-                            )
-                            s3_cached_data = json.loads(
-                                response["Body"].read().decode("utf-8")
-                            )
-                            if isinstance(s3_cached_data, dict):
-                                legacy_calls = s3_cached_data.get("call_data", [])
-                                # Filter legacy cache to the requested month
-                                if requested_range:
-                                    start_date, end_date = requested_range
-                                    legacy_calls = filter_calls_by_date_range(
-                                        legacy_calls, start_date, end_date
-                                    )
-                                s3_cache_result = (
-                                    legacy_calls,
-                                    s3_cached_data.get("errors", []),
-                                )
-                                s3_cache_timestamp = s3_cached_data.get(
-                                    "timestamp", None
-                                )
-                                cache_data = legacy_calls
-                                cache_data_len = (
-                                    len(cache_data)
-                                    if isinstance(cache_data, list)
-                                    else 0
-                                )
-                                logger.info(
-                                    f" Loaded from legacy S3 cache (filtered to month): {cache_data_len} calls"
-                                )
-                            else:
-                                s3_cache_result = ([], [])
-                                s3_cache_timestamp = None
-                        except ClientError as e:
-                            error_code = e.response.get("Error", {}).get("Code", "")
-                            if error_code == "NoSuchKey":
-                                logger.info(
-                                    "No S3 cache found (neither monthly nor legacy)"
-                                )
-                            else:
-                                logger.warning(f"Error loading legacy S3 cache: {e}")
-                            s3_cache_result = ([], [])
-                            s3_cache_timestamp = None
-                        except Exception as legacy_error:
-                            logger.warning(
-                                f"Error loading legacy S3 cache: {legacy_error}"
-                            )
-                            s3_cache_result = ([], [])
-                            s3_cache_timestamp = None
-                    else:
-                        s3_cache_result = ([], [])
-                        s3_cache_timestamp = None
+                    s3_cache_result = ([], [])
+                    s3_cache_timestamp = None
 
                 # CRITICAL: Filter monthly cache to exact requested date range BEFORE storing in session state
                 if s3_cache_result and s3_cache_result[0]:
