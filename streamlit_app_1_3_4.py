@@ -74,9 +74,7 @@ def filter_calls_by_date_range(call_data, start_date, end_date):
     if not call_data or start_date is None or end_date is None:
         return call_data
 
-    # Convert date objects to datetime for comparison
-    start_datetime = datetime.combine(start_date, datetime.min.time())
-    end_datetime = datetime.combine(end_date, datetime.max.time())
+    # Note: We compare dates directly, datetime conversion not needed for date-only comparison
 
     original_count = len(call_data)
     filtered_calls = []
@@ -1489,7 +1487,124 @@ CACHE_FILE = log_dir / "cached_calls_data.json"
 LOCK_FILE = log_dir / "cached_calls_data.json.lock"
 
 # S3 cache key for storing cache in S3 (survives deployments and app restarts)
+# Legacy single-file cache (kept for backward compatibility)
 S3_CACHE_KEY = "cache/cached_calls_data.json"
+
+# S3 cache key pattern for monthly caches
+S3_CACHE_KEY_PATTERN = "cache/cached_calls_data_{year}_{month:02d}.json"
+
+
+def get_s3_cache_key_for_month(year, month):
+    """Get S3 cache key for a specific month.
+    
+    Args:
+        year: Year (int)
+        month: Month (int, 1-12)
+    
+    Returns:
+        S3 key string for the month cache
+    """
+    return S3_CACHE_KEY_PATTERN.format(year=year, month=month)
+
+
+def get_s3_cache_key_for_date(date_obj):
+    """Get S3 cache key for the month containing a specific date.
+    
+    Args:
+        date_obj: date or datetime object
+    
+    Returns:
+        S3 key string for the month cache
+    """
+    if isinstance(date_obj, datetime):
+        year = date_obj.year
+        month = date_obj.month
+    elif isinstance(date_obj, date):
+        year = date_obj.year
+        month = date_obj.month
+    else:
+        # Try to parse as string or convert
+        try:
+            if isinstance(date_obj, str):
+                dt = datetime.strptime(date_obj.split()[0], "%Y-%m-%d")
+            else:
+                dt = pd.to_datetime(date_obj)
+            year = dt.year
+            month = dt.month
+        except Exception:
+            # Fallback to current month
+            now = datetime.now()
+            year = now.year
+            month = now.month
+    return get_s3_cache_key_for_month(year, month)
+
+
+def get_months_for_date_range(start_date, end_date):
+    """Get list of (year, month) tuples for all months in a date range.
+    
+    Args:
+        start_date: Start date (date object)
+        end_date: End date (date object)
+    
+    Returns:
+        List of (year, month) tuples
+    """
+    months = []
+    current = start_date.replace(day=1)  # Start of month
+    end = end_date.replace(day=1)  # Start of end month
+    
+    while current <= end:
+        months.append((current.year, current.month))
+        # Move to next month
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+    
+    return months
+
+
+def load_month_cache_from_s3(year, month):
+    """Load a specific month's cache from S3.
+    
+    Args:
+        year: Year (int)
+        month: Month (int, 1-12)
+    
+    Returns:
+        Tuple of (call_data, errors, timestamp) or (None, None, None) if not found
+    """
+    s3_client, s3_bucket = get_s3_client_and_bucket()
+    if not s3_client or not s3_bucket:
+        return None, None, None
+    
+    cache_key = get_s3_cache_key_for_month(year, month)
+    
+    try:
+        response = s3_client.get_object(Bucket=s3_bucket, Key=cache_key)
+        s3_cached_data = json.loads(response["Body"].read().decode("utf-8"))
+        
+        if isinstance(s3_cached_data, dict):
+            call_data = s3_cached_data.get("call_data", [])
+            errors = s3_cached_data.get("errors", [])
+            timestamp = s3_cached_data.get("timestamp", None)
+            logger.info(
+                f"Loaded month cache {year}-{month:02d}: {len(call_data)} calls from s3://{s3_bucket}/{cache_key}"
+            )
+            return call_data, errors, timestamp
+        else:
+            logger.warning(f"Invalid cache format for {cache_key}")
+            return None, None, None
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "")
+        if error_code == "NoSuchKey":
+            logger.debug(f"Month cache not found: {cache_key}")
+        else:
+            logger.warning(f"Error loading month cache {cache_key}: {e}")
+        return None, None, None
+    except Exception as e:
+        logger.warning(f"Error loading month cache {cache_key}: {e}")
+        return None, None, None
 
 
 def get_s3_client_and_bucket():
@@ -2651,16 +2766,108 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                     # Proceed with save if check fails
 
             # Proceed with save (protected by checks above)
+            # Save by month to enable loading specific months
             try:
-                cache_json = json.dumps(cache_data, default=str, ensure_ascii=False)
-                s3_client.put_object(
-                    Bucket=s3_bucket,
-                    Key=S3_CACHE_KEY,
-                    Body=cache_json.encode("utf-8"),
-                    ContentType="application/json",
-                )
+                # Group calls by month
+                calls_by_month = {}
+                for call in call_data:
+                    # Extract call date to determine month
+                    call_date = None
+                    date_fields_to_check = [
+                        "Call Date",
+                        "call_date",
+                        "date",
+                        "timestamp",
+                        "Date",
+                        "callDate",
+                        "CallDate",
+                    ]
+                    for key in call.keys():
+                        if "date" in key.lower() and key not in date_fields_to_check:
+                            date_fields_to_check.append(key)
+                    
+                    for date_field in date_fields_to_check:
+                        if date_field in call and call[date_field]:
+                            try:
+                                date_value = call[date_field]
+                                if isinstance(date_value, str):
+                                    date_str = (
+                                        date_value.split("T")[0]
+                                        if "T" in date_value
+                                        else date_value.split(" ")[0]
+                                    )
+                                    call_date = datetime.strptime(date_str, "%Y-%m-%d")
+                                elif isinstance(date_value, datetime):
+                                    call_date = date_value
+                                elif isinstance(date_value, (int, float)):
+                                    call_date = datetime.fromtimestamp(date_value)
+                                if call_date:
+                                    break
+                            except (ValueError, TypeError, AttributeError):
+                                continue
+                    
+                    if call_date:
+                        month_key = (call_date.year, call_date.month)
+                        if month_key not in calls_by_month:
+                            calls_by_month[month_key] = []
+                        calls_by_month[month_key].append(call)
+                    else:
+                        # Calls without dates - save to current month as fallback
+                        now = datetime.now()
+                        month_key = (now.year, now.month)
+                        if month_key not in calls_by_month:
+                            calls_by_month[month_key] = []
+                        calls_by_month[month_key].append(call)
+                
+                # Save each month to its own cache file
+                saved_months = []
+                for (year, month), month_calls in calls_by_month.items():
+                    month_cache_key = get_s3_cache_key_for_month(year, month)
+                    
+                    # Load existing month cache to merge (if exists)
+                    existing_calls, existing_errors, existing_timestamp = load_month_cache_from_s3(year, month)
+                    
+                    if existing_calls:
+                        # Merge with existing calls (deduplicate)
+                        all_calls = existing_calls + month_calls
+                        all_calls = deduplicate_calls(all_calls)
+                        logger.info(
+                            f"Merging {len(month_calls)} new calls with {len(existing_calls)} existing calls "
+                            f"for {year}-{month:02d} (result: {len(all_calls)} total)"
+                        )
+                    else:
+                        all_calls = month_calls
+                    
+                    # Prepare month cache data
+                    month_cache_data = {
+                        "call_data": all_calls,
+                        "errors": errors,  # Share errors across months (or could split by month)
+                        "timestamp": datetime.now().isoformat(),
+                        "last_save_time": time.time(),
+                        "count": len(all_calls),
+                        "partial": partial,
+                        "year": year,
+                        "month": month,
+                    }
+                    if partial:
+                        month_cache_data["processed"] = processed
+                        month_cache_data["total"] = total
+                    
+                    # Save month cache to S3
+                    month_cache_json = json.dumps(month_cache_data, default=str, ensure_ascii=False)
+                    s3_client.put_object(
+                        Bucket=s3_bucket,
+                        Key=month_cache_key,
+                        Body=month_cache_json.encode("utf-8"),
+                        ContentType="application/json",
+                    )
+                    saved_months.append(f"{year}-{month:02d}")
+                    logger.info(
+                        f" Saved {len(all_calls)} calls to month cache: s3://{s3_bucket}/{month_cache_key}"
+                    )
+                
                 logger.info(
-                    f" Successfully saved {len(call_data)} calls to S3 cache ({status}): s3://{s3_bucket}/{S3_CACHE_KEY}"
+                    f" Successfully saved {len(call_data)} calls to {len(saved_months)} month cache(s) ({status}): {', '.join(saved_months)}"
                 )
             except Exception as s3_error:
                 # Don't fail the entire save if S3 upload fails - local cache is still saved
@@ -3142,76 +3349,123 @@ def load_all_calls_cached(cache_version=0):
 
             # Load from S3 if we don't have a valid session cache
             if s3_cache_result is None:
-                s3_client, s3_bucket = get_s3_client_and_bucket()
-                if s3_client and s3_bucket:
-                    try:
-                        response = s3_client.get_object(
-                            Bucket=s3_bucket, Key=S3_CACHE_KEY
+                # Determine which month to load based on requested date range or default to current month
+                requested_range = st.session_state.get("_requested_date_range", None)
+                if requested_range:
+                    start_date, end_date = requested_range
+                    # Ensure range is within a single month (enforce one month at a time)
+                    start_month = (start_date.year, start_date.month)
+                    end_month = (end_date.year, end_date.month)
+                    if start_month != end_month:
+                        # Range spans multiple months - use the month containing the start date
+                        logger.warning(
+                            f"Date range spans multiple months, loading month containing start date: {start_month[0]}-{start_month[1]:02d}"
                         )
-                        s3_cached_data = json.loads(
-                            response["Body"].read().decode("utf-8")
-                        )
-                        if isinstance(s3_cached_data, dict):
-                            s3_cache_result = (
-                                s3_cached_data.get("call_data", []),
-                                s3_cached_data.get("errors", []),
+                    load_year, load_month = start_month
+                else:
+                    # Default to current month
+                    now = datetime.now()
+                    load_year, load_month = now.year, now.month
+                    logger.info(f"No specific date range requested, loading current month: {load_year}-{load_month:02d}")
+                
+                # Load the specific month's cache
+                month_calls, month_errors, month_timestamp = load_month_cache_from_s3(load_year, load_month)
+                
+                if month_calls is not None:
+                    s3_cache_result = (month_calls, month_errors)
+                    s3_cache_timestamp = month_timestamp
+                    cache_data = month_calls
+                    cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
+                    logger.info(
+                        f" Loaded from S3 month cache {load_year}-{load_month:02d} (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
+                    )
+                else:
+                    # Monthly cache doesn't exist - try legacy single cache as fallback, or return empty
+                    logger.warning(
+                        f"Month cache {load_year}-{load_month:02d} not found, trying legacy cache as fallback"
+                    )
+                    s3_client, s3_bucket = get_s3_client_and_bucket()
+                    if s3_client and s3_bucket:
+                        try:
+                            response = s3_client.get_object(
+                                Bucket=s3_bucket, Key=S3_CACHE_KEY
                             )
-                            s3_cache_timestamp = s3_cached_data.get("timestamp", None)
-                            # CRITICAL FIX: Safe tuple access - verify [0] is a list before calling len()
-                            cache_data = (
-                                s3_cache_result[0]
-                                if len(s3_cache_result) > 0
-                                and s3_cache_result[0] is not None
-                                else []
+                            s3_cached_data = json.loads(
+                                response["Body"].read().decode("utf-8")
                             )
-                            cache_data_len = (
-                                len(cache_data) if isinstance(cache_data, list) else 0
-                            )
-                            logger.info(
-                                f" Loaded from S3 cache (source of truth): {cache_data_len} calls (timestamp: {s3_cache_timestamp})"
-                            )
-
-                            # CRITICAL: Filter calls to last 30 days BEFORE storing in session state
-                            # Check if user requested a date range that requires all data
-                            effective_max_days = None
-                            if st.session_state.get(
-                                "_load_all_data_for_date_range", False
-                            ):
-                                # User selected a date range outside loaded data - don't filter
-                                effective_max_days = None
-                            elif MAX_DAYS_TO_LOAD is not None:
-                                effective_max_days = MAX_DAYS_TO_LOAD
-
-                            if cache_data and effective_max_days is not None:
-                                original_count = len(cache_data)
-                                filtered_cache_data = filter_calls_by_date(
-                                    cache_data, effective_max_days
+                            if isinstance(s3_cached_data, dict):
+                                legacy_calls = s3_cached_data.get("call_data", [])
+                                # Filter legacy cache to the requested month
+                                if requested_range:
+                                    start_date, end_date = requested_range
+                                    legacy_calls = filter_calls_by_date_range(legacy_calls, start_date, end_date)
+                                s3_cache_result = (
+                                    legacy_calls,
+                                    s3_cached_data.get("errors", []),
                                 )
-                                filtered_count = len(filtered_cache_data)
-                                if filtered_count < original_count:
-                                    logger.info(
-                                        f"Filtered S3 cache from {original_count} to {filtered_count} calls "
-                                        f"(last {effective_max_days} days only)"
-                                    )
-                                    # Update s3_cache_result with filtered data
-                                    s3_cache_result = (
-                                        filtered_cache_data,
-                                        s3_cache_result[1]
-                                        if len(s3_cache_result) > 1
-                                        else [],
-                                    )
-                                    cache_data = filtered_cache_data
-
-                            # Cache in session state to avoid duplicate loads (now with filtered data)
-                            st.session_state[s3_cache_key] = s3_cache_result
-                            if s3_cache_timestamp:
-                                st.session_state[s3_timestamp_key] = s3_cache_timestamp
-                    except ClientError as s3_error:
-                        error_code = s3_error.response.get("Error", {}).get("Code", "")
-                        if error_code != "NoSuchKey":
-                            logger.warning(f" Failed to load from S3 cache: {s3_error}")
-                    except Exception as s3_error:
-                        logger.warning(f" Failed to load from S3 cache: {s3_error}")
+                                s3_cache_timestamp = s3_cached_data.get("timestamp", None)
+                                cache_data = legacy_calls
+                                cache_data_len = len(cache_data) if isinstance(cache_data, list) else 0
+                                logger.info(
+                                    f" Loaded from legacy S3 cache (filtered to month): {cache_data_len} calls"
+                                )
+                            else:
+                                s3_cache_result = ([], [])
+                                s3_cache_timestamp = None
+                        except ClientError as e:
+                            error_code = e.response.get("Error", {}).get("Code", "")
+                            if error_code == "NoSuchKey":
+                                logger.info("No S3 cache found (neither monthly nor legacy)")
+                            else:
+                                logger.warning(f"Error loading legacy S3 cache: {e}")
+                            s3_cache_result = ([], [])
+                            s3_cache_timestamp = None
+                        except Exception as legacy_error:
+                            logger.warning(f"Error loading legacy S3 cache: {legacy_error}")
+                            s3_cache_result = ([], [])
+                            s3_cache_timestamp = None
+                    else:
+                        s3_cache_result = ([], [])
+                        s3_cache_timestamp = None
+                
+                # CRITICAL: Filter monthly cache to exact requested date range BEFORE storing in session state
+                if s3_cache_result and s3_cache_result[0]:
+                    requested_range = st.session_state.get("_requested_date_range", None)
+                    if requested_range:
+                        # Filter to exact requested date range
+                        start_date, end_date = requested_range
+                        original_count = len(s3_cache_result[0])
+                        filtered_calls = filter_calls_by_date_range(
+                            s3_cache_result[0], start_date, end_date
+                        )
+                        filtered_count = len(filtered_calls)
+                        if filtered_count < original_count:
+                            logger.info(
+                                f"Filtered month cache from {original_count} to {filtered_count} calls "
+                                f"(date range: {start_date} to {end_date})"
+                            )
+                            s3_cache_result = (filtered_calls, s3_cache_result[1] if len(s3_cache_result) > 1 else [])
+                            cache_data = filtered_calls
+                    elif MAX_DAYS_TO_LOAD is not None:
+                        # No specific range requested - filter to last N days
+                        original_count = len(s3_cache_result[0])
+                        filtered_calls = filter_calls_by_date(
+                            s3_cache_result[0], MAX_DAYS_TO_LOAD
+                        )
+                        filtered_count = len(filtered_calls)
+                        if filtered_count < original_count:
+                            logger.info(
+                                f"Filtered month cache from {original_count} to {filtered_count} calls "
+                                f"(last {MAX_DAYS_TO_LOAD} days only)"
+                            )
+                            s3_cache_result = (filtered_calls, s3_cache_result[1] if len(s3_cache_result) > 1 else [])
+                            cache_data = filtered_calls
+                
+                # Cache in session state to avoid duplicate loads (now with filtered data)
+                if s3_cache_result and s3_cache_result[0] is not None:
+                    st.session_state[s3_cache_key] = s3_cache_result
+                    if s3_cache_timestamp:
+                        st.session_state[s3_timestamp_key] = s3_cache_timestamp
 
         # CRITICAL: If S3 cache exists, check if Streamlit cache is stale
         # (Skip this check if we just deleted caches due to reload_all_triggered)
@@ -7974,7 +8228,7 @@ else:  # Pick Your Dates
 # Extract start_date and end_date from selected_dates
 start_date, end_date = selected_dates
 
-# Final validation: ensure range doesn't exceed 30 days (safety check)
+# Final validation: ensure range doesn't exceed 30 days and is within a single month
 days_in_range = (end_date - start_date).days
 if days_in_range > MAX_DATE_RANGE_DAYS:
     # This should not happen if validation above works, but add safety check
@@ -7991,6 +8245,32 @@ if days_in_range > MAX_DATE_RANGE_DAYS:
     else:
         st.session_state.current_date_range_start = start_date
         st.session_state.current_date_range_end = end_date
+
+# Ensure date range is within a single month (required for monthly cache loading)
+start_month = (start_date.year, start_date.month)
+end_month = (end_date.year, end_date.month)
+if start_month != end_month:
+    # Range spans multiple months - adjust to stay within the month containing start_date
+    # Set end_date to last day of start_date's month
+    if start_date.month == 12:
+        month_end_date = date(start_date.year + 1, 1, 1) - timedelta(days=1)
+    else:
+        month_end_date = date(start_date.year, start_date.month + 1, 1) - timedelta(days=1)
+    
+    # If the original end_date is before month_end_date, keep it; otherwise use month_end_date
+    if end_date > month_end_date:
+        end_date = month_end_date
+        selected_dates = (start_date, end_date)
+        st.sidebar.warning(
+            f"⚠️ Date range spans multiple months. Adjusted to stay within {start_date.strftime('%B %Y')}: "
+            f"{start_date.strftime('%m/%d')} to {end_date.strftime('%m/%d')}"
+        )
+        # Update session state
+        if date_range_mode == "Pick Your Dates":
+            st.session_state.last_date_range = selected_dates
+        else:
+            st.session_state.current_date_range_start = start_date
+            st.session_state.current_date_range_end = end_date
 
 # Check if selected date range extends beyond loaded data and trigger reload if needed
 # Only check if we're not already loading data and meta_df has data
@@ -8034,10 +8314,12 @@ if (
         )
         
         if range_extends_beyond and not range_already_covered:
-            # Request data reload for the selected 30-day window
+            # Request data reload for the selected month (date range is within a single month)
+            # This will load the appropriate month's cache from S3
             st.session_state._load_all_data_for_date_range = True
             st.session_state._requested_date_range = (start_date, end_date)
-            # Clear all caches to force full reload from S3
+            # Clear session caches to force reload of the correct month from S3
+            # Note: We do NOT clear S3 cache - it's the source of truth
             if "merged_calls" in st.session_state:
                 del st.session_state.merged_calls
             if "s3_cache_result" in st.session_state:
@@ -8049,7 +8331,7 @@ if (
                 del st.session_state._s3_cache_timestamp
             logger.info(
                 f"Date range {start_date} to {end_date} extends beyond loaded data "
-                f"({loaded_min_date} to {loaded_max_date}). Triggering data reload."
+                f"({loaded_min_date} to {loaded_max_date}). Loading month cache from S3."
             )
             st.rerun()
         elif range_already_covered:
