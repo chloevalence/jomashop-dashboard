@@ -310,6 +310,12 @@ except Exception:
 # Suppress inotify errors (file watcher limit reached) - these are non-critical
 warnings.filterwarnings("ignore", message=".*inotify.*")
 warnings.filterwarnings("ignore", message=".*fileWatcherType.*")
+# Suppress ScriptRunContext warnings from background threads (harmless but noisy)
+warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
+warnings.filterwarnings("ignore", message=".*ScriptRunContext.*")
+# Suppress Streamlit runtime warnings about ScriptRunContext in background threads
+logging.getLogger("streamlit.runtime.scriptrunner.script_runner").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.caching").setLevel(logging.ERROR)
 
 
 # --- File Locking (must be defined before load_metrics/save_metrics) ---
@@ -7819,7 +7825,7 @@ if date_range_mode == "Last Week":
     # Navigation buttons for week
     col1, col2, col3 = st.sidebar.columns([1, 3, 1], gap="small")
     with col1:
-        if st.button("◀", help="Go back one week", use_container_width=True):
+        if st.button("◀", help="Go back one week", width='stretch'):
             week_start = week_start - timedelta(days=7)
             week_end = week_end - timedelta(days=7)
             st.session_state.current_date_range_start = week_start
@@ -7833,7 +7839,7 @@ if date_range_mode == "Last Week":
             unsafe_allow_html=True,
         )
     with col3:
-        if st.button("▶", help="Go forward one week", use_container_width=True):
+        if st.button("▶", help="Go forward one week", width='stretch'):
             new_week_start = week_start + timedelta(days=7)
             new_week_end = week_end + timedelta(days=7)
             week_start = new_week_start
@@ -7861,7 +7867,7 @@ elif date_range_mode == "Last Month":
     # Navigation buttons for month
     col1, col2, col3 = st.sidebar.columns([1, 3, 1], gap="small")
     with col1:
-        if st.button("◀", help="Go back one month", use_container_width=True):
+        if st.button("◀", help="Go back one month", width='stretch'):
             month_start = month_start - timedelta(days=30)
             month_end = month_end - timedelta(days=30)
             st.session_state.current_date_range_start = month_start
@@ -7875,7 +7881,7 @@ elif date_range_mode == "Last Month":
             unsafe_allow_html=True,
         )
     with col3:
-        if st.button("▶", help="Go forward one month", use_container_width=True):
+        if st.button("▶", help="Go forward one month", width='stretch'):
             new_month_start = month_start + timedelta(days=30)
             new_month_end = month_end + timedelta(days=30)
             month_start = new_month_start
@@ -9188,7 +9194,7 @@ if not user_agent_id:
         # Display as sortable dataframe with column configuration
         st.dataframe(
             agent_perf_display,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "Agent": st.column_config.TextColumn("Agent", width="medium"),
@@ -9234,7 +9240,7 @@ if not user_agent_id:
         # Display as sortable dataframe
         st.dataframe(
             agent_performance,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
         )
 
@@ -10168,7 +10174,7 @@ if (
                 # Display as sortable dataframe
                 st.dataframe(
                     agent_aht_analysis,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                 )
 
@@ -10391,7 +10397,7 @@ if (
                     # Display as sortable dataframe
                     st.dataframe(
                         coaching_df,
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                     )
 
@@ -10519,7 +10525,7 @@ if (
                     # Display as sortable dataframe
                     st.dataframe(
                         challenge_df,
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                     )
 
@@ -10792,7 +10798,7 @@ with st.expander("Rubric Code Analysis", expanded=False):
             # Display as sortable dataframe
             st.dataframe(
                 top_failed_display,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
 
@@ -12086,7 +12092,7 @@ with st.expander("Individual Call Details", expanded=False):
                     # Display as sortable dataframe
                     st.dataframe(
                         rubric_df,
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                     )
 
@@ -12365,7 +12371,7 @@ with analytics_tab1:
                 # Display as sortable dataframe
                 st.dataframe(
                     wow_display,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                 )
 
@@ -12449,7 +12455,7 @@ with analytics_tab2:
             # Display as sortable dataframe
             st.dataframe(
                 improvement_df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
 
@@ -12552,7 +12558,7 @@ with analytics_tab3:
                 # Display as sortable dataframe
                 st.dataframe(
                     failure_df,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                 )
 
