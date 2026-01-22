@@ -8932,32 +8932,48 @@ if (
         )
 
         if range_extends_beyond and not range_already_covered:
-            # Request data reload for the selected month (date range is within a single month)
-            # This will load the appropriate month's cache from S3
-            st.session_state._load_all_data_for_date_range = True
-            st.session_state._requested_date_range = (start_date, end_date)
-            # Clear session caches to force reload of the correct month from S3
-            # Note: We do NOT clear S3 cache - it's the source of truth
-            if "merged_calls" in st.session_state:
-                del st.session_state.merged_calls
-            if "s3_cache_result" in st.session_state:
-                del st.session_state.s3_cache_result
-            if "_disk_cache_during_refresh" in st.session_state:
-                del st.session_state._disk_cache_during_refresh
-            # Also clear Streamlit cache key to force reload
-            if "_s3_cache_timestamp" in st.session_state:
-                del st.session_state._s3_cache_timestamp
-            # Clear Streamlit cache to force reload of correct month
-            try:
-                load_all_calls_cached.clear()
-                logger.info("Cleared Streamlit cache to load different month")
-            except Exception as clear_error:
-                logger.debug(f"Could not clear Streamlit cache: {clear_error}")
-            logger.info(
-                f"Date range {start_date} to {end_date} extends beyond loaded data "
-                f"({loaded_min_date} to {loaded_max_date}). Loading month cache from S3."
-            )
-            st.rerun()
+            # Only reload if we're switching to a DIFFERENT month
+            # If we're in the same month but data is partial, accept it (don't reload)
+            loaded_month = (loaded_min_date.year, loaded_min_date.month)
+            requested_month = (start_date.year, start_date.month)
+
+            if loaded_month != requested_month:
+                # Switching to a different month - reload
+                st.session_state._load_all_data_for_date_range = True
+                st.session_state._requested_date_range = (start_date, end_date)
+                # Clear session caches to force reload of the correct month from S3
+                # Note: We do NOT clear S3 cache - it's the source of truth
+                if "merged_calls" in st.session_state:
+                    del st.session_state.merged_calls
+                if "s3_cache_result" in st.session_state:
+                    del st.session_state.s3_cache_result
+                if "_disk_cache_during_refresh" in st.session_state:
+                    del st.session_state._disk_cache_during_refresh
+                # Also clear Streamlit cache key to force reload
+                if "_s3_cache_timestamp" in st.session_state:
+                    del st.session_state._s3_cache_timestamp
+                # Clear Streamlit cache to force reload of correct month
+                try:
+                    load_all_calls_cached.clear()
+                    logger.info("Cleared Streamlit cache to load different month")
+                except Exception as clear_error:
+                    logger.debug(f"Could not clear Streamlit cache: {clear_error}")
+                logger.info(
+                    f"Date range {start_date} to {end_date} extends beyond loaded data "
+                    f"({loaded_min_date} to {loaded_max_date}). Switching months: {loaded_month[0]}-{loaded_month[1]:02d} -> {requested_month[0]}-{requested_month[1]:02d}. Loading month cache from S3."
+                )
+                st.rerun()
+            else:
+                # Same month, but partial data - accept it and don't reload
+                # This prevents infinite loops when monthly cache only has partial data
+                logger.info(
+                    f"Date range {start_date} to {end_date} extends beyond loaded data "
+                    f"({loaded_min_date} to {loaded_max_date}), but we're in the same month ({requested_month[0]}-{requested_month[1]:02d}). "
+                    "Accepting partial data to prevent reload loop."
+                )
+                # Clear the reload flag since we've accepted the partial data
+                if st.session_state.get("_load_all_data_for_date_range", False):
+                    st.session_state["_load_all_data_for_date_range"] = False
         elif range_already_covered:
             logger.debug(
                 f"Date range {start_date} to {end_date} is already covered by loaded data "
