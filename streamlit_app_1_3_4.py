@@ -1607,6 +1607,193 @@ def load_month_cache_from_s3(year, month):
         return None, None, None
 
 
+def initialize_or_update_monthly_caches(force_update=False):
+    """Initialize or update monthly S3 caches from legacy cache or new data.
+    
+    This function:
+    1. Loads the legacy single S3 cache (if it exists)
+    2. Groups all calls by month
+    3. Saves each month to its own cache file
+    4. Merges with existing monthly caches if they exist
+    
+    Args:
+        force_update: If True, update existing monthly caches even if they're newer.
+                     If False, only create missing monthly caches.
+    
+    Returns:
+        Tuple of (success: bool, message: str, stats: dict)
+    """
+    s3_client, s3_bucket = get_s3_client_and_bucket()
+    if not s3_client or not s3_bucket:
+        return False, "S3 client not available", {}
+    
+    stats = {
+        "months_created": 0,
+        "months_updated": 0,
+        "months_skipped": 0,
+        "total_calls": 0,
+        "errors": []
+    }
+    
+    # Step 1: Load legacy single cache if it exists
+    legacy_calls = []
+    legacy_errors = []
+    try:
+        response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+        legacy_data = json.loads(response["Body"].read().decode("utf-8"))
+        if isinstance(legacy_data, dict):
+            legacy_calls = legacy_data.get("call_data", [])
+            legacy_errors = legacy_data.get("errors", [])
+            logger.info(f"Loaded legacy cache with {len(legacy_calls)} calls")
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "")
+        if error_code != "NoSuchKey":
+            error_msg = f"Error loading legacy cache: {e}"
+            logger.warning(error_msg)
+            stats["errors"].append(error_msg)
+            return False, error_msg, stats
+        else:
+            logger.info("No legacy cache found - will only update existing monthly caches")
+    except Exception as e:
+        error_msg = f"Error loading legacy cache: {e}"
+        logger.warning(error_msg)
+        stats["errors"].append(error_msg)
+        return False, error_msg, stats
+    
+    if not legacy_calls:
+        logger.info("No calls in legacy cache - nothing to migrate")
+        return True, "No legacy cache to migrate", stats
+    
+    # Step 2: Group calls by month
+    calls_by_month = {}
+    calls_without_date = []
+    
+    for call in legacy_calls:
+        call_date = None
+        date_fields_to_check = [
+            "Call Date",
+            "call_date",
+            "date",
+            "timestamp",
+            "Date",
+            "callDate",
+            "CallDate",
+        ]
+        for key in call.keys():
+            if "date" in key.lower() and key not in date_fields_to_check:
+                date_fields_to_check.append(key)
+        
+        for date_field in date_fields_to_check:
+            if date_field in call and call[date_field]:
+                try:
+                    date_value = call[date_field]
+                    if isinstance(date_value, str):
+                        date_str = (
+                            date_value.split("T")[0]
+                            if "T" in date_value
+                            else date_value.split(" ")[0]
+                        )
+                        call_date = datetime.strptime(date_str, "%Y-%m-%d")
+                    elif isinstance(date_value, datetime):
+                        call_date = date_value
+                    elif isinstance(date_value, (int, float)):
+                        call_date = datetime.fromtimestamp(date_value)
+                    if call_date:
+                        break
+                except (ValueError, TypeError, AttributeError):
+                    continue
+        
+        if call_date:
+            month_key = (call_date.year, call_date.month)
+            if month_key not in calls_by_month:
+                calls_by_month[month_key] = []
+            calls_by_month[month_key].append(call)
+        else:
+            # Calls without dates - save to current month as fallback
+            now = datetime.now()
+            month_key = (now.year, now.month)
+            if month_key not in calls_by_month:
+                calls_by_month[month_key] = []
+            calls_by_month[month_key].append(call)
+            calls_without_date.append(call)
+    
+    if calls_without_date:
+        logger.warning(f"Found {len(calls_without_date)} calls without valid dates - assigned to current month")
+    
+    logger.info(f"Grouped {len(legacy_calls)} calls into {len(calls_by_month)} months")
+    
+    # Step 3: Save each month to its own cache file
+    for (year, month), month_calls in calls_by_month.items():
+        month_cache_key = get_s3_cache_key_for_month(year, month)
+        
+        # Check if monthly cache already exists
+        existing_calls = None
+        try:
+            existing_calls, _, _ = load_month_cache_from_s3(year, month)
+        except Exception:
+            pass  # Will create new cache
+        
+        if existing_calls and not force_update:
+            # Merge with existing calls (deduplicate)
+            all_calls = existing_calls + month_calls
+            all_calls = deduplicate_calls(all_calls)
+            logger.info(
+                f"Merging {len(month_calls)} legacy calls with {len(existing_calls)} existing calls "
+                f"for {year}-{month:02d} (result: {len(all_calls)} total)"
+            )
+            stats["months_updated"] += 1
+        else:
+            # Create new monthly cache
+            all_calls = deduplicate_calls(month_calls)
+            logger.info(
+                f"Creating new monthly cache for {year}-{month:02d} with {len(all_calls)} calls"
+            )
+            stats["months_created"] += 1
+        
+        # Prepare month cache data
+        month_cache_data = {
+            "call_data": all_calls,
+            "errors": legacy_errors,  # Share errors across months
+            "timestamp": datetime.now().isoformat(),
+            "last_save_time": time.time(),
+            "count": len(all_calls),
+            "partial": False,  # Mark as complete
+            "year": year,
+            "month": month,
+        }
+        
+        # Save month cache to S3
+        try:
+            month_cache_json = json.dumps(month_cache_data, default=str, ensure_ascii=False)
+            s3_client.put_object(
+                Bucket=s3_bucket,
+                Key=month_cache_key,
+                Body=month_cache_json.encode("utf-8"),
+                ContentType="application/json",
+            )
+            stats["total_calls"] += len(all_calls)
+            logger.info(
+                f" Saved monthly cache: s3://{s3_bucket}/{month_cache_key} ({len(all_calls)} calls)"
+            )
+        except Exception as save_error:
+            error_msg = f"Failed to save monthly cache {year}-{month:02d}: {save_error}"
+            logger.error(error_msg)
+            stats["errors"].append(error_msg)
+            stats["months_skipped"] += 1
+    
+    # Summary
+    success = len(stats["errors"]) == 0
+    message = (
+        f"Created {stats['months_created']} monthly cache(s), "
+        f"updated {stats['months_updated']} existing cache(s), "
+        f"total {stats['total_calls']} calls across all months"
+    )
+    if stats["errors"]:
+        message += f", {len(stats['errors'])} error(s)"
+    
+    return success, message, stats
+
+
 def get_s3_client_and_bucket():
     """Get S3 client and bucket name. Returns (client, bucket_name) or (None, None) if unavailable."""
     try:
@@ -6176,6 +6363,44 @@ if "new_csvs_notification_count" not in st.session_state:
 if is_super_admin():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Refresh Data")
+    
+    # Button to initialize/update monthly S3 caches
+    if st.sidebar.button(
+        "📅 Initialize Monthly Caches",
+        help="Create or update monthly S3 caches from legacy cache. Run this once to migrate to monthly cache system.",
+        type="secondary",
+    ):
+        log_audit_event(current_username, "initialize_monthly_caches", "Initializing monthly S3 caches")
+        with st.sidebar.spinner("Initializing monthly caches..."):
+            success, message, stats = initialize_or_update_monthly_caches(force_update=False)
+            if success:
+                st.sidebar.success(f"✅ {message}")
+                logger.info(f"Monthly cache initialization completed: {message}")
+            else:
+                st.sidebar.warning(f"⚠️ {message}")
+                if stats.get("errors"):
+                    for error in stats["errors"][:3]:  # Show first 3 errors
+                        st.sidebar.error(f"Error: {error}")
+                logger.warning(f"Monthly cache initialization had issues: {message}")
+    
+    # Button to force update all monthly caches
+    if st.sidebar.button(
+        "🔄 Force Update Monthly Caches",
+        help="Force update all monthly caches (even if they exist). Use if you need to rebuild monthly caches.",
+        type="secondary",
+    ):
+        log_audit_event(current_username, "force_update_monthly_caches", "Force updating monthly S3 caches")
+        with st.sidebar.spinner("Force updating monthly caches..."):
+            success, message, stats = initialize_or_update_monthly_caches(force_update=True)
+            if success:
+                st.sidebar.success(f"✅ {message}")
+                logger.info(f"Monthly cache force update completed: {message}")
+            else:
+                st.sidebar.warning(f"⚠️ {message}")
+                if stats.get("errors"):
+                    for error in stats["errors"][:3]:  # Show first 3 errors
+                        st.sidebar.error(f"Error: {error}")
+                logger.warning(f"Monthly cache force update had issues: {message}")
 
 
 # Smart refresh button (Chloe, Shannon, and Jerson only) - only loads new CSV files
