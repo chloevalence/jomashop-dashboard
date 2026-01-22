@@ -2998,13 +2998,18 @@ def load_all_calls_cached(cache_version=0):
             # Check session state first, but verify S3 cache isn't newer
             # CRITICAL FIX: Check if S3 cache is newer than session state before using it
             # This ensures we don't use stale session cache when another app instance updated S3
+            # BUT: If user requested a date range outside loaded data, skip session cache and load fresh
             s3_cache_key = "_s3_cache_result"
             s3_timestamp_key = "_s3_cache_timestamp"
             s3_cache_newer = False
             local_session_timestamp = None
+            
+            # Skip session cache if user requested a date range outside loaded data
+            skip_session_cache = st.session_state.get("_load_all_data_for_date_range", False)
 
             if (
-                s3_cache_key in st.session_state
+                not skip_session_cache
+                and s3_cache_key in st.session_state
                 and s3_timestamp_key in st.session_state
             ):
                 local_session_timestamp = st.session_state[s3_timestamp_key]
@@ -3092,7 +3097,8 @@ def load_all_calls_cached(cache_version=0):
                 s3_cache_result = None
                 s3_cache_timestamp = None
             elif (
-                s3_cache_key in st.session_state
+                not skip_session_cache
+                and s3_cache_key in st.session_state
                 and s3_timestamp_key in st.session_state
             ):
                 # Session cache is still valid - use it
@@ -3126,6 +3132,13 @@ def load_all_calls_cached(cache_version=0):
                         del st.session_state[s3_timestamp_key]
                     s3_cache_result = None
                     s3_cache_timestamp = None
+            elif skip_session_cache:
+                # User requested date range outside loaded data - skip session cache and load fresh from S3
+                logger.info(
+                    "Skipping session cache - loading fresh from S3 for requested date range"
+                )
+                s3_cache_result = None
+                s3_cache_timestamp = None
 
             # Load from S3 if we don't have a valid session cache
             if s3_cache_result is None:
@@ -7184,9 +7197,9 @@ try:
                             # Clear the requested date range to prevent re-triggering
                             if "_requested_date_range" in st.session_state:
                                 del st.session_state["_requested_date_range"]
-                            # Also clear the last requested range to allow future checks
-                            if "_last_requested_date_range" in st.session_state:
-                                del st.session_state["_last_requested_date_range"]
+                            # Clear the last checked range so future date changes can trigger reloads
+                            if "_last_checked_date_range" in st.session_state:
+                                del st.session_state["_last_checked_date_range"]
                             logger.info(
                                 f"Successfully loaded data covering requested date range {req_start} to {req_end}"
                             )
@@ -7980,17 +7993,85 @@ if days_in_range > MAX_DATE_RANGE_DAYS:
         st.session_state.current_date_range_end = end_date
 
 # Check if selected date range extends beyond loaded data and trigger reload if needed
-# DISABLED: Automatic reload is causing infinite loops. Users can manually reload if needed.
-# The date filter will still work with currently loaded data.
-# TODO: Re-enable with better safeguards to prevent infinite loops
-# if (
-#     not st.session_state.get("_load_all_data_for_date_range", False)
-#     and not st.session_state.get("_just_cleared_date_range_flag", False)
-#     and len(meta_df) > 0
-#     and "Call Date" in meta_df.columns
-#     and not meta_df["Call Date"].isna().all()
-# ):
-#     ... (check logic disabled to prevent infinite loops)
+# Only check if we're not already loading data and meta_df has data
+if (
+    not st.session_state.get("_load_all_data_for_date_range", False)
+    and not st.session_state.get("_just_cleared_date_range_flag", False)
+    and len(meta_df) > 0
+    and "Call Date" in meta_df.columns
+    and not meta_df["Call Date"].isna().all()
+):
+    loaded_min_date = meta_df["Call Date"].min()
+    loaded_max_date = meta_df["Call Date"].max()
+    # Convert to date objects for comparison
+    if isinstance(loaded_min_date, pd.Timestamp):
+        loaded_min_date = loaded_min_date.date()
+    elif hasattr(loaded_min_date, "date"):
+        loaded_min_date = loaded_min_date.date()
+    if isinstance(loaded_max_date, pd.Timestamp):
+        loaded_max_date = loaded_max_date.date()
+    elif hasattr(loaded_max_date, "date"):
+        loaded_max_date = loaded_max_date.date()
+
+    # Check if selected range extends beyond loaded data
+    current_range = (start_date, end_date)
+    last_checked_range = st.session_state.get("_last_checked_date_range", None)
+    
+    # Only check if the range has changed since last check (prevents re-checking on every rerun)
+    range_changed = last_checked_range != current_range
+    
+    if range_changed:
+        # Update the last checked range
+        st.session_state["_last_checked_date_range"] = current_range
+        
+        # Check if range extends beyond loaded data
+        range_extends_beyond = start_date < loaded_min_date or end_date > loaded_max_date
+        range_already_covered = loaded_min_date <= start_date and loaded_max_date >= end_date
+        
+        logger.debug(
+            f"Date range check: selected={current_range}, loaded=({loaded_min_date}, {loaded_max_date}), "
+            f"extends_beyond={range_extends_beyond}, already_covered={range_already_covered}"
+        )
+        
+        if range_extends_beyond and not range_already_covered:
+            # Request data reload for the selected 30-day window
+            st.session_state._load_all_data_for_date_range = True
+            st.session_state._requested_date_range = (start_date, end_date)
+            # Clear all caches to force full reload from S3
+            if "merged_calls" in st.session_state:
+                del st.session_state.merged_calls
+            if "s3_cache_result" in st.session_state:
+                del st.session_state.s3_cache_result
+            if "_disk_cache_during_refresh" in st.session_state:
+                del st.session_state._disk_cache_during_refresh
+            # Also clear Streamlit cache key to force reload
+            if "_s3_cache_timestamp" in st.session_state:
+                del st.session_state._s3_cache_timestamp
+            logger.info(
+                f"Date range {start_date} to {end_date} extends beyond loaded data "
+                f"({loaded_min_date} to {loaded_max_date}). Triggering data reload."
+            )
+            st.rerun()
+        elif range_already_covered:
+            logger.debug(
+                f"Date range {start_date} to {end_date} is already covered by loaded data "
+                f"({loaded_min_date} to {loaded_max_date}). No reload needed."
+            )
+    else:
+        logger.debug(
+            f"Date range unchanged from last check: {current_range}. Skipping check."
+        )
+else:
+    # If we just cleared the flag, set a temporary flag to skip check on next rerun
+    if st.session_state.get("_just_cleared_date_range_flag", False):
+        # Clear the temporary flag after one rerun
+        del st.session_state["_just_cleared_date_range_flag"]
+    elif st.session_state.get("_load_all_data_for_date_range", False):
+        logger.debug("Date range check skipped - data reload already in progress")
+    elif len(meta_df) == 0:
+        logger.debug("Date range check skipped - meta_df is empty")
+    elif "Call Date" not in meta_df.columns or meta_df["Call Date"].isna().all():
+        logger.debug("Date range check skipped - no valid Call Date column in meta_df")
 
 # Agent filter (only for admin view)
 if not user_agent_id:
