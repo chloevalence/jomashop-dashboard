@@ -1691,9 +1691,35 @@ def load_month_cache_from_s3(year, month):
     cache_key = get_s3_cache_key_for_month(year, month)
     logger.debug(f"Attempting to load month cache: s3://{s3_bucket}/{cache_key}")
 
+    # Create S3 client with timeout configuration for efficient loading
     try:
-        response = s3_client.get_object(Bucket=s3_bucket, Key=cache_key)
-        s3_cached_data = json.loads(response["Body"].read().decode("utf-8"))
+        config = botocore.config.Config(
+            connect_timeout=10,
+            read_timeout=30,  # 30 seconds should be enough for month cache
+            retries={"max_attempts": 2, "mode": "standard"},
+        )
+        s3_client_with_timeout = boto3.client(
+            "s3",
+            aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+            aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+            region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+            config=config,
+        )
+    except Exception as config_error:
+        logger.warning(
+            f"Could not create S3 client with timeout for month cache, using default: {config_error}"
+        )
+        s3_client_with_timeout = s3_client
+
+    try:
+        response = s3_client_with_timeout.get_object(Bucket=s3_bucket, Key=cache_key)
+
+        # Use chunked reading for efficient loading of large files
+        # This prevents hanging on large cache files and is more memory-efficient
+        chunks = []
+        for chunk in response["Body"].iter_chunks(chunk_size=8192):
+            chunks.append(chunk)
+        s3_cached_data = json.loads(b"".join(chunks).decode("utf-8"))
 
         if isinstance(s3_cached_data, dict):
             call_data = s3_cached_data.get("call_data", [])
@@ -1714,7 +1740,14 @@ def load_month_cache_from_s3(year, month):
             logger.warning(f"Error loading month cache {cache_key}: {e}")
         return None, None, None
     except Exception as e:
-        logger.warning(f"Error loading month cache {cache_key}: {e}")
+        # Handle timeout and other network errors
+        error_msg = str(e)
+        if "timeout" in error_msg.lower() or "read timeout" in error_msg.lower():
+            logger.warning(
+                f"Timeout loading month cache {cache_key} (network may be slow): {e}"
+            )
+        else:
+            logger.warning(f"Error loading month cache {cache_key}: {e}")
         return None, None, None
 
 
