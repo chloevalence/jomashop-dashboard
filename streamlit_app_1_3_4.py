@@ -7993,6 +7993,9 @@ try:
                             st.session_state["_load_all_data_for_date_range"] = False
                             # Set temporary flag to skip date range check on next rerun
                             st.session_state["_just_cleared_date_range_flag"] = True
+                            # Clear the month switch flag since data loaded successfully
+                            if "_just_switched_months" in st.session_state:
+                                del st.session_state["_just_switched_months"]
                             # Keep _requested_date_range so we know which month is loaded
                             # Only clear _last_checked_date_range so future date changes can trigger reloads
                             if "_last_checked_date_range" in st.session_state:
@@ -8003,10 +8006,35 @@ try:
                             )
                         else:
                             # Data doesn't fully cover the range yet - keep flag set
+                            # But if we just switched months and got empty data, clear the switch flag
+                            # to allow the check to run (it will handle empty data properly)
+                            if (
+                                "_just_switched_months" in st.session_state
+                                and len(meta_df) == 0
+                            ):
+                                del st.session_state["_just_switched_months"]
+                                logger.info(
+                                    "Switched months but got empty data. Cleared switch flag to allow proper handling."
+                                )
                             logger.info(
                                 f"Data loaded but doesn't fully cover requested range. "
                                 f"Loaded: {loaded_min} to {loaded_max}, Requested: {req_start} to {req_end}"
                             )
+                    else:
+                        # No valid dates in loaded data - might be empty or all NaN
+                        # If we just switched months and got empty data, clear the switch flag
+                        if "_just_switched_months" in st.session_state:
+                            if len(meta_df) == 0:
+                                del st.session_state["_just_switched_months"]
+                                logger.info(
+                                    "Switched months but got empty DataFrame. Cleared switch flag."
+                                )
+                            else:
+                                # Has data but no valid dates - clear flag anyway to allow proper handling
+                                del st.session_state["_just_switched_months"]
+                                logger.info(
+                                    "Switched months but loaded data has no valid dates. Cleared switch flag."
+                                )
 
         # Convert call_date to datetime if it's not already (before column rename)
         if "call_date" in meta_df.columns:
@@ -8550,7 +8578,11 @@ else:
     filter_df = meta_df
     show_comparison = False
     log_memory_usage(f"Created filter_df from meta_df ({len(filter_df)} rows)")
-    st.sidebar.info(f" Showing all data ({len(meta_df)} calls)")
+    # Message will be updated after date range and filters are determined
+    # Store placeholder in session state to survive reruns
+    if "_data_info_placeholder" not in st.session_state:
+        st.session_state["_data_info_placeholder"] = st.sidebar.empty()
+    data_info_placeholder = st.session_state["_data_info_placeholder"]
 
 # --- Sidebar Filters ---
 st.sidebar.header(" Filter Data")
@@ -8841,8 +8873,126 @@ else:  # Pick Your Dates - Now only allows selecting full calendar months
         f"📅 Selected: **{month_name}** ({month_start.strftime('%m/%d')} - {month_end.strftime('%m/%d')})"
     )
 
+
+# Helper function to build descriptive data info message
+def build_data_info_message(
+    date_range_mode,
+    start_date,
+    end_date,
+    call_count,
+    selected_agents=None,
+    score_range=None,
+    selected_labels=None,
+    search_text=None,
+    preset_filters=None,
+    selected_rubric_codes=None,
+    available_agents_count=None,
+    available_labels_count=None,
+    min_score=None,
+    max_score=None,
+):
+    """Build a descriptive message showing current data selection and filters."""
+    # Date range description
+    if date_range_mode == "Last Week":
+        date_desc = (
+            f"Last Week ({start_date.strftime('%m/%d')} - {end_date.strftime('%m/%d')})"
+        )
+    elif date_range_mode == "Last Month":
+        month_name = datetime(start_date.year, start_date.month, 1).strftime("%B %Y")
+        date_desc = f"{month_name}"
+    else:  # Pick Your Dates
+        month_name = datetime(start_date.year, start_date.month, 1).strftime("%B %Y")
+        date_desc = f"{month_name}"
+
+    # Add filter descriptions if any are active
+    filter_parts = []
+
+    # Agent filter (only if not all agents selected)
+    if selected_agents and len(selected_agents) > 0 and available_agents_count:
+        if len(selected_agents) < available_agents_count:
+            if len(selected_agents) == 1:
+                filter_parts.append(f"Agent: {selected_agents[0]}")
+            else:
+                filter_parts.append(f"{len(selected_agents)} agents")
+
+    # Score range filter
+    if score_range and min_score is not None and max_score is not None:
+        if score_range[0] > min_score or score_range[1] < max_score:
+            filter_parts.append(f"Score: {score_range[0]:.0f}-{score_range[1]:.0f}")
+
+    # Label filter
+    if selected_labels and len(selected_labels) > 0 and available_labels_count:
+        if len(selected_labels) < available_labels_count:
+            if len(selected_labels) <= 3:
+                filter_parts.append(f"Labels: {', '.join(selected_labels)}")
+            else:
+                filter_parts.append(f"{len(selected_labels)} labels")
+
+    # Search filter
+    if search_text and search_text.strip():
+        search_display = (
+            search_text[:20] + "..." if len(search_text) > 20 else search_text
+        )
+        filter_parts.append(f"Search: '{search_display}'")
+
+    # Preset filter
+    if preset_filters and preset_filters != "None":
+        filter_parts.append(f"Preset: {preset_filters}")
+
+    # Rubric codes filter
+    if selected_rubric_codes and len(selected_rubric_codes) > 0:
+        filter_parts.append(f"{len(selected_rubric_codes)} rubric codes")
+
+    # Build final message
+    if filter_parts:
+        filters_str = " | ".join(filter_parts)
+        return f"Showing {date_desc} ({call_count} calls)\n🔍 Filters: {filters_str}"
+    else:
+        return f"Showing {date_desc} ({call_count} calls)"
+
+
 # Extract start_date and end_date from selected_dates
 start_date, end_date = selected_dates
+
+# Update data info message with date range (initial, before filters)
+if not user_agent_id and "_data_info_placeholder" in st.session_state:
+    try:
+        date_range_mode = st.session_state.get("date_range_mode", "Last Month")
+        available_agents_count = (
+            len(filter_df["Agent"].dropna().unique())
+            if "Agent" in filter_df.columns and len(filter_df) > 0
+            else None
+        )
+        available_labels_count = (
+            len(filter_df["Label"].dropna().unique())
+            if "Label" in filter_df.columns and len(filter_df) > 0
+            else None
+        )
+        min_score = (
+            float(filter_df["QA Score"].min())
+            if "QA Score" in filter_df.columns and len(filter_df) > 0
+            else None
+        )
+        max_score = (
+            float(filter_df["QA Score"].max())
+            if "QA Score" in filter_df.columns and len(filter_df) > 0
+            else None
+        )
+        data_info_placeholder = st.session_state["_data_info_placeholder"]
+        data_info_placeholder.info(
+            build_data_info_message(
+                date_range_mode,
+                start_date,
+                end_date,
+                len(meta_df),
+                available_agents_count=available_agents_count,
+                available_labels_count=available_labels_count,
+                min_score=min_score,
+                max_score=max_score,
+            )
+        )
+    except Exception as e:
+        logger.debug(f"Could not update data info message: {e}")
 
 # Since we now only allow full calendar months, no need for multi-month validation
 # But ensure dates are valid
@@ -8904,6 +9054,11 @@ if should_reload:
         del st.session_state._disk_cache_during_refresh
     if "_s3_cache_timestamp" in st.session_state:
         del st.session_state._s3_cache_timestamp
+    # Clear the last checked range to prevent stale checks after reload
+    if "_last_checked_date_range" in st.session_state:
+        del st.session_state._last_checked_date_range
+    # Set a flag to skip date range check on next rerun (after data loads)
+    st.session_state._just_switched_months = True
     # Clear Streamlit cache
     try:
         load_all_calls_cached.clear()
@@ -8921,9 +9076,11 @@ else:
 # Check if selected date range extends beyond loaded data and trigger reload if needed
 # Only check if we're not already loading data and meta_df has data
 # Note: This check is now secondary since we always set flags above when date range changes
+# CRITICAL: Skip this check if we just switched months (prevents reload loops with empty/new data)
 if (
     not st.session_state.get("_load_all_data_for_date_range", False)
     and not st.session_state.get("_just_cleared_date_range_flag", False)
+    and not st.session_state.get("_just_switched_months", False)
     and len(meta_df) > 0
     and "Call Date" in meta_df.columns
     and not meta_df["Call Date"].isna().all()
@@ -9510,6 +9667,58 @@ if selected_products:
         filtered_df = filtered_df[
             filtered_df["Category"].isin(selected_products)
         ].copy()
+
+# Update data info message with final filtered count and active filters
+if not user_agent_id and "_data_info_placeholder" in st.session_state:
+    try:
+        date_range_mode = st.session_state.get("date_range_mode", "Last Month")
+        available_agents_count = (
+            len(filter_df["Agent"].dropna().unique())
+            if "Agent" in filter_df.columns and len(filter_df) > 0
+            else None
+        )
+        available_labels_count = (
+            len(filter_df["Label"].dropna().unique())
+            if "Label" in filter_df.columns and len(filter_df) > 0
+            else None
+        )
+        min_score = (
+            float(filter_df["QA Score"].min())
+            if "QA Score" in filter_df.columns and len(filter_df) > 0
+            else None
+        )
+        max_score = (
+            float(filter_df["QA Score"].max())
+            if "QA Score" in filter_df.columns and len(filter_df) > 0
+            else None
+        )
+        data_info_placeholder = st.session_state["_data_info_placeholder"]
+        data_info_placeholder.info(
+            build_data_info_message(
+                date_range_mode,
+                start_date,
+                end_date,
+                len(filtered_df),
+                selected_agents=selected_agents if not user_agent_id else None,
+                score_range=score_range if score_range else None,
+                selected_labels=selected_labels if selected_labels else None,
+                search_text=search_text
+                if search_text and search_text.strip()
+                else None,
+                preset_filters=preset_filters
+                if preset_filters and preset_filters != "None"
+                else None,
+                selected_rubric_codes=selected_rubric_codes
+                if selected_rubric_codes
+                else None,
+                available_agents_count=available_agents_count,
+                available_labels_count=available_labels_count,
+                min_score=min_score,
+                max_score=max_score,
+            )
+        )
+    except Exception as e:
+        logger.debug(f"Could not update data info message with filters: {e}")
 
 # Calculate overall averages for comparison (from all data, not filtered)
 if show_comparison and user_agent_id:
