@@ -3295,19 +3295,37 @@ def load_all_calls_cached(cache_version=0):
 
                 # Check for cache availability periodically (every 2 seconds)
                 if int(waited) % 2 == 0:
-                    # Try disk cache
-                    try:
-                        disk_result = load_cached_data_from_disk()
-                        if disk_result and disk_result[0] and len(disk_result[0]) > 0:
-                            migrated = migrate_old_cache_format(disk_result[0])
-                            logger.info(
-                                f"Found disk cache during wait: {len(migrated)} calls (waited {waited:.1f}s)"
-                            )
-                            return migrated, disk_result[1] if disk_result[1] else []
-                    except Exception as e:
-                        logger.debug(f"Disk cache not available yet: {e}")
+                    # CRITICAL: Skip disk cache if a specific month was requested
+                    # Disk cache may contain data from a different month
+                    requested_range = st.session_state.get(
+                        "_requested_date_range", None
+                    )
+                    if not requested_range:
+                        # No specific month requested - safe to use disk cache
+                        try:
+                            disk_result = load_cached_data_from_disk()
+                            if (
+                                disk_result
+                                and disk_result[0]
+                                and len(disk_result[0]) > 0
+                            ):
+                                migrated = migrate_old_cache_format(disk_result[0])
+                                logger.info(
+                                    f"Found disk cache during wait: {len(migrated)} calls (waited {waited:.1f}s)"
+                                )
+                                return migrated, disk_result[1] if disk_result[
+                                    1
+                                ] else []
+                        except Exception as e:
+                            logger.debug(f"Disk cache not available yet: {e}")
+                    else:
+                        # Specific month requested - skip disk cache to avoid wrong-month data
+                        logger.debug(
+                            f"Skipping disk cache during wait - specific month requested: {requested_range[0].year}-{requested_range[0].month:02d}"
+                        )
 
                     # Try session state cache
+                    # CRITICAL: Verify session cache is for the correct month before using it
                     if "_s3_cache_result" in st.session_state:
                         cached_result = st.session_state["_s3_cache_result"]
                         # Handle both tuple (data, errors) and just data formats for backward compatibility
@@ -3320,13 +3338,80 @@ def load_all_calls_cached(cache_version=0):
                             )
 
                         if cached_data and len(cached_data) >= 100:
-                            logger.info(
-                                f"Found session cache during wait: {len(cached_data)} calls (waited {waited:.1f}s)"
+                            # Check if a specific month was requested
+                            requested_range = st.session_state.get(
+                                "_requested_date_range", None
                             )
-                            return cached_data, cached_errors
+                            if requested_range:
+                                # Verify cached data is for the requested month
+                                try:
+                                    first_call = cached_data[0]
+                                    cached_date = None
+                                    for date_field in [
+                                        "Call Date",
+                                        "call_date",
+                                        "date",
+                                    ]:
+                                        if (
+                                            date_field in first_call
+                                            and first_call[date_field]
+                                        ):
+                                            try:
+                                                date_val = first_call[date_field]
+                                                if isinstance(date_val, str):
+                                                    date_val = datetime.strptime(
+                                                        date_val.split()[0], "%Y-%m-%d"
+                                                    )
+                                                cached_date = (
+                                                    date_val
+                                                    if isinstance(date_val, datetime)
+                                                    else None
+                                                )
+                                                if cached_date:
+                                                    break
+                                            except Exception:
+                                                continue
+
+                                    if cached_date:
+                                        cached_month = (
+                                            cached_date.year,
+                                            cached_date.month,
+                                        )
+                                        requested_month = (
+                                            requested_range[0].year,
+                                            requested_range[0].month,
+                                        )
+
+                                        if cached_month == requested_month:
+                                            # Cache is for the correct month - use it
+                                            logger.info(
+                                                f"Found session cache during wait for requested month {requested_month[0]}-{requested_month[1]:02d}: {len(cached_data)} calls (waited {waited:.1f}s)"
+                                            )
+                                            return cached_data, cached_errors
+                                        else:
+                                            # Cache is for wrong month - skip it
+                                            logger.debug(
+                                                f"Skipping session cache during wait - wrong month. Cached: {cached_month[0]}-{cached_month[1]:02d}, Requested: {requested_month[0]}-{requested_month[1]:02d}"
+                                            )
+                                    else:
+                                        # Could not determine cached month - skip to be safe
+                                        logger.debug(
+                                            "Skipping session cache during wait - could not determine cached month"
+                                        )
+                                except Exception as e:
+                                    logger.debug(
+                                        f"Error checking session cache month during wait: {e}"
+                                    )
+                            else:
+                                # No specific month requested - safe to use session cache
+                                logger.info(
+                                    f"Found session cache during wait: {len(cached_data)} calls (waited {waited:.1f}s)"
+                                )
+                                return cached_data, cached_errors
 
             # Try multiple sources for data after wait
             # 1. Try session state cache first (fastest)
+            # CRITICAL: Verify session cache is for the correct month before using it
             if "_s3_cache_result" in st.session_state:
                 cached_result = st.session_state["_s3_cache_result"]
                 # Handle both tuple (data, errors) and just data formats for backward compatibility
@@ -3337,10 +3422,66 @@ def load_all_calls_cached(cache_version=0):
                     cached_errors = st.session_state.get("_last_load_errors", [])
 
                 if cached_data and len(cached_data) >= 100:
-                    logger.info(
-                        f"Returning session cache after wait: {len(cached_data)} calls"
+                    # Check if a specific month was requested
+                    requested_range = st.session_state.get(
+                        "_requested_date_range", None
                     )
-                    return cached_data, cached_errors
+                    if requested_range:
+                        # Verify cached data is for the requested month
+                        try:
+                            first_call = cached_data[0]
+                            cached_date = None
+                            for date_field in ["Call Date", "call_date", "date"]:
+                                if date_field in first_call and first_call[date_field]:
+                                    try:
+                                        date_val = first_call[date_field]
+                                        if isinstance(date_val, str):
+                                            date_val = datetime.strptime(
+                                                date_val.split()[0], "%Y-%m-%d"
+                                            )
+                                        cached_date = (
+                                            date_val
+                                            if isinstance(date_val, datetime)
+                                            else None
+                                        )
+                                        if cached_date:
+                                            break
+                                    except Exception:
+                                        continue
+
+                            if cached_date:
+                                cached_month = (cached_date.year, cached_date.month)
+                                requested_month = (
+                                    requested_range[0].year,
+                                    requested_range[0].month,
+                                )
+
+                                if cached_month == requested_month:
+                                    # Cache is for the correct month - use it
+                                    logger.info(
+                                        f"Returning session cache after wait for requested month {requested_month[0]}-{requested_month[1]:02d}: {len(cached_data)} calls"
+                                    )
+                                    return cached_data, cached_errors
+                                else:
+                                    # Cache is for wrong month - skip it
+                                    logger.debug(
+                                        f"Skipping session cache after wait - wrong month. Cached: {cached_month[0]}-{cached_month[1]:02d}, Requested: {requested_month[0]}-{requested_month[1]:02d}"
+                                    )
+                            else:
+                                # Could not determine cached month - skip to be safe
+                                logger.debug(
+                                    "Skipping session cache after wait - could not determine cached month"
+                                )
+                        except Exception as e:
+                            logger.debug(
+                                f"Error checking session cache month after wait: {e}"
+                            )
+                    else:
+                        # No specific month requested - safe to use session cache
+                        logger.info(
+                            f"Returning session cache after wait: {len(cached_data)} calls"
+                        )
+                        return cached_data, cached_errors
 
             # 2. Try Streamlit cache (if load completed)
             try:
@@ -3361,16 +3502,26 @@ def load_all_calls_cached(cache_version=0):
                 logger.debug(f"Could not get from Streamlit cache: {e}")
 
             # 3. Try disk cache
-            try:
-                disk_result = load_cached_data_from_disk()
-                if disk_result and disk_result[0] and len(disk_result[0]) > 0:
-                    migrated = migrate_old_cache_format(disk_result[0])
-                    logger.info(
-                        f"Returning disk cache after wait: {len(migrated)} calls"
-                    )
-                    return migrated, disk_result[1] if disk_result[1] else []
-            except Exception as e:
-                logger.warning(f"Could not load disk cache after wait: {e}")
+            # CRITICAL: Skip disk cache if a specific month was requested
+            # Disk cache may contain data from a different month
+            requested_range = st.session_state.get("_requested_date_range", None)
+            if not requested_range:
+                # No specific month requested - safe to use disk cache
+                try:
+                    disk_result = load_cached_data_from_disk()
+                    if disk_result and disk_result[0] and len(disk_result[0]) > 0:
+                        migrated = migrate_old_cache_format(disk_result[0])
+                        logger.info(
+                            f"Returning disk cache after wait: {len(migrated)} calls"
+                        )
+                        return migrated, disk_result[1] if disk_result[1] else []
+                except Exception as e:
+                    logger.warning(f"Could not load disk cache after wait: {e}")
+            else:
+                # Specific month requested - skip disk cache to avoid wrong-month data
+                logger.debug(
+                    f"Skipping disk cache after wait - specific month requested: {requested_range[0].year}-{requested_range[0].month:02d}"
+                )
 
             # 3. Try S3 cache from session state (most up-to-date, shared across users)
             try:
