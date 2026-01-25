@@ -2231,8 +2231,13 @@ def cleanup_pdf_sourced_calls():
     """
     One-time cache cleanup to remove PDF-sourced calls from cache.
     This function checks if cleanup has already been performed and only runs once.
+    When _requested_date_range is set (monthly-only mode), we never download the
+    legacy S3_CACHE_KEY to avoid OOM/crash on month switch.
     """
     try:
+        # Monthly-only: avoid any get_object on S3_CACHE_KEY (can be huge and cause crash on month switch)
+        requested_range = st.session_state.get("_requested_date_range", None)
+
         # Check if cleanup has already been performed
         cleanup_flag_key = "cache_cleaned_pdf_calls"
 
@@ -2259,34 +2264,41 @@ def cleanup_pdf_sourced_calls():
                 # If we can't read the cache, assume cleanup not performed
                 pass
 
-        # Check S3 cache if disk check didn't find flag
+        # Check S3 cache if disk check didn't find flag (skip in monthly-only to avoid downloading legacy S3)
         if not cleanup_performed:
-            s3_client, s3_bucket = get_s3_client_and_bucket()
-            if s3_client and s3_bucket:
-                try:
-                    response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                    body = response["Body"]
-                    chunks = []
-                    for chunk in body.iter_chunks(chunk_size=8192):
-                        chunks.append(chunk)
-                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
-                    if cached_data.get(cleanup_flag_key, False):
-                        cleanup_performed = True
-                        logger.info(
-                            "Cache cleanup already performed (found flag in S3 cache)"
-                        )
-                except ClientError as e:
-                    error_code = e.response.get("Error", {}).get("Code", "")
-                    if error_code == "NoSuchKey":
-                        # No cache in S3, proceed with cleanup
+            if requested_range is not None:
+                # Monthly-only: never download S3_CACHE_KEY. Assume cleanup already done.
+                cleanup_performed = True
+                logger.info(
+                    "Cache cleanup: monthly-only mode, assuming already performed (skip S3 legacy check)"
+                )
+            else:
+                s3_client, s3_bucket = get_s3_client_and_bucket()
+                if s3_client and s3_bucket:
+                    try:
+                        response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                        body = response["Body"]
+                        chunks = []
+                        for chunk in body.iter_chunks(chunk_size=8192):
+                            chunks.append(chunk)
+                        cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                        if cached_data.get(cleanup_flag_key, False):
+                            cleanup_performed = True
+                            logger.info(
+                                "Cache cleanup already performed (found flag in S3 cache)"
+                            )
+                    except ClientError as e:
+                        error_code = e.response.get("Error", {}).get("Code", "")
+                        if error_code == "NoSuchKey":
+                            # No cache in S3, proceed with cleanup
+                            pass
+                        else:
+                            logger.warning(
+                                f"Could not check S3 cache for cleanup flag: {e}"
+                            )
+                    except Exception:
+                        # If we can't read S3 cache, proceed with cleanup
                         pass
-                    else:
-                        logger.warning(
-                            f"Could not check S3 cache for cleanup flag: {e}"
-                        )
-                except Exception:
-                    # If we can't read S3 cache, proceed with cleanup
-                    pass
 
         if cleanup_performed:
             return  # Cleanup already done, skip
@@ -2310,26 +2322,28 @@ def cleanup_pdf_sourced_calls():
             except Exception as e:
                 logger.warning(f"Could not load disk cache for cleanup: {e}")
 
-        # If no disk cache or empty, try S3
+        # If no disk cache or empty, try S3 (skip in monthly-only to avoid downloading legacy S3)
         if not call_data:
-            s3_client, s3_bucket = get_s3_client_and_bucket()
-            if s3_client and s3_bucket:
-                try:
-                    response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
-                    body = response["Body"]
-                    chunks = []
-                    for chunk in body.iter_chunks(chunk_size=8192):
-                        chunks.append(chunk)
-                    cached_data = json.loads(b"".join(chunks).decode("utf-8"))
-                    call_data = cached_data.get("call_data", [])
-                    errors = cached_data.get("errors", [])
-                    cache_timestamp = cached_data.get("timestamp")
-                except ClientError as e:
-                    error_code = e.response.get("Error", {}).get("Code", "")
-                    if error_code != "NoSuchKey":
-                        logger.warning(f"Could not load S3 cache for cleanup: {e}")
-                except Exception as e:
-                    logger.warning(f"Error loading S3 cache for cleanup: {e}")
+            if requested_range is None:
+                s3_client, s3_bucket = get_s3_client_and_bucket()
+                if s3_client and s3_bucket:
+                    try:
+                        response = s3_client.get_object(Bucket=s3_bucket, Key=S3_CACHE_KEY)
+                        body = response["Body"]
+                        chunks = []
+                        for chunk in body.iter_chunks(chunk_size=8192):
+                            chunks.append(chunk)
+                        cached_data = json.loads(b"".join(chunks).decode("utf-8"))
+                        call_data = cached_data.get("call_data", [])
+                        errors = cached_data.get("errors", [])
+                        cache_timestamp = cached_data.get("timestamp")
+                    except ClientError as e:
+                        error_code = e.response.get("Error", {}).get("Code", "")
+                        if error_code != "NoSuchKey":
+                            logger.warning(f"Could not load S3 cache for cleanup: {e}")
+                    except Exception as e:
+                        logger.warning(f"Error loading S3 cache for cleanup: {e}")
+            # else: monthly-only, do not download S3_CACHE_KEY; leave call_data=[], fall through to "No cache found to clean"
 
         if not call_data:
             logger.info("No cache found to clean - marking cleanup as complete")
