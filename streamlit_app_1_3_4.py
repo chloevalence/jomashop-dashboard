@@ -2227,16 +2227,20 @@ def deduplicate_calls(call_data):
     return deduplicated
 
 
-def cleanup_pdf_sourced_calls():
+def cleanup_pdf_sourced_calls(requested_range=None):
     """
     One-time cache cleanup to remove PDF-sourced calls from cache.
     This function checks if cleanup has already been performed and only runs once.
-    When _requested_date_range is set (monthly-only mode), we never download the
+    When requested_range is set (monthly-only mode), we never download the
     legacy S3_CACHE_KEY to avoid OOM/crash on month switch.
+
+    requested_range: optional (start_date, end_date). When provided by caller (e.g.
+    from main thread), used instead of st.session_state to avoid thread/context issues.
     """
     try:
-        # Monthly-only: avoid any get_object on S3_CACHE_KEY (can be huge and cause crash on month switch)
-        requested_range = st.session_state.get("_requested_date_range", None)
+        # Use passed-in value when provided; else read from session (main-thread callers only)
+        if requested_range is None:
+            requested_range = st.session_state.get("_requested_date_range", None)
 
         # Check if cleanup has already been performed
         cleanup_flag_key = "cache_cleaned_pdf_calls"
@@ -3293,11 +3297,13 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
 # Use "Refresh New Data" button when new CSV files are added to S3 - it only loads new files (PDFs are ignored)
 # Note: Using max_entries=1 to prevent cache from growing, and no TTL so it never auto-expires
 @st.cache_data(ttl=None, max_entries=1, show_spinner=False)
-def load_all_calls_cached(cache_version=0):
+def load_all_calls_cached(cache_version=0, requested_range=None):
     """Cached wrapper - loads ALL data once, then serves from cache indefinitely until manually refreshed.
     Performs one-time cache cleanup before loading to remove PDF-sourced calls.
 
     cache_version parameter forces cache refresh when incremented (used after refresh completes).
+    requested_range: optional (start_date, end_date). When provided by caller (e.g. from main thread
+    before starting load thread), used instead of st.session_state to avoid thread/context issues.
 
     Strategy:
         1. Always check S3 cache first (source of truth, shared across all users)
@@ -3307,8 +3313,14 @@ def load_all_calls_cached(cache_version=0):
 
     For incremental updates, use the "Refresh New Data" button which calls load_new_calls_only().
     """
+    # Resolve requested range: use arg when provided (thread-safe), else session state (main-thread only)
+    _requested_range = (
+        requested_range
+        if requested_range is not None
+        else st.session_state.get("_requested_date_range", None)
+    )
     # Perform one-time cache cleanup to remove PDF-sourced calls
-    cleanup_pdf_sourced_calls()
+    cleanup_pdf_sourced_calls(requested_range=_requested_range)
     import time
 
     start_time = time.time()
@@ -3357,10 +3369,7 @@ def load_all_calls_cached(cache_version=0):
                 if int(waited) % 2 == 0:
                     # CRITICAL: Skip disk cache if a specific month was requested
                     # Disk cache may contain data from a different month
-                    requested_range = st.session_state.get(
-                        "_requested_date_range", None
-                    )
-                    if not requested_range:
+                    if not _requested_range:
                         # No specific month requested - safe to use disk cache
                         try:
                             disk_result = load_cached_data_from_disk()
@@ -3381,7 +3390,7 @@ def load_all_calls_cached(cache_version=0):
                     else:
                         # Specific month requested - skip disk cache to avoid wrong-month data
                         logger.debug(
-                            f"Skipping disk cache during wait - specific month requested: {requested_range[0].year}-{requested_range[0].month:02d}"
+                            f"Skipping disk cache during wait - specific month requested: {_requested_range[0].year}-{_requested_range[0].month:02d}"
                         )
 
                     # Try session state cache
@@ -3399,10 +3408,7 @@ def load_all_calls_cached(cache_version=0):
 
                         if cached_data and len(cached_data) >= 100:
                             # Check if a specific month was requested
-                            requested_range = st.session_state.get(
-                                "_requested_date_range", None
-                            )
-                            if requested_range:
+                            if _requested_range:
                                 # Verify cached data is for the requested month
                                 try:
                                     first_call = cached_data[0]
@@ -3438,8 +3444,8 @@ def load_all_calls_cached(cache_version=0):
                                             cached_date.month,
                                         )
                                         requested_month = (
-                                            requested_range[0].year,
-                                            requested_range[0].month,
+                                            _requested_range[0].year,
+                                            _requested_range[0].month,
                                         )
 
                                         if cached_month == requested_month:
@@ -3483,10 +3489,7 @@ def load_all_calls_cached(cache_version=0):
 
                 if cached_data and len(cached_data) >= 100:
                     # Check if a specific month was requested
-                    requested_range = st.session_state.get(
-                        "_requested_date_range", None
-                    )
-                    if requested_range:
+                    if _requested_range:
                         # Verify cached data is for the requested month
                         try:
                             first_call = cached_data[0]
@@ -3512,8 +3515,8 @@ def load_all_calls_cached(cache_version=0):
                             if cached_date:
                                 cached_month = (cached_date.year, cached_date.month)
                                 requested_month = (
-                                    requested_range[0].year,
-                                    requested_range[0].month,
+                                    _requested_range[0].year,
+                                    _requested_range[0].month,
                                 )
 
                                 if cached_month == requested_month:
@@ -3564,8 +3567,7 @@ def load_all_calls_cached(cache_version=0):
             # 3. Try disk cache
             # CRITICAL: Skip disk cache if a specific month was requested
             # Disk cache may contain data from a different month
-            requested_range = st.session_state.get("_requested_date_range", None)
-            if not requested_range:
+            if not _requested_range:
                 # No specific month requested - safe to use disk cache
                 try:
                     disk_result = load_cached_data_from_disk()
@@ -3580,7 +3582,7 @@ def load_all_calls_cached(cache_version=0):
             else:
                 # Specific month requested - skip disk cache to avoid wrong-month data
                 logger.debug(
-                    f"Skipping disk cache after wait - specific month requested: {requested_range[0].year}-{requested_range[0].month:02d}"
+                    f"Skipping disk cache after wait - specific month requested: {_requested_range[0].year}-{_requested_range[0].month:02d}"
                 )
 
             # 3. Try S3 cache from session state (most up-to-date, shared across users)
@@ -3769,8 +3771,7 @@ def load_all_calls_cached(cache_version=0):
             )
 
             # If we need to load a different month, skip session cache entirely
-            requested_range = st.session_state.get("_requested_date_range", None)
-            if requested_range:
+            if _requested_range:
                 # Always skip session cache when we have a specific date range request
                 # This ensures we load the correct month from S3
                 skip_session_cache = True
@@ -3780,7 +3781,7 @@ def load_all_calls_cached(cache_version=0):
                 if s3_timestamp_key in st.session_state:
                     del st.session_state[s3_timestamp_key]
                 logger.info(
-                    f"Requested date range {requested_range} - skipping session cache to load correct month"
+                    f"Requested date range {_requested_range} - skipping session cache to load correct month"
                 )
             elif not skip_session_cache:
                 # Only check month mismatch if we're not already skipping session cache
@@ -3820,9 +3821,9 @@ def load_all_calls_cached(cache_version=0):
                                         except Exception:
                                             continue
 
-                                if cached_date:
+                                if cached_date and _requested_range is not None:
                                     cached_month = (cached_date.year, cached_date.month)
-                                    start_date, end_date = requested_range
+                                    start_date, end_date = _requested_range
                                     requested_month = (
                                         start_date.year,
                                         start_date.month,
@@ -3863,9 +3864,8 @@ def load_all_calls_cached(cache_version=0):
                 try:
                     s3_client, s3_bucket = get_s3_client_and_bucket()
                     if s3_client and s3_bucket:
-                        req_range = st.session_state.get("_requested_date_range", None)
-                        if req_range is not None:
-                            year, month = req_range[0].year, req_range[0].month
+                        if _requested_range is not None:
+                            year, month = _requested_range[0].year, _requested_range[0].month
                         else:
                             now = datetime.now()
                             year, month = now.year, now.month
@@ -3996,9 +3996,8 @@ def load_all_calls_cached(cache_version=0):
         # Load from S3 if we don't have a valid session cache (unified: runs for both reload and normal path)
         if s3_cache_result is None:
             # Determine which month to load based on requested date range or default to current month
-            requested_range = st.session_state.get("_requested_date_range", None)
-            if requested_range:
-                start_date, end_date = requested_range
+            if _requested_range:
+                start_date, end_date = _requested_range
                 # Ensure range is within a single month (enforce one month at a time)
                 start_month = (start_date.year, start_date.month)
                 end_month = (end_date.year, end_date.month)
@@ -4104,12 +4103,9 @@ def load_all_calls_cached(cache_version=0):
             # CRITICAL: Filter monthly cache to exact requested date range BEFORE storing in session state
             if s3_cache_result and s3_cache_result[0]:
                 log_memory_usage("Before filtering monthly cache")
-                requested_range = st.session_state.get(
-                    "_requested_date_range", None
-                )
-                if requested_range:
+                if _requested_range:
                     # Filter to exact requested date range
-                    start_date, end_date = requested_range
+                    start_date, end_date = _requested_range
                     original_count = len(s3_cache_result[0])
                     filtered_calls = filter_calls_by_date_range(
                         s3_cache_result[0], start_date, end_date
@@ -4276,8 +4272,7 @@ def load_all_calls_cached(cache_version=0):
             # CRITICAL: If we have a specific month requested and S3 cache is empty,
             # return empty data immediately - don't fall back to disk cache
             # which may contain data from a different month
-            requested_range = st.session_state.get("_requested_date_range", None)
-            if requested_range and len(migrated_calls) == 0:
+            if _requested_range and len(migrated_calls) == 0:
                 logger.info(
                     " S3 cache is empty for requested month - returning empty data (not falling back to disk cache)"
                 )
@@ -4300,10 +4295,9 @@ def load_all_calls_cached(cache_version=0):
         # Fall back to disk cache only if S3 unavailable (backup only)
         # BUT: If a specific month was requested, don't fall back to disk cache
         # (disk cache may contain data from a different month)
-        requested_range = st.session_state.get("_requested_date_range", None)
-        if requested_range:
+        if _requested_range:
             logger.info(
-                f" No S3 cache for requested month {requested_range[0].year}-{requested_range[0].month:02d} - returning empty data (not falling back to disk cache)"
+                f" No S3 cache for requested month {_requested_range[0].year}-{_requested_range[0].month:02d} - returning empty data (not falling back to disk cache)"
             )
             return [], []
         # NOTE: We don't call load_cached_data_from_disk() here because it also loads from S3
@@ -4328,10 +4322,10 @@ def load_all_calls_cached(cache_version=0):
         # and returns immediately, making this check unreachable dead code
 
         # Load disk cache regardless of reload_all_triggered - we'll check that flag later
-        # Guard: when _requested_date_range is set, do not use load_cached_data_from_disk
+        # Guard: when _requested_range is set, do not use load_cached_data_from_disk
         # (it would load legacy S3_CACHE_KEY; monthly-only path uses load_month_cache_from_s3 only)
         disk_result = None
-        if st.session_state.get("_requested_date_range") is None:
+        if _requested_range is None:
             disk_result = load_cached_data_from_disk()
         else:
             logger.debug(
@@ -7857,11 +7851,42 @@ try:
             )
             # Check if data is already loaded and not stale - skip reload if so
             # Only use cached data if it's substantial (at least 100 calls) to avoid using stale/partial data
-            # BUT: Skip if we need to load a different month
+            # BUT: Skip only when we need to load a different month (not when cache already matches)
             requested_range = st.session_state.get("_requested_date_range", None)
+            has_matching_cache = False
+            if "_s3_cache_result" in st.session_state:
+                cr = st.session_state["_s3_cache_result"]
+                cd = cr[0] if isinstance(cr, tuple) and len(cr) > 0 else cr
+                if cd and len(cd) >= 100:
+                    if requested_range is None:
+                        has_matching_cache = True
+                    else:
+                        try:
+                            first = cd[0]
+                            cached_month = None
+                            for date_field in ["Call Date", "call_date", "date"]:
+                                if date_field in first and first[date_field]:
+                                    try:
+                                        dv = first[date_field]
+                                        if isinstance(dv, str):
+                                            dv = datetime.strptime(
+                                                dv.split()[0], "%Y-%m-%d"
+                                            )
+                                        if hasattr(dv, "year"):
+                                            cached_month = (dv.year, dv.month)
+                                        break
+                                    except Exception:
+                                        continue
+                            if cached_month == (
+                                requested_range[0].year,
+                                requested_range[0].month,
+                            ):
+                                has_matching_cache = True
+                        except Exception:
+                            pass
             should_skip_session_cache = (
                 st.session_state.get("_load_all_data_for_date_range", False)
-                or requested_range is not None
+                or (requested_range is not None and not has_matching_cache)
             )
 
             if should_skip_session_cache:
@@ -7995,7 +8020,10 @@ try:
                     def load_data_thread():
                         """Load data in a separate thread"""
                         try:
-                            result = load_all_calls_cached(cache_version=cache_version)
+                            result = load_all_calls_cached(
+                                cache_version=cache_version,
+                                requested_range=requested_range,
+                            )
                             result_queue.put(result)
                         except Exception as e:
                             exception_queue.put(e)
