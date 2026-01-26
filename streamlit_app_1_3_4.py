@@ -227,7 +227,11 @@ def filter_calls_by_date(call_data, max_days):
     filtered_calls = []
 
     # Log available fields from first call for debugging
-    if call_data and len(call_data) > 0:
+    if (
+        call_data
+        and len(call_data) > 0
+        and isinstance(call_data[0], dict)
+    ):
         first_call_fields = list(call_data[0].keys())
         logger.debug(f"Available date fields in call data: {first_call_fields}")
         # Try to find date field by checking all fields
@@ -1003,38 +1007,42 @@ def normalize_agent_id(agent_str):
     if pd.isna(agent_str) or not agent_str:
         return agent_str
 
-    agent_str_lower = str(agent_str).lower().strip()
+    try:
+        agent_str_lower = str(agent_str).lower().strip()
 
-    # Check if already in "Agent X" or "BPO Agent X" format - return as-is
-    if agent_str_lower.startswith("agent ") or agent_str_lower.startswith("bpo agent "):
-        # Extract number and return in consistent format
-        agent_str_clean = (
-            agent_str_lower.replace("bpo agent ", "").replace("agent ", "").strip()
-        )
-        try:
-            agent_num = int(agent_str_clean)
+        # Check if already in "Agent X" or "BPO Agent X" format - return as-is
+        if agent_str_lower.startswith("agent ") or agent_str_lower.startswith("bpo agent "):
+            # Extract number and return in consistent format
+            agent_str_clean = (
+                agent_str_lower.replace("bpo agent ", "").replace("agent ", "").strip()
+            )
+            try:
+                agent_num = int(agent_str_clean)
+                return f"Agent {agent_num}"
+            except ValueError:
+                pass
+
+        # Special cases for Jesus (Agent 1)
+        agent_id_normalized = agent_str_lower.replace(" ", "").replace("_", "")
+        if agent_id_normalized == "unknown" or agent_str_lower == "unknown":
+            return "Agent 1"
+        if agent_id_normalized in ["bp016803073", "bp016803074"]:
+            return "Agent 1"
+        if agent_id_normalized.startswith("bp01"):
+            return "Agent 1"
+
+        # Extract first two digits after "bpagent"
+        # Pattern: bpagent########### → extract first two digits (##)
+        match = re.search(r"bpagent(\d{2})", agent_id_normalized)
+        if match:
+            agent_num = int(match.group(1))
             return f"Agent {agent_num}"
-        except ValueError:
-            pass
 
-    # Special cases for Jesus (Agent 1)
-    agent_id_normalized = agent_str_lower.replace(" ", "").replace("_", "")
-    if agent_id_normalized == "unknown" or agent_str_lower == "unknown":
-        return "Agent 1"
-    if agent_id_normalized in ["bp016803073", "bp016803074"]:
-        return "Agent 1"
-    if agent_id_normalized.startswith("bp01"):
-        return "Agent 1"
-
-    # Extract first two digits after "bpagent"
-    # Pattern: bpagent########### → extract first two digits (##)
-    match = re.search(r"bpagent(\d{2})", agent_id_normalized)
-    if match:
-        agent_num = int(match.group(1))
-        return f"Agent {agent_num}"
-
-    # If no match, try the mapping system as fallback
-    return get_or_create_agent_mapping(agent_str_lower)
+        # If no match, try the mapping system as fallback
+        return get_or_create_agent_mapping(agent_str_lower)
+    except Exception as e:
+        logger.debug(f"normalize_agent_id failed for {agent_str!r}: {e}")
+        return agent_str if agent_str else "Unknown"
 
 
 def normalize_category(value):
@@ -2129,8 +2137,10 @@ def migrate_old_cache_format(call_data):
     Returns:
         List of migrated call dictionaries with normalized agent IDs
     """
+    if call_data is None or not isinstance(call_data, list):
+        return []
     if not call_data:
-        return call_data
+        return []
 
     migrated_count = 0
     agent_normalized_count = 0
@@ -3065,30 +3075,33 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
             cache_data["total"] = total
 
         # Use file locking and atomic writes
-        # Retry on lock timeout with exponential backoff
-        max_lock_retries = 3
-        for lock_attempt in range(max_lock_retries):
-            try:
-                with cache_file_lock(CACHE_FILE, timeout=10):
-                    atomic_write_json(CACHE_FILE, cache_data)
-                break  # Success, exit retry loop
-            except LockTimeoutError as e:
-                if lock_attempt < max_lock_retries - 1:
-                    wait_time = 0.5 * (lock_attempt + 1)
-                    logger.warning(
-                        f" Lock timeout on save attempt {lock_attempt + 1}/{max_lock_retries}: {e}, retrying in {wait_time}s..."
-                    )
-                    time.sleep(wait_time)
-                else:
-                    logger.error(
-                        f" Failed to acquire lock for cache save after {max_lock_retries} attempts: {e}"
-                    )
-                    raise  # Re-raise on final failure
+        # Skip CACHE_FILE write when in monthly-only mode (_requested_date_range)
+        # so we don't overwrite the global disk cache with one month's data
+        if not st.session_state.get("_requested_date_range"):
+            # Retry on lock timeout with exponential backoff
+            max_lock_retries = 3
+            for lock_attempt in range(max_lock_retries):
+                try:
+                    with cache_file_lock(CACHE_FILE, timeout=10):
+                        atomic_write_json(CACHE_FILE, cache_data)
+                    break  # Success, exit retry loop
+                except LockTimeoutError as e:
+                    if lock_attempt < max_lock_retries - 1:
+                        wait_time = 0.5 * (lock_attempt + 1)
+                        logger.warning(
+                            f" Lock timeout on save attempt {lock_attempt + 1}/{max_lock_retries}: {e}, retrying in {wait_time}s..."
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(
+                            f" Failed to acquire lock for cache save after {max_lock_retries} attempts: {e}"
+                        )
+                        raise  # Re-raise on final failure
 
-        status = "PARTIAL" if partial else "COMPLETE"
-        logger.info(
-            f" Successfully saved {len(call_data)} calls to persistent cache ({status}): {CACHE_FILE}"
-        )
+            status = "PARTIAL" if partial else "COMPLETE"
+            logger.info(
+                f" Successfully saved {len(call_data)} calls to persistent cache ({status}): {CACHE_FILE}"
+            )
 
         # Also save to S3 for persistence across deployments
         s3_client, s3_bucket = get_s3_client_and_bucket()
@@ -3299,6 +3312,14 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
         if requested_range is not None
         else st.session_state.get("_requested_date_range", None)
     )
+    # Sanitize: if malformed ((None,None), wrong length, or non-date), treat as None to avoid .year crash
+    if _requested_range is not None:
+        if not isinstance(_requested_range, (tuple, list)) or len(_requested_range) < 2:
+            _requested_range = None
+        elif _requested_range[0] is None or _requested_range[1] is None:
+            _requested_range = None
+        elif not hasattr(_requested_range[0], "year") or not hasattr(_requested_range[1], "year"):
+            _requested_range = None
     # Perform one-time cache cleanup to remove PDF-sourced calls
     cleanup_pdf_sourced_calls(requested_range=_requested_range)
     import time
@@ -7789,8 +7810,8 @@ try:
         if "merged_errors" in st.session_state:
             del st.session_state["merged_errors"]
         # CRITICAL: Apply 30-day filter to prevent memory issues
-        # Unless user has requested a specific date range that requires all data
-        if not st.session_state.get("_load_all_data_for_date_range", False):
+        # Skip when: _load_all_data_for_date_range or _requested_date_range (monthly—already scoped)
+        if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
             if call_data and MAX_DAYS_TO_LOAD is not None:
                 original_count = len(call_data)
                 call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
@@ -7823,8 +7844,8 @@ try:
                         else []
                     )
                     # CRITICAL: Apply 30-day filter to prevent memory issues
-                    # Unless user has requested a specific date range that requires all data
-                    if not st.session_state.get("_load_all_data_for_date_range", False):
+                    # Skip when: _load_all_data_for_date_range or _requested_date_range (monthly)
+                    if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
                         if call_data and MAX_DAYS_TO_LOAD is not None:
                             original_count = len(call_data)
                             call_data = filter_calls_by_date(
@@ -7883,9 +7904,15 @@ try:
                                         break
                                     except Exception:
                                         continue
-                            if cached_month == (
-                                requested_range[0].year,
-                                requested_range[0].month,
+                            if (
+                                requested_range
+                                and len(requested_range) >= 1
+                                and requested_range[0] is not None
+                                and hasattr(requested_range[0], "year")
+                                and cached_month == (
+                                    requested_range[0].year,
+                                    requested_range[0].month,
+                                )
                             ):
                                 has_matching_cache = True
                         except Exception:
@@ -7931,7 +7958,10 @@ try:
                     errors = cached_errors
                     # CRITICAL: Apply 30-day filter to prevent memory issues
                     # Unless user has requested a specific date range that requires all data
-                    if not st.session_state.get("_load_all_data_for_date_range", False):
+                    if (
+                        not st.session_state.get("_load_all_data_for_date_range", False)
+                        and not st.session_state.get("_requested_date_range")
+                    ):
                         if call_data and MAX_DAYS_TO_LOAD is not None:
                             original_count = len(call_data)
                             call_data = filter_calls_by_date(
@@ -8267,7 +8297,11 @@ try:
         # CRITICAL FIX: Only create DataFrame if call_data is valid and not empty
         # Handle None, empty list, or invalid types safely
         log_memory_usage(f"Before creating DataFrame from {len(call_data)} calls")
-        meta_df = pd.DataFrame(call_data)
+        try:
+            meta_df = pd.DataFrame(call_data)
+        except Exception as e:
+            logger.warning(f"Failed to create DataFrame from call_data: {e}")
+            meta_df = pd.DataFrame()
         log_memory_usage(f"After creating DataFrame ({len(meta_df)} rows)")
 
         # Check if we loaded data for a requested date range and verify it covers the range
@@ -8285,49 +8319,55 @@ try:
                     if len(loaded_dates) > 0:
                         loaded_min = loaded_dates.min()
                         loaded_max = loaded_dates.max()
-                        req_start, req_end = requested_range
-                        # Check if data covers the requested range (with some tolerance for exact matches)
-                        # Since we filter to exact date range, loaded data should match or be very close
-                        covers_range = (
-                            loaded_min <= req_start and loaded_max >= req_end
-                        ) or (
-                            # Allow exact match (filtered data might have min/max equal to req_start/req_end)
-                            abs((loaded_min - req_start).days) <= 1
-                            and abs((loaded_max - req_end).days) <= 1
-                        )
+                        if (
+                            isinstance(requested_range, (list, tuple))
+                            and len(requested_range) == 2
+                            and requested_range[0] is not None
+                            and requested_range[1] is not None
+                        ):
+                            req_start, req_end = requested_range
+                            # Check if data covers the requested range (with some tolerance for exact matches)
+                            # Since we filter to exact date range, loaded data should match or be very close
+                            covers_range = (
+                                loaded_min <= req_start and loaded_max >= req_end
+                            ) or (
+                                # Allow exact match (filtered data might have min/max equal to req_start/req_end)
+                                abs((loaded_min - req_start).days) <= 1
+                                and abs((loaded_max - req_end).days) <= 1
+                            )
 
-                        if covers_range:
-                            # Data now covers the requested range - clear the flag
-                            st.session_state["_load_all_data_for_date_range"] = False
-                            # Set temporary flag to skip date range check on next rerun
-                            st.session_state["_just_cleared_date_range_flag"] = True
-                            # Clear the month switch flag since data loaded successfully
-                            if "_just_switched_months" in st.session_state:
-                                del st.session_state["_just_switched_months"]
-                            # Keep _requested_date_range so we know which month is loaded
-                            # Only clear _last_checked_date_range so future date changes can trigger reloads
-                            if "_last_checked_date_range" in st.session_state:
-                                del st.session_state["_last_checked_date_range"]
-                            logger.info(
-                                f"Successfully loaded data covering requested date range {req_start} to {req_end} "
-                                f"(loaded: {loaded_min} to {loaded_max})"
-                            )
-                        else:
-                            # Data doesn't fully cover the range yet - keep flag set
-                            # But if we just switched months and got empty data, clear the switch flag
-                            # to allow the check to run (it will handle empty data properly)
-                            if (
-                                "_just_switched_months" in st.session_state
-                                and len(meta_df) == 0
-                            ):
-                                del st.session_state["_just_switched_months"]
+                            if covers_range:
+                                # Data now covers the requested range - clear the flag
+                                st.session_state["_load_all_data_for_date_range"] = False
+                                # Set temporary flag to skip date range check on next rerun
+                                st.session_state["_just_cleared_date_range_flag"] = True
+                                # Clear the month switch flag since data loaded successfully
+                                if "_just_switched_months" in st.session_state:
+                                    del st.session_state["_just_switched_months"]
+                                # Keep _requested_date_range so we know which month is loaded
+                                # Only clear _last_checked_date_range so future date changes can trigger reloads
+                                if "_last_checked_date_range" in st.session_state:
+                                    del st.session_state["_last_checked_date_range"]
                                 logger.info(
-                                    "Switched months but got empty data. Cleared switch flag to allow proper handling."
+                                    f"Successfully loaded data covering requested date range {req_start} to {req_end} "
+                                    f"(loaded: {loaded_min} to {loaded_max})"
                                 )
-                            logger.info(
-                                f"Data loaded but doesn't fully cover requested range. "
-                                f"Loaded: {loaded_min} to {loaded_max}, Requested: {req_start} to {req_end}"
-                            )
+                            else:
+                                # Data doesn't fully cover the range yet - keep flag set
+                                # But if we just switched months and got empty data, clear the switch flag
+                                # to allow the check to run (it will handle empty data properly)
+                                if (
+                                    "_just_switched_months" in st.session_state
+                                    and len(meta_df) == 0
+                                ):
+                                    del st.session_state["_just_switched_months"]
+                                    logger.info(
+                                        "Switched months but got empty data. Cleared switch flag to allow proper handling."
+                                    )
+                                logger.info(
+                                    f"Data loaded but doesn't fully cover requested range. "
+                                    f"Loaded: {loaded_min} to {loaded_max}, Requested: {req_start} to {req_end}"
+                                )
                     else:
                         # No valid dates in loaded data - might be empty or all NaN
                         # If we just switched months and got empty data, clear the switch flag
