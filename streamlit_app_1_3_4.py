@@ -9053,265 +9053,71 @@ if "rubric_filter_type" not in st.session_state:
 MAX_DATE_RANGE_DAYS = 30
 
 # Initialize date range state
-if "current_date_range_start" not in st.session_state:
-    st.session_state.current_date_range_start = None
-if "current_date_range_end" not in st.session_state:
-    st.session_state.current_date_range_end = None
-if "date_range_mode" not in st.session_state:
-    st.session_state.date_range_mode = "Last Month"  # Default to Last Month (30 days)
+if "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
+    # Default to current month
+    now = datetime.now()
+    st.session_state._selected_year = now.year
+    st.session_state._selected_month = now.month
 
 st.sidebar.markdown("### 📆 Date Range")
 
-# Date range mode selection
-date_range_mode = st.sidebar.radio(
-    "Select Period",
-    options=["Last Week", "Last Month", "Pick Your Dates"],
-    index=["Last Week", "Last Month", "Pick Your Dates"].index(
-        st.session_state.date_range_mode
+# Simple year and month dropdowns side by side
+col1, col2 = st.sidebar.columns(2)
+
+# Year selector: Only 2025 and 2026
+available_years = [2025, 2026]
+with col1:
+    selected_year = st.sidebar.selectbox(
+        "Year",
+        options=available_years,
+        index=available_years.index(st.session_state._selected_year)
+        if st.session_state._selected_year in available_years
+        else 0,  # Default to 2025 if current year not in list
+        key="_year_selector",
     )
-    if st.session_state.date_range_mode
-    in ["Last Week", "Last Month", "Pick Your Dates"]
-    else 1,  # Default to "Last Month" (index 1)
-    help="Choose how to select your date range",
-)
-st.session_state.date_range_mode = date_range_mode
 
-if date_range_mode == "Last Week":
-    # Initialize or get current week range
-    if (
-        st.session_state.current_date_range_start is None
-        or st.session_state.current_date_range_end is None
-    ):
-        week_start = latest_data_date - timedelta(days=7)
-        week_end = latest_data_date
-        st.session_state.current_date_range_start = week_start
-        st.session_state.current_date_range_end = week_end
-    else:
-        week_start = st.session_state.current_date_range_start
-        week_end = st.session_state.current_date_range_end
-
-    # Navigation buttons for week
-    col1, col2, col3 = st.sidebar.columns([1, 3, 1], gap="small")
-    with col1:
-        if st.button("◀", help="Go back one week", width="stretch"):
-            week_start = week_start - timedelta(days=7)
-            week_end = week_end - timedelta(days=7)
-            st.session_state.current_date_range_start = week_start
-            st.session_state.current_date_range_end = week_end
-            st.rerun()
-    with col2:
-        st.sidebar.markdown(
-            f'<div style="text-align: center; font-size: 0.9em; padding: 0.3em 0;">'
-            f"<strong>{week_start.strftime('%m/%d')} to {week_end.strftime('%m/%d')}</strong>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with col3:
-        if st.button("▶", help="Go forward one week", width="stretch"):
-            new_week_start = week_start + timedelta(days=7)
-            new_week_end = week_end + timedelta(days=7)
-            week_start = new_week_start
-            week_end = new_week_end
-            st.session_state.current_date_range_start = week_start
-            st.session_state.current_date_range_end = week_end
-            st.rerun()
-
-    selected_dates = (week_start, week_end)
-
-elif date_range_mode == "Last Month":
-    # Initialize or get current month (use actual calendar month, not 30-day period)
-    if (
-        st.session_state.current_date_range_start is None
-        or st.session_state.current_date_range_end is None
-    ):
-        # Default to current month
-        now = datetime.now()
-        month_start, month_end = get_month_start_end(now.year, now.month)
-        st.session_state.current_date_range_start = month_start
-        st.session_state.current_date_range_end = month_end
-        st.session_state._selected_year = now.year
-        st.session_state._selected_month = now.month
-    else:
-        month_start = st.session_state.current_date_range_start
-        month_end = st.session_state.current_date_range_end
-        # Ensure we have year/month stored
-        if (
-            "_selected_year" not in st.session_state
-            or "_selected_month" not in st.session_state
-        ):
-            st.session_state._selected_year = month_start.year
-            st.session_state._selected_month = month_start.month
-            # Recalculate to ensure it's a full month
-            month_start, month_end = get_month_start_end(
-                st.session_state._selected_year, st.session_state._selected_month
-            )
-            st.session_state.current_date_range_start = month_start
-            st.session_state.current_date_range_end = month_end
-
-    # Get current month from state
-    current_year = st.session_state.get("_selected_year", month_start.year)
-    current_month = st.session_state.get("_selected_month", month_start.month)
-
-    # Navigation buttons for month
-    col1, col2, col3 = st.sidebar.columns([1, 3, 1], gap="small")
-    with col1:
-        if st.button("◀", help="Go back one calendar month", width="stretch"):
-            prev_year, prev_month = get_previous_month(current_year, current_month)
-            month_start, month_end = get_month_start_end(prev_year, prev_month)
-            st.session_state.current_date_range_start = month_start
-            st.session_state.current_date_range_end = month_end
-            st.session_state._selected_year = prev_year
-            st.session_state._selected_month = prev_month
-            st.rerun()
-    with col2:
-        month_name = datetime(current_year, current_month, 1).strftime("%B %Y")
-        st.sidebar.markdown(
-            f'<div style="text-align: center; font-size: 0.9em; padding: 0.3em 0;">'
-            f"<strong>{month_name}</strong>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with col3:
-        if st.button("▶", help="Go forward one calendar month", width="stretch"):
-            next_year, next_month = get_next_month(current_year, current_month)
-            month_start, month_end = get_month_start_end(next_year, next_month)
-            st.session_state.current_date_range_start = month_start
-            st.session_state.current_date_range_end = month_end
-            st.session_state._selected_year = next_year
-            st.session_state._selected_month = next_month
-            st.rerun()
-
-    selected_dates = (month_start, month_end)
-
-else:  # Pick Your Dates - Now only allows selecting full calendar months
-    # Initialize or get selected month
-    if (
-        "_selected_year" not in st.session_state
-        or "_selected_month" not in st.session_state
-    ):
-        # Default to current month
-        now = datetime.now()
-        st.session_state._selected_year = now.year
-        st.session_state._selected_month = now.month
-
-    # Get available years and months from data
-    if len(meta_df) > 0 and "Call Date" in meta_df.columns:
-        # Get min and max dates from data
-        min_date = meta_df["Call Date"].min()
-        max_date = meta_df["Call Date"].max()
-        if isinstance(min_date, pd.Timestamp):
-            min_date = min_date.date()
-        if isinstance(max_date, pd.Timestamp):
-            max_date = max_date.date()
-
-        # Generate list of available years: from data range, but always include
-        # current year, next year (e.g. 2025), and the user's selected year so
-        # future years are choosable even when the loaded data ends earlier.
-        min_year = min_date.year
-        max_year_data = max_date.year
-        selected = st.session_state.get("_selected_year")
-        max_year = max(
-            max_year_data,
-            datetime.now().year,
-            datetime.now().year + 1,  # Allow picking into next year (e.g. 2025)
-            selected if selected is not None else 0,
-        )
-        available_years = list(range(min_year, max_year + 1))
-
-        # For selected year, get available months
-        selected_year = st.session_state._selected_year
-        if selected_year == min_year and selected_year == max_year_data:
-            # Same year - get months from data
-            year_dates = meta_df[meta_df["Call Date"].dt.year == selected_year][
-                "Call Date"
-            ]
-            if len(year_dates) > 0:
-                available_months = sorted(year_dates.dt.month.unique().tolist())
-            else:
-                available_months = [st.session_state._selected_month]
-        elif selected_year == min_year:
-            # First year - months from min_date to December
-            min_month = min_date.month
-            available_months = list(range(min_month, 13))
-        elif selected_year == max_year_data:
-            # Last year in data - months from January to max_date
-            max_month = max_date.month
-            available_months = list(range(1, max_month + 1))
-        elif selected_year > max_year_data:
-            # Year beyond data (e.g. 2025 when data ends in 2024): all months
-            available_months = list(range(1, 13))
-        else:
-            # Middle year - all months
-            available_months = list(range(1, 13))
-    else:
-        # Fallback if no data: include current year and next year (e.g. 2025)
-        now = datetime.now()
-        available_years = list(range(2020, now.year + 2))
-        available_months = list(range(1, 13))
-
-    # Month selector
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        selected_year = st.sidebar.selectbox(
-            "Year",
-            options=available_years,
-            index=available_years.index(st.session_state._selected_year)
-            if st.session_state._selected_year in available_years
-            else len(available_years) - 1,
-            key="_year_selector",
-        )
-    with col2:
-        month_names = [
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        ]
-        month_options = [(i, month_names[i - 1]) for i in available_months]
-        selected_month_idx = (
-            available_months.index(st.session_state._selected_month)
-            if st.session_state._selected_month in available_months
-            else 0
-        )
-        selected_month = st.sidebar.selectbox(
-            "Month",
-            options=[m[0] for m in month_options],
-            format_func=lambda x: month_names[x - 1],
-            index=selected_month_idx,
-            key="_month_selector",
-        )
-
-    # Update state if changed
-    if (
-        selected_year != st.session_state._selected_year
-        or selected_month != st.session_state._selected_month
-    ):
-        st.session_state._selected_year = selected_year
-        st.session_state._selected_month = selected_month
-        st.rerun()
-
-    # Get full month range
-    month_start, month_end = get_month_start_end(selected_year, selected_month)
-    selected_dates = (month_start, month_end)
-
-    # Show selected month
-    month_name = datetime(selected_year, selected_month, 1).strftime("%B %Y")
-    st.sidebar.info(
-        f"📅 Selected: **{month_name}** ({month_start.strftime('%m/%d')} - {month_end.strftime('%m/%d')})"
+# Month selector: All 12 months
+month_names = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
+with col2:
+    selected_month = st.sidebar.selectbox(
+        "Month",
+        options=list(range(1, 13)),  # All 12 months
+        format_func=lambda x: month_names[x - 1],
+        index=st.session_state._selected_month - 1
+        if st.session_state._selected_month in range(1, 13)
+        else 0,
+        key="_month_selector",
     )
+
+# Update state if changed and trigger reload
+if (
+    selected_year != st.session_state._selected_year
+    or selected_month != st.session_state._selected_month
+):
+    st.session_state._selected_year = selected_year
+    st.session_state._selected_month = selected_month
+    st.rerun()
+
+# Get full month range for selected month
+month_start, month_end = get_month_start_end(selected_year, selected_month)
+selected_dates = (month_start, month_end)
 
 
 # Helper function to build descriptive data info message
 def build_data_info_message(
-    date_range_mode,
     start_date,
     end_date,
     call_count,
@@ -9327,17 +9133,9 @@ def build_data_info_message(
     max_score=None,
 ):
     """Build a descriptive message showing current data selection and filters."""
-    # Date range description
-    if date_range_mode == "Last Week":
-        date_desc = (
-            f"Last Week ({start_date.strftime('%m/%d')} - {end_date.strftime('%m/%d')})"
-        )
-    elif date_range_mode == "Last Month":
-        month_name = datetime(start_date.year, start_date.month, 1).strftime("%B %Y")
-        date_desc = f"{month_name}"
-    else:  # Pick Your Dates
-        month_name = datetime(start_date.year, start_date.month, 1).strftime("%B %Y")
-        date_desc = f"{month_name}"
+    # Date range description - always show month name
+    month_name = datetime(start_date.year, start_date.month, 1).strftime("%B %Y")
+    date_desc = f"{month_name}"
 
     # Add filter descriptions if any are active
     filter_parts = []
@@ -9392,7 +9190,6 @@ start_date, end_date = selected_dates
 # Update data info message with date range (initial, before filters)
 if not user_agent_id and "_data_info_placeholder" in st.session_state:
     try:
-        date_range_mode = st.session_state.get("date_range_mode", "Last Month")
         available_agents_count = (
             len(filter_df["Agent"].dropna().unique())
             if "Agent" in filter_df.columns and len(filter_df) > 0
@@ -9426,7 +9223,6 @@ if not user_agent_id and "_data_info_placeholder" in st.session_state:
         data_info_placeholder = st.session_state["_data_info_placeholder"]
         data_info_placeholder.info(
             build_data_info_message(
-                date_range_mode,
                 start_date,
                 end_date,
                 date_filtered_count,
@@ -10162,7 +9958,6 @@ if selected_products:
 # Update data info message with final filtered count and active filters
 if not user_agent_id and "_data_info_placeholder" in st.session_state:
     try:
-        date_range_mode = st.session_state.get("date_range_mode", "Last Month")
         available_agents_count = (
             len(filter_df["Agent"].dropna().unique())
             if "Agent" in filter_df.columns and len(filter_df) > 0
@@ -10186,7 +9981,6 @@ if not user_agent_id and "_data_info_placeholder" in st.session_state:
         data_info_placeholder = st.session_state["_data_info_placeholder"]
         data_info_placeholder.info(
             build_data_info_message(
-                date_range_mode,
                 start_date,
                 end_date,
                 len(filtered_df),
