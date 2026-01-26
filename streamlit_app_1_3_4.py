@@ -9276,13 +9276,23 @@ if not user_agent_id and "_data_info_placeholder" in st.session_state:
             if "QA Score" in filter_df.columns and len(filter_df) > 0
             else None
         )
+        # Use date-filtered count so "Showing X calls" reflects selected month/year, not total loaded
+        if len(filter_df) > 0 and "Call Date" in filter_df.columns:
+            date_filtered_count = len(
+                filter_df[
+                    (filter_df["Call Date"].dt.date >= start_date)
+                    & (filter_df["Call Date"].dt.date <= end_date)
+                ]
+            )
+        else:
+            date_filtered_count = len(filter_df)
         data_info_placeholder = st.session_state["_data_info_placeholder"]
         data_info_placeholder.info(
             build_data_info_message(
                 date_range_mode,
                 start_date,
                 end_date,
-                len(meta_df),
+                date_filtered_count,
                 available_agents_count=available_agents_count,
                 available_labels_count=available_labels_count,
                 min_score=min_score,
