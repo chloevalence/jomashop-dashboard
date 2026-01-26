@@ -2,8 +2,8 @@ streamlit
 pandas
 matplotlib
 seaborn
-streamlit-authenticator
-extra-streamlit-components
+streamlit-authenticator>=0.2.3
+extra-streamlit-components>=0.1.64
 numpy
 openpyxl
 xlsxwriter

@@ -6438,6 +6438,9 @@ else:
                 or "proxy settings" in error_msg
                 or "importing a module script failed" in error_msg
                 or "module script failed" in error_msg
+                or "your app is having trouble loading" in error_msg
+                or "component frontend assets" in error_msg
+                or "deployment" in error_msg
             )
 
             if is_component_error and attempt < max_retries - 1:
@@ -6547,6 +6550,9 @@ if auth_status is None:
             or "proxy settings" in error_msg
             or "importing a module script failed" in error_msg
             or "module script failed" in error_msg
+            or "your app is having trouble loading" in error_msg
+            or "component frontend assets" in error_msg
+            or "deployment" in error_msg
         )
 
         if is_component_error:
@@ -9078,8 +9084,8 @@ month_names = [
     "December",
 ]
 
-# Fixed list of months: January 2026 backwards to July 2025
-# This avoids accessing meta_df which could trigger unnecessary cache reloads
+# Hardcoded list of 7 months with data: January 2026 backwards to July 2025
+# Format: list of tuples (year, month, display_string)
 month_options = [
     (2026, 1, "January 2026"),
     (2025, 12, "December 2025"),
@@ -9090,36 +9096,51 @@ month_options = [
     (2025, 7, "July 2025"),
 ]
 
-# Find the current selection index
+# Create list of display strings for the selectbox - always exactly 7 months
+month_display_options = [
+    "January 2026",
+    "December 2025",
+    "November 2025",
+    "October 2025",
+    "September 2025",
+    "August 2025",
+    "July 2025",
+]
+
+# Ensure we have exactly 7 options
+assert len(month_display_options) == 7, f"Expected 7 months, got {len(month_display_options)}"
+
+# Find the current selection index based on session state
 current_month_str = f"{month_names[st.session_state._selected_month - 1]} {st.session_state._selected_year}"
 current_index = 0
-for idx, (year, month, month_str) in enumerate(month_options):
+for idx, month_str in enumerate(month_display_options):
     if month_str == current_month_str:
         current_index = idx
         break
 
-# Create a single dropdown with all months in reverse chronological order
+# Create a single dropdown with all 7 months in reverse chronological order
 selected_month_str = st.sidebar.selectbox(
     "Select Month",
-    options=[opt[2] for opt in month_options],  # Use the formatted string
-    index=current_index,  # Default to currently selected month
-    key="_month_selector",
+    options=month_display_options,  # Hardcoded list of 7 months
+    index=current_index,
+    key="month_selector_7months",  # Unique key to avoid caching issues
 )
 
 # Find the selected year and month from the selected string
-selected_year = None
-selected_month = None
-for year, month, month_str in month_options:
-    if month_str == selected_month_str:
-        selected_year = year
-        selected_month = month
-        break
+# Direct mapping for the 7 hardcoded months
+month_to_date = {
+    "January 2026": (2026, 1),
+    "December 2025": (2025, 12),
+    "November 2025": (2025, 11),
+    "October 2025": (2025, 10),
+    "September 2025": (2025, 9),
+    "August 2025": (2025, 8),
+    "July 2025": (2025, 7),
+}
 
-# Fallback to current month if not found
-if selected_year is None or selected_month is None:
-    now = datetime.now()
-    selected_year = now.year
-    selected_month = now.month
+selected_year, selected_month = month_to_date.get(
+    selected_month_str, (2026, 1)  # Default to January 2026 if not found
+)
 
 # Update state if changed and trigger reload
 if (
