@@ -9,5 +9,4 @@ openpyxl
 xlsxwriter
 boto3
 pdfplumber
-tabulate
 
