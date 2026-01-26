@@ -113,6 +113,10 @@ MAX_FILES_FOR_TESTING = None  # Set to None to disable limit
 # This can be overridden by session state if user selects a date range outside loaded data
 MAX_DAYS_TO_LOAD = 30  # Load only calls from last 30 days
 
+# --- Month switch cooldown: minimum seconds between month changes ---
+# Prevents rapid month switching from overloading the app (S3 loads, cache clears, reruns)
+MONTH_SWITCH_COOLDOWN_SECONDS = 8
+
 
 def filter_calls_by_date_range(call_data, start_date, end_date):
     """Filter calls to only include those within a specific date range.
@@ -9149,14 +9153,23 @@ else:  # Pick Your Dates - Now only allows selecting full calendar months
         if isinstance(max_date, pd.Timestamp):
             max_date = max_date.date()
 
-        # Generate list of available years
+        # Generate list of available years: from data range, but always include
+        # current year, next year (e.g. 2025), and the user's selected year so
+        # future years are choosable even when the loaded data ends earlier.
         min_year = min_date.year
-        max_year = max_date.year
+        max_year_data = max_date.year
+        selected = st.session_state.get("_selected_year")
+        max_year = max(
+            max_year_data,
+            datetime.now().year,
+            datetime.now().year + 1,  # Allow picking into next year (e.g. 2025)
+            selected if selected is not None else 0,
+        )
         available_years = list(range(min_year, max_year + 1))
 
         # For selected year, get available months
         selected_year = st.session_state._selected_year
-        if selected_year == min_year and selected_year == max_year:
+        if selected_year == min_year and selected_year == max_year_data:
             # Same year - get months from data
             year_dates = meta_df[meta_df["Call Date"].dt.year == selected_year][
                 "Call Date"
@@ -9169,17 +9182,20 @@ else:  # Pick Your Dates - Now only allows selecting full calendar months
             # First year - months from min_date to December
             min_month = min_date.month
             available_months = list(range(min_month, 13))
-        elif selected_year == max_year:
-            # Last year - months from January to max_date
+        elif selected_year == max_year_data:
+            # Last year in data - months from January to max_date
             max_month = max_date.month
             available_months = list(range(1, max_month + 1))
+        elif selected_year > max_year_data:
+            # Year beyond data (e.g. 2025 when data ends in 2024): all months
+            available_months = list(range(1, 13))
         else:
             # Middle year - all months
             available_months = list(range(1, 13))
     else:
-        # Fallback if no data
+        # Fallback if no data: include current year and next year (e.g. 2025)
         now = datetime.now()
-        available_years = list(range(2020, now.year + 1))
+        available_years = list(range(2020, now.year + 2))
         available_months = list(range(1, 13))
 
     # Month selector
@@ -9419,6 +9435,27 @@ if current_requested_range != (start_date, end_date):
         )
 
 if should_reload:
+    # Cooldown: block rapid month switches to avoid overloading the app (skip for first load)
+    if (
+        currently_loaded_month is not None
+        and current_requested_range is not None
+    ):
+        last_switch = st.session_state.get("_last_month_switch_time")
+        if last_switch is not None:
+            elapsed = time.time() - last_switch
+            if elapsed < MONTH_SWITCH_COOLDOWN_SECONDS:
+                # Revert to previous month so selector matches loaded data
+                prev_start = current_requested_range[0]
+                st.session_state._selected_year = prev_start.year
+                st.session_state._selected_month = prev_start.month
+                secs_left = max(1, int(MONTH_SWITCH_COOLDOWN_SECONDS - elapsed + 0.5))
+                st.sidebar.warning(
+                    f"⏳ Please wait **{secs_left}** second(s) before switching months again "
+                    "to avoid overloading the app."
+                )
+                st.rerun()
+
+    st.session_state["_last_month_switch_time"] = time.time()
     log_memory_usage(f"Date range changing to {start_date} to {end_date}")
     # Date range changed - set flags to load the correct month
     st.session_state._requested_date_range = (start_date, end_date)
@@ -9511,6 +9548,21 @@ if (
             requested_month = (start_date.year, start_date.month)
 
             if loaded_month != requested_month:
+                # Cooldown: block rapid month switches (revert to currently loaded month)
+                last_switch = st.session_state.get("_last_month_switch_time")
+                if last_switch is not None:
+                    elapsed = time.time() - last_switch
+                    if elapsed < MONTH_SWITCH_COOLDOWN_SECONDS:
+                        st.session_state._selected_year = loaded_min_date.year
+                        st.session_state._selected_month = loaded_min_date.month
+                        secs_left = max(1, int(MONTH_SWITCH_COOLDOWN_SECONDS - elapsed + 0.5))
+                        st.sidebar.warning(
+                            f"⏳ Please wait **{secs_left}** second(s) before switching months again "
+                            "to avoid overloading the app."
+                        )
+                        st.rerun()
+
+                st.session_state["_last_month_switch_time"] = time.time()
                 # Switching to a different month - reload
                 st.session_state._load_all_data_for_date_range = True
                 st.session_state._requested_date_range = (start_date, end_date)
