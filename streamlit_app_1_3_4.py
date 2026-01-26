@@ -3656,7 +3656,13 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
                 )
 
             # If all else fails, return empty (will retry on next run)
-            if st.session_state.get(load_in_progress_key, False):
+            still_in_progress = st.session_state.get(load_in_progress_key, False)
+            # CRITICAL: Clear both flags so next run can start a fresh load instead of waiting again
+            if load_in_progress_key in st.session_state:
+                del st.session_state[load_in_progress_key]
+            if load_start_time_key in st.session_state:
+                del st.session_state[load_start_time_key]
+            if still_in_progress:
                 logger.warning(
                     "Load still in progress and no cache available, returning empty (will retry)"
                 )
@@ -4815,9 +4821,11 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
                     f" Stored {len(final_call_data)} calls in session state for concurrent requests"
                 )
 
-            # Clear load in progress flag
+            # Clear load in progress flag and timestamp (prevent stale "in progress" on next run)
             if load_in_progress_key in st.session_state:
                 del st.session_state[load_in_progress_key]
+            if load_start_time_key in st.session_state:
+                del st.session_state[load_start_time_key]
 
             # Return the data - Streamlit's @st.cache_data automatically caches this return value
             # This ensures both caches are in sync with the most recent data
@@ -4876,9 +4884,21 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
             st.session_state["reload_all_triggered"] = False
         if load_in_progress_key in st.session_state:
             del st.session_state[load_in_progress_key]
+        if load_start_time_key in st.session_state:
+            del st.session_state[load_start_time_key]
 
         # Return empty data
         return [], [f"Critical error: {str(e)}"]
+    finally:
+        # Clear both flags on any exit (success, early return, or exception) so the next
+        # run can start a fresh load instead of seeing a stale "in progress" state.
+        try:
+            if load_in_progress_key in st.session_state:
+                del st.session_state[load_in_progress_key]
+            if load_start_time_key in st.session_state:
+                del st.session_state[load_start_time_key]
+        except Exception:
+            pass
 
 
 # Chart caching helper - cache chart figures based on data hash
