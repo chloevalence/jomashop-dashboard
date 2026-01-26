@@ -9061,22 +9061,8 @@ if "_selected_year" not in st.session_state or "_selected_month" not in st.sessi
 
 st.sidebar.markdown("### 📆 Date Range")
 
-# Simple year and month dropdowns side by side
-col1, col2 = st.sidebar.columns(2)
-
-# Year selector: Only 2025 and 2026
-available_years = [2025, 2026]
-with col1:
-    selected_year = st.sidebar.selectbox(
-        "Year",
-        options=available_years,
-        index=available_years.index(st.session_state._selected_year)
-        if st.session_state._selected_year in available_years
-        else 0,  # Default to 2025 if current year not in list
-        key="_year_selector",
-    )
-
-# Month selector: All 12 months
+# Generate list of months from January 2026 backwards to first month of data
+# Format: "January 2026", "December 2025", "November 2025", etc.
 month_names = [
     "January",
     "February",
@@ -9091,16 +9077,77 @@ month_names = [
     "November",
     "December",
 ]
-with col2:
-    selected_month = st.sidebar.selectbox(
-        "Month",
-        options=list(range(1, 13)),  # All 12 months
-        format_func=lambda x: month_names[x - 1],
-        index=st.session_state._selected_month - 1
-        if st.session_state._selected_month in range(1, 13)
-        else 0,
-        key="_month_selector",
-    )
+
+# Determine the last and first months of data (if available)
+last_year = 2026
+last_month = 1
+first_year = 2025
+first_month = 1
+if len(filter_df) > 0 and "Call Date" in filter_df.columns and not filter_df["Call Date"].isna().all():
+    min_date = filter_df["Call Date"].min()
+    max_date = filter_df["Call Date"].max()
+    if isinstance(min_date, pd.Timestamp):
+        min_date = min_date.date()
+    elif hasattr(min_date, "date"):
+        min_date = min_date.date()
+    if isinstance(max_date, pd.Timestamp):
+        max_date = max_date.date()
+    elif hasattr(max_date, "date"):
+        max_date = max_date.date()
+    first_year = min_date.year
+    first_month = min_date.month
+    last_year = max_date.year
+    last_month = max_date.month
+else:
+    # If no data, use current month as last month
+    now = datetime.now()
+    last_year = now.year
+    last_month = now.month
+
+# Generate month options from last month of data backwards to first month
+month_options = []
+current_date = date(last_year, last_month, 1)  # Start from last month of data
+first_date = date(first_year, first_month, 1)
+
+while current_date >= first_date:
+    month_str = f"{month_names[current_date.month - 1]} {current_date.year}"
+    month_options.append((current_date.year, current_date.month, month_str))
+    # Move to previous month
+    if current_date.month == 1:
+        current_date = date(current_date.year - 1, 12, 1)
+    else:
+        current_date = date(current_date.year, current_date.month - 1, 1)
+
+# Find the current selection index
+current_month_str = f"{month_names[st.session_state._selected_month - 1]} {st.session_state._selected_year}"
+current_index = 0
+for idx, (year, month, month_str) in enumerate(month_options):
+    if month_str == current_month_str:
+        current_index = idx
+        break
+
+# Create a single dropdown with all months in reverse chronological order
+selected_month_str = st.sidebar.selectbox(
+    "Select Month",
+    options=[opt[2] for opt in month_options],  # Use the formatted string
+    index=current_index,  # Default to currently selected month
+    key="_month_selector",
+)
+
+# Find the selected year and month from the selected string
+selected_year = None
+selected_month = None
+for year, month, month_str in month_options:
+    if month_str == selected_month_str:
+        selected_year = year
+        selected_month = month
+        break
+
+# Fallback to current month if not found
+if selected_year is None or selected_month is None:
+    now = datetime.now()
+    selected_year = now.year
+    selected_month = now.month
 
 # Update state if changed and trigger reload
 if (
