@@ -8226,13 +8226,52 @@ try:
     )
     if not call_data and not errors:
         status_text.empty()
-        st.warning(
-            " No data loaded. This might be the first time loading, or there may be an issue."
-        )
-        st.info(
-            " Try refreshing the page or clicking ' Reload ALL Data (Admin Only)' if you're an admin."
-        )
-        st.stop()
+        
+        # Check if user selected a specific month that has no data
+        requested_range = st.session_state.get("_requested_date_range", None)
+        if requested_range:
+            req_start, req_end = requested_range
+            now = datetime.now().date()
+            
+            # Determine the month name for display
+            month_name = req_start.strftime('%B %Y')
+            
+            # Check if the requested month is in the future
+            # req_start is the first day of the month, so if it's > now, the entire month is future
+            if req_start > now:
+                st.error(
+                    f"📅 **No Data Available for {month_name}**\n\n"
+                    f"⚠️ This month is in the future and doesn't have any call data yet.\n\n"
+                    f"**Please select a month that has data** (e.g., {now.strftime('%B %Y')} or earlier)."
+                )
+            elif req_end < now - timedelta(days=365):
+                # Very old month (more than 1 year ago)
+                st.warning(
+                    f"📅 **No Data Available for {month_name}**\n\n"
+                    f"⚠️ This month is very old and doesn't have any call data.\n\n"
+                    f"**Please select a more recent month** that has data."
+                )
+            else:
+                # Month should exist but doesn't (within reasonable time range)
+                st.warning(
+                    f"📅 **No Data Available for {month_name}**\n\n"
+                    f"⚠️ This month doesn't have any call data in the cache.\n\n"
+                    f"**If you're an admin**, you can use 'Initialize Monthly Caches' to build monthly caches from legacy data.\n\n"
+                    f"**Otherwise**, please select a different month that has data."
+                )
+            # Don't stop - allow date picker to render so user can select a different month
+            # Create empty DataFrame so rest of code can continue
+            call_data = []
+            meta_df = pd.DataFrame()
+        else:
+            # Generic case - no specific month requested (first load, etc.)
+            st.warning(
+                " No data loaded. This might be the first time loading, or there may be an issue."
+            )
+            st.info(
+                " Try refreshing the page or clicking ' Reload ALL Data (Admin Only)' if you're an admin."
+            )
+            st.stop()
 
     # Handle errors - could be a tuple (errors_list, info_message) or just errors
     if errors:
@@ -8960,22 +8999,34 @@ else:
 st.sidebar.header(" Filter Data")
 
 # Date filter
-min_date = filter_df["Call Date"].min()
-max_date = filter_df["Call Date"].max()
-# Convert to date objects for consistent comparison
-if isinstance(min_date, pd.Timestamp):
-    min_date = min_date.date()
-elif hasattr(min_date, "date"):
-    min_date = min_date.date()
-if isinstance(max_date, pd.Timestamp):
-    max_date = max_date.date()
-elif hasattr(max_date, "date"):
-    max_date = max_date.date()
-# Get latest date from loaded data
-latest_data_date = max_date
-dates = filter_df["Call Date"].dropna().sort_values().dt.date.unique().tolist()
+# Check if we have data - if not (e.g., selected month has no data), use fallback dates
+if len(filter_df) > 0 and "Call Date" in filter_df.columns and not filter_df["Call Date"].isna().all():
+    min_date = filter_df["Call Date"].min()
+    max_date = filter_df["Call Date"].max()
+    # Convert to date objects for consistent comparison
+    if isinstance(min_date, pd.Timestamp):
+        min_date = min_date.date()
+    elif hasattr(min_date, "date"):
+        min_date = min_date.date()
+    if isinstance(max_date, pd.Timestamp):
+        max_date = max_date.date()
+    elif hasattr(max_date, "date"):
+        max_date = max_date.date()
+    # Get latest date from loaded data
+    latest_data_date = max_date
+    dates = filter_df["Call Date"].dropna().sort_values().dt.date.unique().tolist()
+else:
+    # No data available (e.g., selected month has no data) - use fallback dates for date picker
+    # This allows the date picker to still render so user can select a different month
+    now = datetime.now().date()
+    # Use a reasonable default range for the date picker
+    min_date = now - timedelta(days=365)  # 1 year ago
+    max_date = now + timedelta(days=365)  # 1 year ahead
+    latest_data_date = now
+    dates = []  # Empty but won't stop execution
 
-if not dates:
+# Only stop if this is a first-time load with no data (not a missing month scenario)
+if not dates and not st.session_state.get("_requested_date_range", None):
     st.warning(" No calls with valid dates to display.")
     st.stop()
 
