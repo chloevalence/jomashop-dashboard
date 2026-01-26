@@ -9078,45 +9078,17 @@ month_names = [
     "December",
 ]
 
-# Determine the last and first months of data (if available)
-last_year = 2026
-last_month = 1
-first_year = 2025
-first_month = 1
-if len(filter_df) > 0 and "Call Date" in filter_df.columns and not filter_df["Call Date"].isna().all():
-    min_date = filter_df["Call Date"].min()
-    max_date = filter_df["Call Date"].max()
-    if isinstance(min_date, pd.Timestamp):
-        min_date = min_date.date()
-    elif hasattr(min_date, "date"):
-        min_date = min_date.date()
-    if isinstance(max_date, pd.Timestamp):
-        max_date = max_date.date()
-    elif hasattr(max_date, "date"):
-        max_date = max_date.date()
-    first_year = min_date.year
-    first_month = min_date.month
-    last_year = max_date.year
-    last_month = max_date.month
-else:
-    # If no data, use current month as last month
-    now = datetime.now()
-    last_year = now.year
-    last_month = now.month
-
-# Generate month options from last month of data backwards to first month
-month_options = []
-current_date = date(last_year, last_month, 1)  # Start from last month of data
-first_date = date(first_year, first_month, 1)
-
-while current_date >= first_date:
-    month_str = f"{month_names[current_date.month - 1]} {current_date.year}"
-    month_options.append((current_date.year, current_date.month, month_str))
-    # Move to previous month
-    if current_date.month == 1:
-        current_date = date(current_date.year - 1, 12, 1)
-    else:
-        current_date = date(current_date.year, current_date.month - 1, 1)
+# Fixed list of months: January 2026 backwards to July 2025
+# This avoids accessing meta_df which could trigger unnecessary cache reloads
+month_options = [
+    (2026, 1, "January 2026"),
+    (2025, 12, "December 2025"),
+    (2025, 11, "November 2025"),
+    (2025, 10, "October 2025"),
+    (2025, 9, "September 2025"),
+    (2025, 8, "August 2025"),
+    (2025, 7, "July 2025"),
+]
 
 # Find the current selection index
 current_month_str = f"{month_names[st.session_state._selected_month - 1]} {st.session_state._selected_year}"
