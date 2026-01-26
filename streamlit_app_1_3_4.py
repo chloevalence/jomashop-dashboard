@@ -692,7 +692,7 @@ def st_pyplot_safe(fig, **kwargs):
         if "s3" not in st.secrets:
             raise KeyError("s3 section not found in secrets")
 
-        s3_client = boto3.client(
+        _ = boto3.client(
             "s3",
             aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
             aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
@@ -1723,6 +1723,11 @@ def load_month_cache_from_s3(year, month):
 
         if isinstance(s3_cached_data, dict):
             call_data = s3_cached_data.get("call_data", [])
+            if not isinstance(call_data, list):
+                logger.warning(
+                    f"Invalid call_data type for {cache_key} (expected list, got {type(call_data).__name__})"
+                )
+                return None, None, None, 0
             errors = s3_cached_data.get("errors", [])
             timestamp = s3_cached_data.get("timestamp", None)
             last_save_time = s3_cached_data.get("last_save_time", 0)
@@ -2614,13 +2619,16 @@ def load_cached_data_from_disk(max_retries=3, retry_delay=0.1):
                         cache_key = "_disk_cache_during_refresh"
                         st.session_state[cache_key] = (result, time.time())
                     return result
-            # Could not determine month or it matched
-        if requested_date_range is None or (requested_date_range is not None and (cached_month is None or cached_month == (requested_date_range[0].year, requested_date_range[0].month))):
-            # Cache result in session state during refresh
+            # When requested_date_range is set and cached_month is None (could not determine),
+            # do NOT return session cache—fall through to monthly load_month_cache_from_s3.
+        if requested_date_range is None or (
+            requested_date_range is not None
+            and cached_month is not None
+            and cached_month == (requested_date_range[0].year, requested_date_range[0].month)
+        ):
             if refresh_in_progress:
                 cache_key = "_disk_cache_during_refresh"
                 st.session_state[cache_key] = (result, time.time())
-
             return result
 
     # Monthly branch: when _requested_date_range is set, use load_month_cache_from_s3 only (never S3_CACHE_KEY or disk)
@@ -3085,88 +3093,7 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
         # Also save to S3 for persistence across deployments
         s3_client, s3_bucket = get_s3_client_and_bucket()
         if s3_client and s3_bucket:
-            # PROTECTION: Check existing cache before overwriting with PARTIAL cache
-            if partial:  # Only check if saving PARTIAL cache
-                try:
-                    # Create S3 client with timeout for checking existing cache
-                    config = botocore.config.Config(
-                        connect_timeout=10, read_timeout=30, retries={"max_attempts": 2}
-                    )
-                    s3_check_client = boto3.client(
-                        "s3",
-                        aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-                        aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-                        region_name=st.secrets["s3"].get("region_name", "us-east-1"),
-                        config=config,
-                    )
-
-                    existing_response = s3_check_client.get_object(
-                        Bucket=s3_bucket, Key=S3_CACHE_KEY
-                    )
-                    # Stream download for existing cache check
-                    body = existing_response["Body"]
-                    chunks = []
-                    for chunk in body.iter_chunks(chunk_size=8192):
-                        chunks.append(chunk)
-                    existing_data = json.loads(b"".join(chunks).decode("utf-8"))
-                    existing_is_partial = existing_data.get("partial", False)
-                    existing_call_data = existing_data.get("call_data", [])
-                    existing_count = len(existing_call_data)
-
-                    if not existing_is_partial:  # Existing cache is COMPLETE
-                        # CRITICAL FIX: Allow overwriting COMPLETE cache if it has 0 calls (invalid/empty)
-                        # A COMPLETE cache with 0 calls is essentially invalid and should be overwritten
-                        if existing_count == 0:
-                            logger.info(
-                                f" COMPLETE cache has 0 calls (invalid/empty) - allowing overwrite with PARTIAL cache ({len(call_data)} calls)"
-                            )
-                            # Continue to save below - don't return early
-                        else:
-                            logger.warning(
-                                f" PROTECTED: Not overwriting COMPLETE cache ({existing_count} calls) "
-                                f"with PARTIAL cache ({len(call_data)} calls). "
-                                f"Complete cache preserved. Local cache saved successfully."
-                            )
-                        return  # Don't overwrite COMPLETE cache with PARTIAL
-                    else:
-                        # Both are PARTIAL - check progress
-                        existing_processed = existing_data.get("processed", 0)
-                        existing_total = existing_data.get("total", 0)
-                        new_processed = processed
-                        new_total = total
-
-                        # Check if new cache is more complete
-                        new_is_better = False
-                        if new_processed > existing_processed:
-                            new_is_better = True
-                        elif (
-                            new_processed == existing_processed
-                            and len(call_data) > existing_count
-                        ):
-                            new_is_better = True
-
-                        if not new_is_better:
-                            logger.warning(
-                                f" PROTECTED: Not overwriting PARTIAL cache ({existing_processed}/{existing_total}, {existing_count} calls) "
-                                f"with less complete PARTIAL cache ({new_processed}/{new_total}, {len(call_data)} calls). "
-                                f"More complete cache preserved. Local cache saved successfully."
-                            )
-                            return  # Don't overwrite with less complete cache
-
-                except ClientError as e:
-                    error_code = e.response.get("Error", {}).get("Code", "")
-                    if error_code != "NoSuchKey":
-                        logger.warning(
-                            f" Could not check existing cache status: {e}. Proceeding with save."
-                        )
-                    # If no existing cache, proceed with save
-                except Exception as check_error:
-                    logger.warning(
-                        f" Error checking existing cache: {check_error}. Proceeding with save."
-                    )
-                    # Proceed with save if check fails
-
-            # Proceed with save (protected by checks above)
+            # Proceed with save
             # Save by month to enable loading specific months
             try:
                 # Group calls by month
@@ -3224,6 +3151,59 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                 saved_months = []
                 for (year, month), month_calls in calls_by_month.items():
                     month_cache_key = get_s3_cache_key_for_month(year, month)
+
+                    # PROTECTION (per-month): Check existing monthly cache before overwriting with PARTIAL
+                    # Uses monthly key only—avoids get_object on legacy S3_CACHE_KEY (OOM/crash in monthly-only)
+                    if partial:
+                        try:
+                            existing_response = s3_client.get_object(
+                                Bucket=s3_bucket, Key=month_cache_key
+                            )
+                            existing_data = json.loads(
+                                existing_response["Body"].read().decode("utf-8")
+                            )
+                            if isinstance(existing_data, dict):
+                                existing_is_partial = existing_data.get("partial", False)
+                                existing_call_data = existing_data.get("call_data", [])
+                                existing_count = (
+                                    len(existing_call_data)
+                                    if isinstance(existing_call_data, list)
+                                    else 0
+                                )
+                                if not existing_is_partial:  # Existing COMPLETE
+                                    if existing_count == 0:
+                                        pass  # Allow overwrite of empty
+                                    else:
+                                        logger.warning(
+                                            f" PROTECTED: Not overwriting COMPLETE cache for {year}-{month:02d} "
+                                            f"({existing_count} calls) with PARTIAL ({len(month_calls)} calls)."
+                                        )
+                                        continue
+                                else:  # Both PARTIAL
+                                    existing_processed = existing_data.get(
+                                        "processed", 0
+                                    )
+                                    existing_total = existing_data.get("total", 0)
+                                    new_is_better = (processed > existing_processed) or (
+                                        processed == existing_processed
+                                        and len(month_calls) > existing_count
+                                    )
+                                    if not new_is_better:
+                                        logger.warning(
+                                            f" PROTECTED: Not overwriting PARTIAL cache for {year}-{month:02d} "
+                                            f"({existing_processed}/{existing_total}, {existing_count} calls) "
+                                            f"with less complete PARTIAL ({processed}/{total}, {len(month_calls)} calls)."
+                                        )
+                                        continue
+                        except ClientError as e:
+                            if e.response.get("Error", {}).get("Code", "") != "NoSuchKey":
+                                logger.warning(
+                                    f" Could not check existing monthly cache {year}-{month:02d}: {e}. Proceeding."
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                f" Error checking existing monthly cache {year}-{month:02d}: {e}. Proceeding."
+                            )
 
                     # Load existing month cache to merge (if exists)
                     existing_calls, existing_errors, existing_timestamp, _ = (
@@ -3548,12 +3528,6 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
 
             # 2. Try Streamlit cache (if load completed)
             try:
-                # Force cache refresh by using a dummy cache key
-                # The actual cache will be used if available
-                from streamlit.runtime.caching import cache_data_api
-
-                # Try to get from cache using the function's cache key
-                cache_key = f"load_all_calls_cached_{cache_version}"
                 if hasattr(st.session_state, "_cached_call_data"):
                     cached_data = st.session_state.get("_cached_call_data")
                     if cached_data and len(cached_data) > 0:
@@ -3604,12 +3578,57 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
                         and len(s3_cached_data[0]) > 0
                     ):
                         migrated = migrate_old_cache_format(s3_cached_data[0])
-                        logger.info(
-                            f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
-                        )
-                        return migrated, s3_cached_data[1] if len(
-                            s3_cached_data
-                        ) > 1 and s3_cached_data[1] is not None else []
+                        can_use = True
+                        if _requested_range:
+                            try:
+                                first_call = s3_cached_data[0][0]
+                                cached_date = None
+                                if first_call:
+                                    for date_field in ["Call Date", "call_date", "date"]:
+                                        if date_field in first_call and first_call[date_field]:
+                                            try:
+                                                date_val = first_call[date_field]
+                                                if isinstance(date_val, str):
+                                                    date_val = datetime.strptime(
+                                                        date_val.split()[0], "%Y-%m-%d"
+                                                    )
+                                                cached_date = (
+                                                    date_val
+                                                    if hasattr(date_val, "year")
+                                                    else None
+                                                )
+                                                if cached_date:
+                                                    break
+                                            except Exception:
+                                                continue
+                                if cached_date:
+                                    cached_month = (cached_date.year, cached_date.month)
+                                    requested_month = (
+                                        _requested_range[0].year,
+                                        _requested_range[0].month,
+                                    )
+                                    if cached_month != requested_month:
+                                        can_use = False
+                                        logger.debug(
+                                            f"Skipping S3 cache after wait - wrong month. Cached: {cached_month[0]}-{cached_month[1]:02d}, Requested: {requested_month[0]}-{requested_month[1]:02d}"
+                                        )
+                                else:
+                                    can_use = False
+                                    logger.debug(
+                                        "Skipping S3 cache after wait - could not determine cached month"
+                                    )
+                            except Exception as e:
+                                can_use = False
+                                logger.debug(
+                                    f"Error checking S3 cache month after wait: {e}"
+                                )
+                        if can_use:
+                            logger.info(
+                                f"Returning S3 cache from session state during concurrent load: {len(migrated)} calls"
+                            )
+                            return migrated, s3_cached_data[1] if len(
+                                s3_cached_data
+                            ) > 1 and s3_cached_data[1] is not None else []
             except Exception as e:
                 logger.debug(
                     f"Could not get S3 cache from session state during concurrent load: {e}"
@@ -3653,11 +3672,11 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
                             logger.info(f" Deleted disk cache file: {CACHE_FILE}")
                         else:
                             logger.warning(
-                                f" Disk cache file still exists after deletion attempt"
+                                " Disk cache file still exists after deletion attempt"
                             )
             except LockTimeoutError:
                 logger.warning(
-                    f" Timeout deleting disk cache (file may be locked by another process)"
+                    " Timeout deleting disk cache (file may be locked by another process)"
                 )
             except Exception as e:
                 logger.warning(f" Could not delete disk cache: {e}")
@@ -5433,110 +5452,97 @@ def load_new_calls_only():
     """
     try:
         # OPTIMIZATION: Load cache ONCE at start and reuse throughout refresh
-        # CRITICAL FIX: Check if S3 cache is newer than local cache before using stale data
         logger.debug(" Loading cache once at start of refresh (will reuse throughout)")
 
-        # Check S3 cache timestamp to see if it's newer than local/session cache
-        s3_cache_newer = False
-        try:
-            s3_bucket_name = st.secrets["s3"]["bucket_name"]
-            s3_cache_client = boto3.client(
-                "s3",
-                aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
-                aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
-                region_name=st.secrets["s3"].get("region_name", "us-east-1"),
-            )
-            # Use head_object for faster check (just metadata, no body download)
-            response = s3_cache_client.head_object(
-                Bucket=s3_bucket_name, Key=S3_CACHE_KEY
-            )
-            s3_last_modified = response.get("LastModified")
+        requested_date_range = st.session_state.get("_requested_date_range", None)
+        # When _requested_date_range is set (monthly-only), skip S3_CACHE_KEY head_object and
+        # "S3 is newer" logic—that compares legacy key to session cache; in monthly mode we
+        # use load_month_cache_from_s3 only.
+        if requested_date_range is None:
+            # Check S3 cache timestamp to see if it's newer than local/session cache
+            s3_cache_newer = False
+            try:
+                s3_bucket_name = st.secrets["s3"]["bucket_name"]
+                s3_cache_client = boto3.client(
+                    "s3",
+                    aws_access_key_id=st.secrets["s3"]["aws_access_key_id"],
+                    aws_secret_access_key=st.secrets["s3"]["aws_secret_access_key"],
+                    region_name=st.secrets["s3"].get("region_name", "us-east-1"),
+                )
+                response = s3_cache_client.head_object(
+                    Bucket=s3_bucket_name, Key=S3_CACHE_KEY
+                )
+                s3_last_modified = response.get("LastModified")
 
-            # Compare with session state timestamp
-            local_timestamp = st.session_state.get("_s3_cache_timestamp")
-            if local_timestamp and s3_last_modified:
-                # Convert local timestamp to datetime for comparison
-                try:
-                    if isinstance(local_timestamp, str):
-                        # Parse ISO format string
-                        local_dt = datetime.fromisoformat(
-                            local_timestamp.replace("Z", "+00:00")
-                        )
-                    elif isinstance(local_timestamp, (int, float)):
-                        # Unix timestamp
-                        local_dt = datetime.fromtimestamp(local_timestamp)
-                    else:
-                        local_dt = local_timestamp
+                local_timestamp = st.session_state.get("_s3_cache_timestamp")
+                if local_timestamp and s3_last_modified:
+                    try:
+                        if isinstance(local_timestamp, str):
+                            local_dt = datetime.fromisoformat(
+                                local_timestamp.replace("Z", "+00:00")
+                            )
+                        elif isinstance(local_timestamp, (int, float)):
+                            local_dt = datetime.fromtimestamp(local_timestamp)
+                        else:
+                            local_dt = local_timestamp
 
-                    # Compare timestamps (S3 LastModified is timezone-aware, ensure local_dt is too)
-                    s3_dt = s3_last_modified
-
-                    # Make local_dt timezone-aware if S3 timestamp is timezone-aware
-                    comparison_done = False
-                    if local_dt.tzinfo is None and s3_dt.tzinfo is not None:
-                        # Make local_dt timezone-aware for comparison (use S3's timezone)
-                        try:
-                            local_dt = local_dt.replace(tzinfo=s3_dt.tzinfo)
-                            # Now both are timezone-aware, can compare directly below
-                        except Exception:
-                            # Fallback: convert both to timestamps for comparison
+                        s3_dt = s3_last_modified
+                        comparison_done = False
+                        if local_dt.tzinfo is None and s3_dt.tzinfo is not None:
                             try:
-                                s3_ts = s3_dt.timestamp()
-                                local_ts = local_dt.timestamp()
-                                if s3_ts > local_ts:
+                                local_dt = local_dt.replace(tzinfo=s3_dt.tzinfo)
+                            except Exception:
+                                try:
+                                    s3_ts = s3_dt.timestamp()
+                                    local_ts = local_dt.timestamp()
+                                    if s3_ts > local_ts:
+                                        s3_cache_newer = True
+                                        logger.debug(
+                                            f" S3 cache is newer (timestamp comparison: {s3_ts} > {local_ts}) - clearing stale cache"
+                                        )
+                                    comparison_done = True
+                                except Exception:
                                     s3_cache_newer = True
                                     logger.debug(
-                                        f" S3 cache is newer (timestamp comparison: {s3_ts} > {local_ts}) - clearing stale cache"
+                                        " Could not compare timestamps, assuming S3 is newer"
                                     )
-                                comparison_done = True
-                            except Exception:
-                                # If timestamp conversion fails, assume S3 is newer to be safe
-                                s3_cache_newer = True
-                                logger.debug(
-                                    " Could not compare timestamps, assuming S3 is newer"
-                                )
-                                comparison_done = True
+                                    comparison_done = True
 
-                    # Compare directly if we haven't already done the comparison
-                    if not comparison_done and s3_dt > local_dt:
-                        s3_cache_newer = True
+                        if not comparison_done and s3_dt > local_dt:
+                            s3_cache_newer = True
+                            logger.debug(
+                                f" S3 cache is newer ({s3_dt}) than local ({local_dt}) - clearing stale cache"
+                            )
+                    except Exception as compare_error:
                         logger.debug(
-                            f" S3 cache is newer ({s3_dt}) than local ({local_dt}) - clearing stale cache"
+                            f" Could not compare timestamps: {compare_error}, assuming S3 is newer"
                         )
-                except Exception as compare_error:
-                    logger.debug(
-                        f" Could not compare timestamps: {compare_error}, assuming S3 is newer"
-                    )
+                        s3_cache_newer = True
+                elif not local_timestamp:
                     s3_cache_newer = True
-            elif not local_timestamp:
-                # No local timestamp, assume S3 might be newer (first load or cache cleared)
-                s3_cache_newer = True
-                logger.debug(" No local timestamp found - will check S3 cache")
-        except ClientError as s3_error:
-            error_code = s3_error.response.get("Error", {}).get("Code", "")
-            if error_code == "NoSuchKey":
-                # S3 cache doesn't exist, use local cache
-                logger.debug(" S3 cache does not exist, using local cache")
-            else:
+                    logger.debug(" No local timestamp found - will check S3 cache")
+            except ClientError as s3_error:
+                error_code = s3_error.response.get("Error", {}).get("Code", "")
+                if error_code == "NoSuchKey":
+                    logger.debug(" S3 cache does not exist, using local cache")
+                else:
+                    logger.debug(
+                        f" Could not check S3 cache timestamp: {s3_error}, will use existing cache"
+                    )
+            except Exception as s3_check_error:
                 logger.debug(
-                    f" Could not check S3 cache timestamp: {s3_error}, will use existing cache"
+                    f" Could not check S3 cache timestamp: {s3_check_error}, will use existing cache"
                 )
-        except Exception as s3_check_error:
-            logger.debug(
-                f" Could not check S3 cache timestamp: {s3_check_error}, will use existing cache"
-            )
 
-        # Clear session state cache only if S3 is newer
-        if s3_cache_newer:
-            if "_s3_cache_result" in st.session_state:
-                logger.debug(" Clearing stale session cache to force fresh S3 load")
-                del st.session_state["_s3_cache_result"]
-                if "_s3_cache_timestamp" in st.session_state:
-                    del st.session_state["_s3_cache_timestamp"]
+            if s3_cache_newer:
+                if "_s3_cache_result" in st.session_state:
+                    logger.debug(" Clearing stale session cache to force fresh S3 load")
+                    del st.session_state["_s3_cache_result"]
+                    if "_s3_cache_timestamp" in st.session_state:
+                        del st.session_state["_s3_cache_timestamp"]
 
         # Load from cache (will use S3 if session state was cleared, otherwise uses existing cache)
         # When _requested_date_range is set, use load_month_cache_from_s3 only (never S3_CACHE_KEY or disk)
-        requested_date_range = st.session_state.get("_requested_date_range", None)
         if requested_date_range is not None:
             year, month = requested_date_range[0].year, requested_date_range[0].month
             _calls, _err, _ts, last_save_time = load_month_cache_from_s3(year, month)
@@ -7537,7 +7543,7 @@ if is_super_admin():
                             logger.info(f" Cleared persistent disk cache: {CACHE_FILE}")
                     except LockTimeoutError:
                         logger.warning(
-                            f"Timeout clearing disk cache (file may be locked)"
+                            "Timeout clearing disk cache (file may be locked)"
                         )
                     except Exception as e:
                         logger.warning(f"Failed to clear disk cache: {e}")
@@ -8065,11 +8071,15 @@ try:
                     except queue.Empty:
                         # Fallback: load directly if thread failed
                         call_data, errors = load_all_calls_cached(
-                            cache_version=cache_version
+                            cache_version=cache_version,
+                            requested_range=requested_range,
                         )
+                    # Normalize in case loader returned None
+                    call_data = call_data if isinstance(call_data, list) else []
+                    errors = errors if isinstance(errors, list) else []
                     # CRITICAL: Apply 30-day filter to prevent memory issues
-                    # Unless user has requested a specific date range that requires all data
-                    if not st.session_state.get("_load_all_data_for_date_range", False):
+                    # Skip when: (a) _load_all_data_for_date_range, or (b) _requested_date_range (monthly—already scoped)
+                    if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
                         if call_data and MAX_DAYS_TO_LOAD is not None:
                             original_count = len(call_data)
                             call_data = filter_calls_by_date(
@@ -9365,6 +9375,11 @@ if should_reload:
     # Clear the last checked range to prevent stale checks after reload
     if "_last_checked_date_range" in st.session_state:
         del st.session_state._last_checked_date_range
+    # Clear load-in-progress flags so the new load doesn't wait on a stale/wrong load
+    if "_data_load_in_progress" in st.session_state:
+        del st.session_state["_data_load_in_progress"]
+    if "_data_load_start_time" in st.session_state:
+        del st.session_state["_data_load_start_time"]
     # Set a flag to skip date range check on next rerun (after data loads)
     st.session_state._just_switched_months = True
     # Clear Streamlit cache
@@ -9450,6 +9465,11 @@ if (
                 # Also clear Streamlit cache key to force reload
                 if "_s3_cache_timestamp" in st.session_state:
                     del st.session_state._s3_cache_timestamp
+                # Clear load-in-progress flags so the new load doesn't wait on a stale load
+                if "_data_load_in_progress" in st.session_state:
+                    del st.session_state["_data_load_in_progress"]
+                if "_data_load_start_time" in st.session_state:
+                    del st.session_state["_data_load_start_time"]
                 # Clear Streamlit cache to force reload of correct month
                 try:
                     load_all_calls_cached.clear()
