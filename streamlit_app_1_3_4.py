@@ -3169,60 +3169,9 @@ def save_cached_data_to_disk(call_data, errors, partial=False, processed=0, tota
                 for (year, month), month_calls in calls_by_month.items():
                     month_cache_key = get_s3_cache_key_for_month(year, month)
 
-                    # PROTECTION (per-month): Check existing monthly cache before overwriting with PARTIAL
-                    # Uses monthly key only—avoids get_object on legacy S3_CACHE_KEY (OOM/crash in monthly-only)
-                    if partial:
-                        try:
-                            existing_response = s3_client.get_object(
-                                Bucket=s3_bucket, Key=month_cache_key
-                            )
-                            existing_data = json.loads(
-                                existing_response["Body"].read().decode("utf-8")
-                            )
-                            if isinstance(existing_data, dict):
-                                existing_is_partial = existing_data.get("partial", False)
-                                existing_call_data = existing_data.get("call_data", [])
-                                existing_count = (
-                                    len(existing_call_data)
-                                    if isinstance(existing_call_data, list)
-                                    else 0
-                                )
-                                if not existing_is_partial:  # Existing COMPLETE
-                                    if existing_count == 0:
-                                        pass  # Allow overwrite of empty
-                                    else:
-                                        logger.warning(
-                                            f" PROTECTED: Not overwriting COMPLETE cache for {year}-{month:02d} "
-                                            f"({existing_count} calls) with PARTIAL ({len(month_calls)} calls)."
-                                        )
-                                        continue
-                                else:  # Both PARTIAL
-                                    existing_processed = existing_data.get(
-                                        "processed", 0
-                                    )
-                                    existing_total = existing_data.get("total", 0)
-                                    new_is_better = (processed > existing_processed) or (
-                                        processed == existing_processed
-                                        and len(month_calls) > existing_count
-                                    )
-                                    if not new_is_better:
-                                        logger.warning(
-                                            f" PROTECTED: Not overwriting PARTIAL cache for {year}-{month:02d} "
-                                            f"({existing_processed}/{existing_total}, {existing_count} calls) "
-                                            f"with less complete PARTIAL ({processed}/{total}, {len(month_calls)} calls)."
-                                        )
-                                        continue
-                        except ClientError as e:
-                            if e.response.get("Error", {}).get("Code", "") != "NoSuchKey":
-                                logger.warning(
-                                    f" Could not check existing monthly cache {year}-{month:02d}: {e}. Proceeding."
-                                )
-                        except Exception as e:
-                            logger.warning(
-                                f" Error checking existing monthly cache {year}-{month:02d}: {e}. Proceeding."
-                            )
-
                     # Load existing month cache to merge (if exists)
+                    # NOTE: We load first so we can merge new data with existing. The protection below
+                    # only blocks when we would LOSE data (saving fewer calls than existing).
                     existing_calls, existing_errors, existing_timestamp, _ = (
                         load_month_cache_from_s3(year, month)
                     )
@@ -4058,11 +4007,10 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
                     )
                 load_year, load_month = start_month
             else:
-                # Default to current month
-                now = datetime.now()
-                load_year, load_month = now.year, now.month
+                # Default to January 2026 (most recent month with data)
+                load_year, load_month = 2026, 1
                 logger.info(
-                    f"No specific date range requested, loading current month: {load_year}-{load_month:02d}"
+                    f"No specific date range requested, loading default month: {load_year}-{load_month:02d}"
                 )
 
             # Load the specific month's cache
@@ -5716,16 +5664,48 @@ def load_new_calls_only():
                 logger.warning(
                     f" {keys_missing} cached calls are missing _s3_key - they may be reprocessed"
                 )
-            else:
+            # Add session keys when we have existing_calls (current session processing)
+            session_keys = st.session_state.get("processed_s3_keys", set())
+            if session_keys:
+                processed_keys.update(session_keys)
+                logger.info(f" Found {len(session_keys)} additional files in session state")
+        else:
+            # Selected month has no data - build processed_keys from all monthly caches
+            MONTHS_WITH_DATA = [
+                (2026, 1),
+                (2025, 12),
+                (2025, 11),
+                (2025, 10),
+                (2025, 9),
+                (2025, 8),
+                (2025, 7),
+            ]
+            for year, month in MONTHS_WITH_DATA:
+                calls, _, _, _ = load_month_cache_from_s3(year, month)
+                if calls:
+                    for call in calls:
+                        filename = call.get("filename", "")
+                        _s3_key = call.get("_s3_key", "")
+                        _id = call.get("_id", "")
+                        is_csv = (
+                            ":" in str(_id)
+                            or ":" in str(_s3_key)
+                            or (filename and filename.lower().endswith(".csv"))
+                        )
+                        if is_csv and filename:
+                            processed_keys.add(filename.strip("/"))
+                        elif _s3_key:
+                            processed_keys.add(_s3_key.strip("/"))
+            if processed_keys:
                 logger.info(
-                    " No disk cache found in count_new_csvs - all files will be treated as new"
+                    f" Built processed_keys from {len(MONTHS_WITH_DATA)} monthly caches: {len(processed_keys)} file keys"
                 )
 
-        # Also check session state (for files processed in current session)
+        # Only add session_keys as fallback when no cache-derived keys
         session_keys = st.session_state.get("processed_s3_keys", set())
-        if session_keys:
+        if not processed_keys and session_keys:
             processed_keys.update(session_keys)
-            logger.info(f" Found {len(session_keys)} additional files in session state")
+            logger.info(f" Fallback: using {len(session_keys)} files from session state")
 
         logger.info(
             f" Total {len(processed_keys)} files already processed - will skip these"
@@ -7152,30 +7132,33 @@ if is_super_admin():
                 )
                 # Continue anyway - verification will catch this
 
-            # Verify disk cache was saved correctly (use single load for verification)
-            # CRITICAL FIX: Add error handling for verification load to prevent crashes
+            # Verify disk cache was saved correctly
+            # CRITICAL FIX: Read from disk FILE directly, not load_cached_data_from_disk().
+            # In monthly mode, load_cached_data_from_disk() returns monthly S3 cache (e.g. Feb 2026 = 0 calls)
+            # instead of the disk file we just saved. We need to verify the actual disk file.
             disk_result_verify = None
             disk_cache_count = 0
             verification_failed = False
             try:
-                disk_result_verify = load_cached_data_from_disk()
-                if disk_result_verify and disk_result_verify[0] is not None:
-                    disk_cache_count = len(disk_result_verify[0])
-                else:
-                    logger.warning(
-                        "Verification load returned None - checking previous disk_result as fallback"
-                    )
-                    # CRITICAL FIX: Check if disk_result is None before using as fallback
-                    if disk_result is not None and disk_result[0] is not None:
-                        disk_result_verify = disk_result
-                        disk_cache_count = len(disk_result[0])
-                    else:
-                        logger.error(
-                            "Both verification load and disk_result are None - using empty lists as fallback"
+                # Read disk file directly for verification (bypasses monthly S3 cache path)
+                if CACHE_FILE.exists():
+                    with cache_file_lock(CACHE_FILE, timeout=5):
+                        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                            disk_data = json.load(f)
+                    if isinstance(disk_data, dict):
+                        disk_calls = disk_data.get("call_data", [])
+                        disk_errors = disk_data.get("errors", [])
+                        disk_result_verify = (
+                            disk_calls if disk_calls is not None else [],
+                            disk_errors if disk_errors is not None else [],
                         )
+                        disk_cache_count = len(disk_result_verify[0])
+                    else:
                         disk_result_verify = ([], [])
-                        disk_cache_count = 0
                         verification_failed = True
+                else:
+                    disk_result_verify = ([], [])
+                    verification_failed = True
             except Exception as verify_error:
                 logger.error(f" CRITICAL: Verification load failed: {verify_error}")
                 logger.error(
@@ -7460,38 +7443,29 @@ if is_super_admin():
                 # The disk cache is already persisted to logs/cached_calls_data.json, so data is safe.
             else:
                 logger.warning(
-                    f" Disk cache verification failed: expected {len(all_calls_merged)} calls, found {disk_cache_count} - NOT clearing Streamlit cache"
+                    f" Disk cache verification: expected {len(all_calls_merged)} calls, found {disk_cache_count}"
                 )
-                # CRITICAL FIX: When verification fails, use verified disk cache data if available
-                # Don't store unverified all_calls_merged that may not have been persisted to disk
-                if (
-                    not verification_failed
-                    and disk_result_verify
-                    and disk_result_verify[0] is not None
-                ):
+                # CRITICAL FIX: When disk has fewer calls than we just saved, prefer all_calls_merged.
+                # We just saved it - it's the source of truth. The disk/verification might be stale
+                # (e.g. read from wrong cache in monthly mode). Only use disk data if it has MORE
+                # calls (disk was updated by another process).
+                if disk_cache_count > len(all_calls_merged) and disk_result_verify and disk_result_verify[0]:
                     logger.info(
-                        f" Using verified disk cache data ({disk_cache_count} calls) instead of unverified merged data ({len(all_calls_merged)} calls)"
+                        f" Using disk cache ({disk_cache_count} calls) - has more than our merge ({len(all_calls_merged)} calls)"
                     )
                     all_calls_merged = disk_result_verify[0]
-                    # Use verified errors if available
-                    if (
-                        disk_result_verify
-                        and len(disk_result_verify) > 1
-                        and disk_result_verify[1] is not None
-                    ):
+                    if disk_result_verify and len(disk_result_verify) > 1 and disk_result_verify[1]:
                         new_errors = disk_result_verify[1]
                 else:
-                    logger.error(
-                        "CRITICAL: Verification failed and no valid disk cache available - data may not be persisted"
-                    )
-                    # Still use all_calls_merged as last resort, but log the risk
-                    logger.warning(
-                        "Using unverified all_calls_merged as fallback - data may be lost on restart"
+                    logger.info(
+                        f" Using all_calls_merged ({len(all_calls_merged)} calls) - we just saved this, disk may be stale"
                     )
 
-                # We need to manually update the cache - store in session state temporarily
-                st.session_state["merged_calls"] = all_calls_merged
-                st.session_state["merged_errors"] = new_errors if new_errors else []
+                # Store merged data in session state so load_all_calls_cached can use it
+                # Use _merged_cache_data for consistency with success path
+                st.session_state["_merged_cache_data"] = all_calls_merged
+                st.session_state["_merged_cache_errors"] = new_errors if new_errors else []
+                st.session_state["_merged_cache_data_timestamp"] = datetime.now().isoformat()
                 # Update processed keys tracking
                 if "processed_s3_keys" not in st.session_state:
                     st.session_state["processed_s3_keys"] = set()
@@ -7507,31 +7481,21 @@ if is_super_admin():
                 # Clear notification count after successful refresh
                 st.session_state.new_csvs_notification_count = 0
 
-            # CRITICAL FIX: Increment cache version and clear Streamlit cache before rerun
-            # This forces Streamlit cache to reload from S3 cache (source of truth) on next call
+            # CRITICAL FIX: Increment cache version and clear caches before rerun
+            # This forces the app to reload from S3 monthly caches (source of truth) on next call
             try:
                 # Increment cache version to force cache refresh
                 current_version = st.session_state.get("_cache_version", 0)
                 st.session_state["_cache_version"] = current_version + 1
 
-                # Store S3 cache timestamp after saving (so we can detect when it's updated)
-                s3_client, s3_bucket = get_s3_client_and_bucket()
-                if s3_client and s3_bucket:
-                    try:
-                        response = s3_client.get_object(
-                            Bucket=s3_bucket, Key=S3_CACHE_KEY
-                        )
-                        s3_data = json.loads(response["Body"].read().decode("utf-8"))
-                        s3_timestamp = s3_data.get("timestamp", None)
-                        if s3_timestamp:
-                            st.session_state["_s3_cache_timestamp"] = s3_timestamp
-                            logger.info(f" Stored S3 cache timestamp: {s3_timestamp}")
-                    except Exception as s3_read_error:
-                        logger.debug(
-                            f"Could not read S3 cache timestamp: {s3_read_error}"
-                        )
+                # Clear monthly session cache so next load re-fetches from S3 (with updated monthly caches)
+                # In monthly mode, _s3_cache_result holds the monthly cache - we just updated it, so clear it
+                for key in ("_s3_cache_result", "_s3_cache_timestamp"):
+                    if key in st.session_state:
+                        del st.session_state[key]
+                logger.info(" Cleared monthly session cache - will reload from updated S3 monthly caches")
 
-                # Clear Streamlit cache to force reload from S3 cache
+                # Clear Streamlit cache to force reload
                 load_all_calls_cached.clear()
                 logger.info(
                     f" Cleared Streamlit cache - will reload {len(all_calls_merged)} calls from S3 cache (source of truth)"
@@ -9060,10 +9024,9 @@ MAX_DATE_RANGE_DAYS = 30
 
 # Initialize date range state
 if "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
-    # Default to current month
-    now = datetime.now()
-    st.session_state._selected_year = now.year
-    st.session_state._selected_month = now.month
+    # Default to January 2026 (most recent month with data)
+    st.session_state._selected_year = 2026
+    st.session_state._selected_month = 1
 
 st.sidebar.markdown("### 📆 Date Range")
 
