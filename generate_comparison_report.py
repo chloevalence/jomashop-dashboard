@@ -6,6 +6,7 @@ Generates a PDF report comparing Jomashop's previous contact center performance
 with BPO Centers performance after the transition date (July 7, 2025).
 """
 
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -17,7 +18,7 @@ import json
 import argparse
 import sys
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, Any
 import warnings
 
 # Configure matplotlib (must be imported before warnings)
@@ -307,12 +308,92 @@ def extract_date_from_call_id(call_id: str) -> Optional[datetime]:
     return None
 
 
+def _get_s3_config() -> Optional[Dict[str, str]]:
+    """Get S3 bucket and credentials from .streamlit/secrets.toml or env."""
+    config = {}
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore
+        except ImportError:
+            tomllib = None
+    secrets_path = PROJECT_ROOT / ".streamlit" / "secrets.toml"
+    if tomllib is not None and secrets_path.exists():
+        try:
+            with open(secrets_path, "rb") as f:
+                secrets = tomllib.load(f)
+            s3 = secrets.get("s3", {})
+            if s3.get("bucket_name"):
+                config["bucket"] = s3["bucket_name"]
+                config["prefix"] = s3.get("prefix", "cache")
+                config["aws_access_key_id"] = s3.get("aws_access_key_id", "")
+                config["aws_secret_access_key"] = s3.get("aws_secret_access_key", "")
+                config["region_name"] = s3.get("region_name", "us-east-1")
+        except Exception:
+            pass
+    if not config.get("bucket"):
+        bucket = os.environ.get("BPO_S3_BUCKET")
+        if bucket:
+            config["bucket"] = bucket
+            config["prefix"] = os.environ.get("BPO_S3_PREFIX", "cache")
+            config["aws_access_key_id"] = os.environ.get("AWS_ACCESS_KEY_ID", "")
+            config["aws_secret_access_key"] = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+            config["region_name"] = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    return config if config.get("bucket") else None
+
+
+def _load_bpo_call_data_from_s3() -> List[Dict[str, Any]]:
+    """Load and merge BPO month caches from S3. Returns list of call dicts or empty list."""
+    config = _get_s3_config()
+    if not config:
+        return []
+    try:
+        import boto3
+        from botocore.exceptions import ClientError
+
+        kwargs = {"region_name": config.get("region_name", "us-east-1")}
+        if config.get("aws_access_key_id") and config.get("aws_secret_access_key"):
+            kwargs["aws_access_key_id"] = config["aws_access_key_id"]
+            kwargs["aws_secret_access_key"] = config["aws_secret_access_key"]
+        client = boto3.client("s3", **kwargs)
+        prefix = (config.get("prefix") or "cache").rstrip("/") + "/"
+        prefix_full = prefix + "cached_calls_data_"
+        paginator = client.get_paginator("list_objects_v2")
+        all_calls = []
+        seen_ids = set()
+
+        for page in paginator.paginate(Bucket=config["bucket"], Prefix=prefix_full):
+            for obj in page.get("Contents") or []:
+                key = obj["Key"]
+                if not key.endswith(".json") or "cached_calls_data_" not in key:
+                    continue
+                try:
+                    resp = client.get_object(Bucket=config["bucket"], Key=key)
+                    data = json.loads(resp["Body"].read().decode("utf-8"))
+                    calls = data.get("call_data", data.get("calls", data.get("data", [])))
+                    for c in calls:
+                        cid = c.get("Call ID") or c.get("call_id") or str(c.get("_id", ""))
+                        if cid and cid not in seen_ids:
+                            seen_ids.add(cid)
+                            all_calls.append(c)
+                        elif not cid:
+                            all_calls.append(c)
+                except (ClientError, json.JSONDecodeError, KeyError) as e:
+                    print(f"   ⚠️  Skipped {key}: {e}")
+                    continue
+        return all_calls
+    except ImportError:
+        return []
+    except Exception as e:
+        print(f"   ⚠️  S3 fallback failed: {e}")
+        return []
+
+
 def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFrame:
     """
     Load BPO Centers data from cache, split by transition date.
-
-    Returns:
-        Tuple of (before_data, after_data) DataFrames
+    If local cache is empty, tries to load from S3 month caches (secrets.toml or env).
     """
     print(f"📂 Loading BPO Centers data from: {cache_path}")
 
@@ -332,9 +413,18 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             call_data = cached_data
 
         if not call_data:
-            raise ValueError("No call data found in cache file")
-
-        print(f"✅ Loaded {len(call_data)} calls from cache")
+            print("   Local cache is empty (app may run in monthly-only mode). Trying S3 month caches...")
+            call_data = _load_bpo_call_data_from_s3()
+            if call_data:
+                print(f"✅ Loaded {len(call_data)} calls from S3 month caches")
+            else:
+                raise ValueError(
+                    "No call data in cache file and could not load from S3. "
+                    "Either run the Streamlit app without a month selected so it writes the full cache to disk, "
+                    "or set S3 access (e.g. .streamlit/secrets.toml with [s3] or env BPO_S3_BUCKET and AWS_*)."
+                )
+        else:
+            print(f"✅ Loaded {len(call_data)} calls from cache")
 
         # Convert to DataFrame
         df = pd.DataFrame(call_data)
