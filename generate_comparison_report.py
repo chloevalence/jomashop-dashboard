@@ -18,7 +18,7 @@ import json
 import argparse
 import sys
 import re
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Any
 import warnings
 
 # Configure matplotlib (must be imported before warnings)
@@ -371,7 +371,10 @@ def _load_bpo_call_data_from_s3() -> List[Dict[str, Any]]:
                 try:
                     resp = client.get_object(Bucket=config["bucket"], Key=key)
                     data = json.loads(resp["Body"].read().decode("utf-8"))
-                    calls = data.get("call_data", data.get("calls", data.get("data", [])))
+                    if isinstance(data, dict):
+                        calls = data.get("call_data", data.get("calls", data.get("data", [])))
+                    else:
+                        calls = data if isinstance(data, list) else []
                     for c in calls:
                         cid = c.get("Call ID") or c.get("call_id") or str(c.get("_id", ""))
                         if cid and cid not in seen_ids:
@@ -379,7 +382,7 @@ def _load_bpo_call_data_from_s3() -> List[Dict[str, Any]]:
                             all_calls.append(c)
                         elif not cid:
                             all_calls.append(c)
-                except (ClientError, json.JSONDecodeError, KeyError) as e:
+                except (ClientError, json.JSONDecodeError, KeyError, AttributeError) as e:
                     print(f"   ⚠️  Skipped {key}: {e}")
                     continue
         return all_calls
@@ -3393,8 +3396,32 @@ def main():
         default="2025-08-01",
         help="BPO Centers start date filter in YYYY-MM-DD format (default: 2025-08-01)",
     )
+    parser.add_argument(
+        "--download-cache-only",
+        action="store_true",
+        help="Download BPO call data from S3 month caches to the cache file and exit (no PDF). Uses .streamlit/secrets.toml or env BPO_S3_BUCKET.",
+    )
 
     args = parser.parse_args()
+
+    # Download-only mode: fetch from S3 and write to cache file
+    if args.download_cache_only:
+        cache_path = Path(args.cache)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        config = _get_s3_config()
+        if not config:
+            print("❌ S3 not configured. Set .streamlit/secrets.toml [s3] or env BPO_S3_BUCKET and AWS credentials.")
+            sys.exit(1)
+        print("📂 Downloading BPO month caches from S3...")
+        call_data = _load_bpo_call_data_from_s3()
+        if not call_data:
+            print("❌ No call data returned from S3.")
+            sys.exit(1)
+        out = {"call_data": call_data, "errors": [], "timestamp": datetime.now().isoformat(), "count": len(call_data)}
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(out, f, default=str, indent=2, ensure_ascii=False)
+        print(f"✅ Saved {len(call_data)} calls to {cache_path}")
+        sys.exit(0)
 
     # Parse BPO start date
     try:
