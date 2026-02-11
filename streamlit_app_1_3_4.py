@@ -4007,8 +4007,8 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
                     )
                 load_year, load_month = start_month
             else:
-                # Default to January 2026 (most recent month with data)
-                load_year, load_month = 2026, 1
+                # Default to February 2026 (most recent month with data)
+                load_year, load_month = 2026, 2
                 logger.info(
                     f"No specific date range requested, loading default month: {load_year}-{load_month:02d}"
                 )
@@ -5672,6 +5672,7 @@ def load_new_calls_only():
         else:
             # Selected month has no data - build processed_keys from all monthly caches
             MONTHS_WITH_DATA = [
+                (2026, 2),
                 (2026, 1),
                 (2025, 12),
                 (2025, 11),
@@ -9022,16 +9023,18 @@ if "rubric_filter_type" not in st.session_state:
 # Maximum date range allowed (30 days to prevent memory issues)
 MAX_DATE_RANGE_DAYS = 30
 
-# Initialize date range state
+# Initialize date range state: default to most recent month (February 2026)
 if "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
-    # Default to January 2026 (most recent month with data)
     st.session_state._selected_year = 2026
-    st.session_state._selected_month = 1
+    st.session_state._selected_month = 2
+# Prefer most recent month when previously on January 2026 (so new default is Feb 2026)
+elif st.session_state._selected_year == 2026 and st.session_state._selected_month == 1:
+    st.session_state._selected_year = 2026
+    st.session_state._selected_month = 2
 
 st.sidebar.markdown("### 📆 Date Range")
 
-# Generate list of months from January 2026 backwards to first month of data
-# Format: "January 2026", "December 2025", "November 2025", etc.
+# Month names for building display strings
 month_names = [
     "January",
     "February",
@@ -9047,9 +9050,10 @@ month_names = [
     "December",
 ]
 
-# Hardcoded list of 7 months with data: January 2026 backwards to July 2025
+# Hardcoded list of 8 months with data: February 2026 backwards to July 2025
 # Format: list of tuples (year, month, display_string)
 month_options = [
+    (2026, 2, "February 2026"),
     (2026, 1, "January 2026"),
     (2025, 12, "December 2025"),
     (2025, 11, "November 2025"),
@@ -9059,8 +9063,9 @@ month_options = [
     (2025, 7, "July 2025"),
 ]
 
-# Create list of display strings for the selectbox - always exactly 7 months
+# Create list of display strings for the selectbox - always exactly 8 months
 month_display_options = [
+    "February 2026",
     "January 2026",
     "December 2025",
     "November 2025",
@@ -9070,8 +9075,8 @@ month_display_options = [
     "July 2025",
 ]
 
-# Ensure we have exactly 7 options
-assert len(month_display_options) == 7, f"Expected 7 months, got {len(month_display_options)}"
+# Ensure we have exactly 8 options
+assert len(month_display_options) == 8, f"Expected 8 months, got {len(month_display_options)}"
 
 # Find the current selection index based on session state
 current_month_str = f"{month_names[st.session_state._selected_month - 1]} {st.session_state._selected_year}"
@@ -9081,17 +9086,18 @@ for idx, month_str in enumerate(month_display_options):
         current_index = idx
         break
 
-# Create a single dropdown with all 7 months in reverse chronological order
+# Create a single dropdown with all 8 months in reverse chronological order
 selected_month_str = st.sidebar.selectbox(
     "Select Month",
-    options=month_display_options,  # Hardcoded list of 7 months
+    options=month_display_options,  # Hardcoded list of 8 months
     index=current_index,
-    key="month_selector_7months",  # Unique key to avoid caching issues
+    key="month_selector_8months_v2",  # Unique key so widget shows all 8 months including Feb 2026
 )
 
 # Find the selected year and month from the selected string
-# Direct mapping for the 7 hardcoded months
+# Direct mapping for the 8 hardcoded months
 month_to_date = {
+    "February 2026": (2026, 2),
     "January 2026": (2026, 1),
     "December 2025": (2025, 12),
     "November 2025": (2025, 11),
@@ -9102,7 +9108,7 @@ month_to_date = {
 }
 
 selected_year, selected_month = month_to_date.get(
-    selected_month_str, (2026, 1)  # Default to January 2026 if not found
+    selected_month_str, (2026, 2)  # Default to February 2026 (most recent) if not found
 )
 
 # Update state if changed and trigger reload
