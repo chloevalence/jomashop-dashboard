@@ -5672,6 +5672,7 @@ def load_new_calls_only():
         else:
             # Selected month has no data - build processed_keys from all monthly caches
             MONTHS_WITH_DATA = [
+                (2026, 2),
                 (2026, 1),
                 (2025, 12),
                 (2025, 11),
@@ -9047,9 +9048,10 @@ month_names = [
     "December",
 ]
 
-# Hardcoded list of 7 months with data: January 2026 backwards to July 2025
+# Hardcoded list of 8 months with data: February 2026 backwards to July 2025
 # Format: list of tuples (year, month, display_string)
 month_options = [
+    (2026, 2, "February 2026"),
     (2026, 1, "January 2026"),
     (2025, 12, "December 2025"),
     (2025, 11, "November 2025"),
@@ -9059,8 +9061,9 @@ month_options = [
     (2025, 7, "July 2025"),
 ]
 
-# Create list of display strings for the selectbox - always exactly 7 months
+# Create list of display strings for the selectbox - always exactly 8 months
 month_display_options = [
+    "February 2026",
     "January 2026",
     "December 2025",
     "November 2025",
@@ -9070,8 +9073,8 @@ month_display_options = [
     "July 2025",
 ]
 
-# Ensure we have exactly 7 options
-assert len(month_display_options) == 7, f"Expected 7 months, got {len(month_display_options)}"
+# Ensure we have exactly 8 options
+assert len(month_display_options) == 8, f"Expected 8 months, got {len(month_display_options)}"
 
 # Find the current selection index based on session state
 current_month_str = f"{month_names[st.session_state._selected_month - 1]} {st.session_state._selected_year}"
@@ -9081,17 +9084,18 @@ for idx, month_str in enumerate(month_display_options):
         current_index = idx
         break
 
-# Create a single dropdown with all 7 months in reverse chronological order
+# Create a single dropdown with all 8 months in reverse chronological order
 selected_month_str = st.sidebar.selectbox(
     "Select Month",
-    options=month_display_options,  # Hardcoded list of 7 months
+    options=month_display_options,  # Hardcoded list of 8 months
     index=current_index,
     key="month_selector_7months",  # Unique key to avoid caching issues
 )
 
 # Find the selected year and month from the selected string
-# Direct mapping for the 7 hardcoded months
+# Direct mapping for the 8 hardcoded months
 month_to_date = {
+    "February 2026": (2026, 2),
     "January 2026": (2026, 1),
     "December 2025": (2025, 12),
     "November 2025": (2025, 11),
