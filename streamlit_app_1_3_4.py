@@ -9036,10 +9036,6 @@ MAX_DATE_RANGE_DAYS = 30
 if "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
     st.session_state._selected_year = 2026
     st.session_state._selected_month = 2
-# Prefer most recent month when previously on January 2026 (so new default is Feb 2026)
-elif st.session_state._selected_year == 2026 and st.session_state._selected_month == 1:
-    st.session_state._selected_year = 2026
-    st.session_state._selected_month = 2
 
 st.sidebar.markdown("### 📆 Date Range")
 
