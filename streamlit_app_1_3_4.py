@@ -7884,18 +7884,27 @@ try:
                         has_matching_cache = True
                     else:
                         try:
-                            first = cd[0]
-                            cached_month = None
-                            for date_field in ["Call Date", "call_date", "date"]:
-                                if date_field in first and first[date_field]:
+                            # Use min/max date in cache so we only match when cache is exclusively that month
+                            req_month = (requested_range[0].year, requested_range[0].month)
+                            min_date = None
+                            max_date = None
+                            for call in cd:
+                                for date_field in ["Call Date", "call_date", "date"]:
+                                    if date_field not in call or not call[date_field]:
+                                        continue
                                     try:
-                                        dv = first[date_field]
+                                        dv = call[date_field]
                                         if isinstance(dv, str):
                                             dv = datetime.strptime(
-                                                dv.split()[0], "%Y-%m-%d"
+                                                dv.split()[0] if dv else "1970-01-01",
+                                                "%Y-%m-%d",
                                             )
                                         if hasattr(dv, "year"):
-                                            cached_month = (dv.year, dv.month)
+                                            d = dv.date() if hasattr(dv, "date") else dv
+                                            if min_date is None or d < min_date:
+                                                min_date = d
+                                            if max_date is None or d > max_date:
+                                                max_date = d
                                         break
                                     except Exception:
                                         continue
@@ -7904,10 +7913,10 @@ try:
                                 and len(requested_range) >= 1
                                 and requested_range[0] is not None
                                 and hasattr(requested_range[0], "year")
-                                and cached_month == (
-                                    requested_range[0].year,
-                                    requested_range[0].month,
-                                )
+                                and min_date is not None
+                                and max_date is not None
+                                and (min_date.year, min_date.month) == req_month
+                                and (max_date.year, max_date.month) == req_month
                             ):
                                 has_matching_cache = True
                         except Exception:
@@ -9050,7 +9059,7 @@ month_names = [
     "December",
 ]
 
-# Hardcoded list of 8 months with data: February 2026 backwards to July 2025
+# Single source of truth: 8 months with data, most recent first (February 2026 -> July 2025)
 # Format: list of tuples (year, month, display_string)
 month_options = [
     (2026, 2, "February 2026"),
@@ -9062,21 +9071,8 @@ month_options = [
     (2025, 8, "August 2025"),
     (2025, 7, "July 2025"),
 ]
-
-# Create list of display strings for the selectbox - always exactly 8 months
-month_display_options = [
-    "February 2026",
-    "January 2026",
-    "December 2025",
-    "November 2025",
-    "October 2025",
-    "September 2025",
-    "August 2025",
-    "July 2025",
-]
-
-# Ensure we have exactly 8 options
-assert len(month_display_options) == 8, f"Expected 8 months, got {len(month_display_options)}"
+# Build display list from single source so dropdown always matches
+month_display_options = [opt[2] for opt in month_options]
 
 # Find the current selection index based on session state
 current_month_str = f"{month_names[st.session_state._selected_month - 1]} {st.session_state._selected_year}"
@@ -9085,28 +9081,19 @@ for idx, month_str in enumerate(month_display_options):
     if month_str == current_month_str:
         current_index = idx
         break
+current_index = min(current_index, len(month_display_options) - 1)  # keep in range
 
-# Create a single dropdown with all 8 months in reverse chronological order
+# Dropdown: options from month_options so February 2026 is always first
 selected_month_str = st.sidebar.selectbox(
     "Select Month",
-    options=month_display_options,  # Hardcoded list of 8 months
+    options=month_display_options,
     index=current_index,
-    key="month_selector_8months_v2",  # Unique key so widget shows all 8 months including Feb 2026
+    key="month_selector_8months_v3",  # New key to force fresh widget with 8 options
 )
+st.sidebar.caption(f"Latest: {month_display_options[0]}")  # Confirm Feb 2026 is available
 
-# Find the selected year and month from the selected string
-# Direct mapping for the 8 hardcoded months
-month_to_date = {
-    "February 2026": (2026, 2),
-    "January 2026": (2026, 1),
-    "December 2025": (2025, 12),
-    "November 2025": (2025, 11),
-    "October 2025": (2025, 10),
-    "September 2025": (2025, 9),
-    "August 2025": (2025, 8),
-    "July 2025": (2025, 7),
-}
-
+# Map display string -> (year, month) from single source of truth
+month_to_date = {opt[2]: (opt[0], opt[1]) for opt in month_options}
 selected_year, selected_month = month_to_date.get(
     selected_month_str, (2026, 2)  # Default to February 2026 (most recent) if not found
 )
