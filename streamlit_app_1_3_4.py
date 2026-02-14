@@ -7802,7 +7802,7 @@ else:
 
 
 def _get_demo_samsung_data():
-    """Return demo Samsung customer support data: 1 detailed call + 519 BS rows for charts/leaderboard."""
+    """Return demo Samsung customer support data: 1 detailed call + 81 BS rows (82 total) for charts/leaderboard."""
     import random
 
     random.seed(42)
@@ -7832,7 +7832,7 @@ def _get_demo_samsung_data():
         "call_id": "20260210_143022_SAMSUNG-DEMO-001",
         "call_date": datetime(2026, 2, 10),
         "date_raw": "02102026",
-        "time": "14:30",
+        "time": "14:30:00",
         "agent": "Samsung Support Agent 1",
         "company": "Samsung",
         "qa_score": 85.0,
@@ -7851,14 +7851,14 @@ def _get_demo_samsung_data():
 
     out = [detailed]
     base = datetime(2026, 2, 1).date()
-    for i in range(519):
+    for i in range(81):
         d = base + timedelta(days=random.randint(0, 27))
         m, s = random.randint(2, 8), random.randint(0, 59)
         out.append({
             "call_id": f"202602{d.day:02d}_{100000 + i}_SAMSUNG-DEMO",
             "call_date": datetime(d.year, d.month, d.day, random.randint(8, 18), random.randint(0, 59)),
             "date_raw": f"{d.month:02d}{d.day:02d}{d.year}",
-            "time": f"{random.randint(9, 17):02d}:{random.randint(0, 59):02d}",
+            "time": f"{random.randint(9, 17):02d}:{random.randint(0, 59):02d}:00",
             "agent": random.choice(agents),
             "company": "Samsung",
             "qa_score": round(random.uniform(55, 95), 1),
