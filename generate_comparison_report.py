@@ -39,6 +39,38 @@ CACHE_FILE = log_dir / "cached_calls_data.json"
 # Transition date: July 7, 2025
 TRANSITION_DATE = datetime(2025, 7, 7)
 
+# BPO cohort start date (data from this date onward)
+BPO_COHORT_START_DATE = datetime(2025, 8, 1)
+
+# Pass threshold: QA score >= 70 = pass (Excellent + Good)
+# Pass = Excellent (90-100) + Good (70-89)
+PASS_THRESHOLD = 70
+
+# Rounding tolerance for validation
+ROUNDING_TOLERANCE = 0.01
+
+# Tolerance for pass_rate vs bucket reconciliation
+PASS_RATE_RECONCILE_TOLERANCE = 0.01
+
+# Consistency std change threshold: no material change if abs(delta) < this
+CONSISTENCY_NO_CHANGE_THRESHOLD = 0.5
+
+# Pass definition text (must include ≥ or >= for validation)
+PASS_DEFINITION_TEXT = "Passing is defined as a QA score ≥ 70%."
+PASS_DEFINITION_TEXT_ASCII = "Passing is defined as a QA score >= 70%."
+
+
+def _validate_pass_definition_text() -> None:
+    """Ensure pass definition includes ≥ 70% or >= 70%."""
+    if "≥ 70%" not in PASS_DEFINITION_TEXT and ">= 70%" not in PASS_DEFINITION_TEXT:
+        raise ValueError(
+            f"Pass definition text must include '≥ 70%' or '>= 70%'. "
+            f"Got: {PASS_DEFINITION_TEXT!r}"
+        )
+
+# Agent leaderboard Top N (remainder goes to Other/Unknown row)
+AGENT_LEADERBOARD_TOP_N = 15
+
 # Set style for professional-looking charts
 sns.set_style("whitegrid")
 plt.rcParams["figure.figsize"] = (10, 6)
@@ -197,27 +229,28 @@ def extract_products_from_text(text):
         "grand seiko",
     ]
 
-    # Product categories
-    product_categories = [
-        "watch",
-        "watches",
-        "timepiece",
-        "timepieces",
-        "wristwatch",
-        "wristwatches",
-        "bracelet",
-        "bracelets",
-        "necklace",
-        "necklaces",
-        "ring",
-        "rings",
-        "earrings",
-        "pendant",
-        "pendants",
-        "jewelry",
-        "jewellery",
-        "accessories",
-    ]
+    # Product categories (singular/plural normalized to same display name)
+    PRODUCT_CATEGORY_NORMALIZE = {
+        "watch": "Watch",
+        "watches": "Watch",
+        "timepiece": "Timepiece",
+        "timepieces": "Timepiece",
+        "wristwatch": "Wristwatch",
+        "wristwatches": "Wristwatch",
+        "bracelet": "Bracelet",
+        "bracelets": "Bracelet",
+        "necklace": "Necklace",
+        "necklaces": "Necklace",
+        "ring": "Ring",
+        "rings": "Ring",
+        "earrings": "Earrings",
+        "pendant": "Pendant",
+        "pendants": "Pendant",
+        "jewelry": "Jewelry",
+        "jewellery": "Jewelry",
+        "accessories": "Accessories",
+    }
+    product_categories = list(PRODUCT_CATEGORY_NORMALIZE.keys())
 
     # Check for watch brands
     for brand in watch_brands:
@@ -243,9 +276,7 @@ def extract_products_from_text(text):
     # Check for product categories
     for category in product_categories:
         if category in text_lower:
-            category_normalized = (
-                category.title() if category != "jewellery" else "Jewelry"
-            )
+            category_normalized = PRODUCT_CATEGORY_NORMALIZE[category]
             if category_normalized not in products:
                 products.append(category_normalized)
 
@@ -306,6 +337,303 @@ def extract_date_from_call_id(call_id: str) -> Optional[datetime]:
         except (ValueError, TypeError):
             return None
     return None
+
+
+def apply_global_filters(
+    df: pd.DataFrame,
+    cohort: str,
+) -> pd.DataFrame:
+    """
+    Apply shared global filters to produce a canonical filtered dataframe.
+    All report sections must use this canonical df for consistency.
+
+    Filters:
+    - require non-null call_id
+    - require non-null QA Score (for QA-dependent metrics)
+    - ensure Call Date is valid (non-NaT)
+    - dedupe strictly by call_id (keep first)
+
+    Returns:
+        Filtered and deduplicated DataFrame. total_calls = len(result) = nunique(call_id).
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    out = df.copy()
+
+    # Ensure call_id column exists
+    id_col = None
+    for col in out.columns:
+        if col.lower() in ("call_id", "call id", "callid"):
+            id_col = col
+            break
+    if id_col and "call_id" not in out.columns:
+        out["call_id"] = out[id_col].astype(str)
+    elif "_id" in out.columns and "call_id" not in out.columns:
+        out["call_id"] = out["_id"].astype(str)
+    elif "call_id" not in out.columns:
+        out["call_id"] = "row_" + out.index.astype(str)
+
+    # Require non-null call_id
+    out = out[out["call_id"].notna() & (out["call_id"].astype(str).str.strip() != "")]
+
+    # Require non-null QA Score (for QA-dependent metrics)
+    qa_col = None
+    for c in out.columns:
+        if str(c).strip().lower() == "qa score":
+            qa_col = c
+            break
+    if qa_col:
+        out = out[out[qa_col].notna()]
+
+    # Ensure Call Date is valid
+    if "Call Date" in out.columns:
+        out["Call Date"] = pd.to_datetime(out["Call Date"], errors="coerce")
+        out = out[out["Call Date"].notna()]
+
+    # Dedupe by call_id (keep first)
+    out = out.drop_duplicates(subset=["call_id"], keep="first").copy()
+
+    return out
+
+
+def canonicalize_label(label: str) -> str:
+    """
+    Canonicalize a category label for aggregation.
+    - strip whitespace
+    - lowercase
+    - collapse internal multiple spaces
+    Returns canonical form (used for aggregation keys).
+    """
+    if pd.isna(label) or label is None:
+        return ""
+    s = str(label).strip().lower()
+    s = " ".join(s.split())  # collapse multiple spaces
+    return s
+
+
+def label_to_display(canonical: str) -> str:
+    """Convert canonical label to Title Case for display."""
+    if not canonical:
+        return "Unknown"
+    return canonical.title()
+
+
+def validate_report_inputs(
+    previous_df: Optional[pd.DataFrame],
+    bpo_df: pd.DataFrame,
+) -> None:
+    """
+    Assert required columns exist. Fail fast with actionable error messages.
+    Required: call_id (or Call ID), cohort label (implicit), qa_score, handle_time (AHT),
+    agent_id (Agent), reason, outcome, date (Call Date).
+    """
+    required_per_cohort = {
+        "date": ["Call Date", "call_date", "date_raw"],
+        "qa_score": ["QA Score", "qa_score"],
+        "agent_id": ["Agent", "agent"],
+        "reason": ["Reason", "reason"],
+        "outcome": ["Outcome", "outcome"],
+        "handle_time": ["AHT", "handle_time_minutes", "Handle Time"],
+    }
+    # call_id can be Call ID, call_id, or _id
+
+    def _has_any(df: pd.DataFrame, candidates: List[str]) -> bool:
+        cols_lower = {c.lower(): c for c in df.columns}
+        return any(c.lower() in cols_lower for c in candidates)
+
+    def _has_date(df: pd.DataFrame) -> bool:
+        return _has_any(df, required_per_cohort["date"])
+
+    def _has_qa(df: pd.DataFrame) -> bool:
+        return _has_any(df, required_per_cohort["qa_score"])
+
+    def _has_agent(df: pd.DataFrame) -> bool:
+        return _has_any(df, required_per_cohort["agent_id"])
+
+    errors = []
+    if bpo_df is not None and len(bpo_df) > 0:
+        if not _has_date(bpo_df):
+            errors.append("BPO: Missing date column (Call Date, call_date, or date_raw)")
+        if not _has_qa(bpo_df):
+            errors.append("BPO: Missing QA Score column")
+        if not _has_agent(bpo_df):
+            errors.append("BPO: Missing Agent column")
+
+    if previous_df is not None and len(previous_df) > 0:
+        if not _has_date(previous_df):
+            errors.append("Previous: Missing date column")
+        if not _has_qa(previous_df):
+            errors.append("Previous: Missing QA Score column")
+
+    if errors:
+        raise ValueError(
+            "validate_report_inputs failed. Missing required columns:\n  - "
+            + "\n  - ".join(errors)
+        )
+
+
+def validate_report_outputs(
+    cohort_config: Dict[str, Any],
+    previous_metrics: Dict,
+    bpo_metrics: Dict,
+    previous_reasons: Optional[Dict],
+    bpo_reasons: Optional[Dict],
+    previous_outcomes: Optional[Dict],
+    bpo_outcomes: Optional[Dict],
+) -> None:
+    """
+    Check: cohort totals reconcile, percentages use correct denominators,
+    no duplicate labels, trend grain consistent, pass rate matches bucketed distribution.
+    """
+    errors = []
+    # Cohort totals and calls_per_day: abs((cpd * days) - total_calls) < 1
+    for name, cfg in cohort_config.items():
+        tc = cfg.get("total_calls", 0)
+        days = cfg.get("days_in_period", 1)
+        cpd = cfg.get("calls_per_day")
+        if cpd is not None and days > 0:
+            if abs((cpd * days) - tc) >= 1:
+                errors.append(
+                    f"{name}: calls_per_day * days_in_period does not reconcile with total_calls "
+                    f"(got {cpd} * {days} = {cpd * days}, total_calls = {tc})"
+                )
+
+    # Pass rate vs bucket sum (pass = Excellent + Good when PASS_THRESHOLD=70)
+    for name, metrics in [("Previous", previous_metrics), ("BPO", bpo_metrics)]:
+        pr = metrics.get("pass_rate")
+        exc = metrics.get("excellent_pct", 0) or 0
+        good = metrics.get("good_pct", 0) or 0
+        if pr is not None:
+            bucket_sum = exc + good
+            if abs(pr - bucket_sum) > PASS_RATE_RECONCILE_TOLERANCE:
+                errors.append(
+                    f"{name}: pass_rate ({pr:.2f}%) does not match "
+                    f"Excellent+Good bucket sum ({bucket_sum:.2f}%)"
+                )
+
+    # Top-10 percentages plausible (<= 100%)
+    for name, dist in [("Reasons-Prev", previous_reasons), ("Reasons-BPO", bpo_reasons)]:
+        if dist and isinstance(dist, dict):
+            total = sum(dist.values())
+            for k, v in list(dist.items())[:10]:
+                pct = (v / total * 100) if total > 0 else 0
+                if pct > 100:
+                    errors.append(f"{name}: category '{k}' has pct > 100%")
+
+    for name, dist in [
+        ("Outcomes-Prev", previous_outcomes),
+        ("Outcomes-BPO", bpo_outcomes),
+    ]:
+        if dist and isinstance(dist, dict):
+            total = sum(dist.values())
+            for k, v in list(dist.items())[:10]:
+                pct = (v / total * 100) if total > 0 else 0
+                if pct > 100:
+                    errors.append(f"{name}: category '{k}' has pct > 100%")
+
+    if errors:
+        raise ValueError(
+            "validate_report_outputs failed:\n  - " + "\n  - ".join(errors)
+        )
+
+
+def _compute_agent_reconciliation_stats(
+    bpo_df: pd.DataFrame, total_calls_bpo: int
+) -> Dict[str, Any]:
+    """
+    Compute agent call counts using nunique(call_id) for reconciliation.
+    Returns agent_sum_all, top_n_sum, other_unknown for runtime log.
+    """
+    if bpo_df is None or len(bpo_df) == 0 or "Agent" not in bpo_df.columns:
+        return {
+            "agent_sum_all": 0,
+            "top_n_sum": None,
+            "other_unknown": 0,
+        }
+
+    df = bpo_df.copy()
+    df["Agent"] = df["Agent"].fillna("Unknown Agent")
+    df.loc[df["Agent"].astype(str).str.strip() == "", "Agent"] = "Unknown Agent"
+
+    # Use nunique(call_id) for true call counts
+    call_id_col = "call_id" if "call_id" in df.columns else None
+    if call_id_col is None:
+        for c in df.columns:
+            if c.lower() in ("call_id", "call id", "callid"):
+                call_id_col = c
+                break
+    if call_id_col is None:
+        # Fallback: after global filters we have call_id; if not, use row count
+        call_id_col = "call_id" if "call_id" in df.columns else None
+
+    if call_id_col:
+        calls_per_agent = df.groupby("Agent")[call_id_col].nunique()
+    else:
+        calls_per_agent = df.groupby("Agent").size()
+
+    agent_sum_all = int(calls_per_agent.sum())
+    sorted_agents = calls_per_agent.sort_values(ascending=False)
+    top_n = sorted_agents.head(AGENT_LEADERBOARD_TOP_N)
+    top_n_sum = int(top_n.sum()) if len(top_n) > 0 else 0
+    other_unknown = total_calls_bpo - top_n_sum
+
+    return {
+        "agent_sum_all": agent_sum_all,
+        "top_n_sum": top_n_sum,
+        "other_unknown": max(0, other_unknown),
+    }
+
+
+def validate_agent_totals(bpo_df: pd.DataFrame, total_calls: int) -> None:
+    """
+    Require sum(agent_call_counts) == total_calls.
+    Uses nunique(call_id) for true call counts. Expects canonical df_bpo (already filtered/deduped).
+    """
+    if bpo_df is None or len(bpo_df) == 0 or "Agent" not in bpo_df.columns:
+        return
+
+    df = bpo_df.copy()
+    df["Agent"] = df["Agent"].fillna("Unknown Agent")
+    df.loc[df["Agent"].astype(str).str.strip() == "", "Agent"] = "Unknown Agent"
+
+    call_id_col = "call_id" if "call_id" in df.columns else "Call ID"
+    if call_id_col not in df.columns:
+        return  # Skip if no call_id
+    calls_per_agent = df.groupby("Agent")[call_id_col].nunique()
+    sum_counts = int(calls_per_agent.sum())
+    if abs(sum_counts - total_calls) >= 1:
+        raise ValueError(
+            f"Agent leaderboard does not reconcile to cohort totals: "
+            f"sum(agent_call_counts)={sum_counts} != total_calls_bpo={total_calls}"
+        )
+
+
+def validate_report(
+    previous_df: Optional[pd.DataFrame],
+    bpo_df: pd.DataFrame,
+    cohort_config: Dict[str, Any],
+    previous_metrics: Dict,
+    bpo_metrics: Dict,
+) -> None:
+    """
+    Master validation block. Stops report generation if any check fails.
+    """
+    _validate_pass_definition_text()
+    validate_report_inputs(previous_df, bpo_df)
+    validate_report_outputs(
+        cohort_config,
+        previous_metrics,
+        bpo_metrics,
+        previous_metrics.get("reason_distribution") if previous_metrics else None,
+        bpo_metrics.get("reason_distribution"),
+        previous_metrics.get("outcome_distribution") if previous_metrics else None,
+        bpo_metrics.get("outcome_distribution"),
+    )
+    # Agent totals must reconcile for BPO
+    bpo_cfg = cohort_config.get("BPO Centers", {})
+    if bpo_cfg.get("total_calls", 0) > 0:
+        validate_agent_totals(bpo_df, bpo_cfg["total_calls"])
 
 
 def _get_s3_config() -> Optional[Dict[str, str]]:
@@ -444,6 +772,7 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
             "summary": "Summary",
             "rubric_pass_count": "Rubric Pass Count",
             "rubric_fail_count": "Rubric Fail Count",
+            "rubric_details": "Rubric Details",
         }
 
         # Create rename dictionary by checking all columns (case-insensitive)
@@ -554,9 +883,25 @@ def load_bpo_centers_data(cache_path: Path, start_date: datetime) -> pd.DataFram
 
             df["AHT"] = df.apply(compute_aht, axis=1)
 
-        # Include ALL data (don't filter by start_date for comprehensive report)
-        # If user wants date filtering, they can specify a different start_date
-        print("📊 BPO Centers data loaded:")
+        # Ensure call_id column exists (for deduplication and validation)
+        id_col = None
+        for col in df.columns:
+            if col.lower() in ("call_id", "call id", "callid"):
+                id_col = col
+                break
+        if id_col:
+            df["call_id"] = df[id_col].astype(str)
+        elif "_id" in df.columns:
+            df["call_id"] = df["_id"].astype(str)
+        else:
+            df["call_id"] = "row_" + df.index.astype(str)
+
+        # Filter BPO data to start_date onward (cohort: Aug 01, 2025+)
+        df["Call Date"] = pd.to_datetime(df["Call Date"], errors="coerce")
+        mask = df["Call Date"] >= pd.Timestamp(start_date)
+        df = df[mask].copy()
+
+        print("📊 BPO Centers data loaded (filtered to cohort start_date):")
         print(f"   Total calls: {len(df)}")
         if len(df) > 0 and "Call Date" in df.columns:
             print(f"   Date range: {df['Call Date'].min()} to {df['Call Date'].max()}")
@@ -727,52 +1072,52 @@ def calculate_qa_metrics(df: pd.DataFrame) -> Dict:
 
 
 def calculate_pass_rate_metrics(df: pd.DataFrame) -> Dict:
-    """Calculate pass rate metrics."""
+    """
+    Calculate pass rate metrics.
+    pass_flag = qa_score >= PASS_THRESHOLD (70).
+    Pass rate = Excellent (90-100) + Good (70-89).
+    Falls back to Rubric or Label if QA Score not available.
+    """
     metrics = {}
 
-    # Method 1: From Rubric Pass/Fail Count
+    # Primary: derive from QA Score to match quality distribution buckets
+    if "QA Score" in df.columns:
+        valid_scores = df["QA Score"].dropna()
+        if len(valid_scores) > 0:
+            pass_count = (valid_scores >= PASS_THRESHOLD).sum()
+            total = len(valid_scores)
+            metrics["pass_rate"] = (pass_count / total) * 100
+            metrics["pass_count"] = int(pass_count)
+            metrics["fail_count"] = int(total - pass_count)
+            return metrics
+
+    # Fallback 1: From Rubric Pass/Fail Count
     if "Rubric Pass Count" in df.columns and "Rubric Fail Count" in df.columns:
         total_pass = df["Rubric Pass Count"].sum()
         total_fail = df["Rubric Fail Count"].sum()
         if (total_pass + total_fail) > 0:
             metrics["pass_rate"] = (total_pass / (total_pass + total_fail)) * 100
-            metrics["pass_count"] = total_pass
-            metrics["fail_count"] = total_fail
-        else:
-            metrics["pass_rate"] = None
-            metrics["pass_count"] = 0
-            metrics["fail_count"] = 0
-    # Method 2: From Label column (Positive = Pass)
-    elif "Label" in df.columns:
-        valid_labels = df["Label"].dropna()
-        if len(valid_labels) > 0:
-            # Exclude Invalid labels
-            valid_labels = valid_labels[valid_labels.str.lower() != "invalid"]
-            if len(valid_labels) > 0:
-                pass_count = (valid_labels.str.lower() == "positive").sum()
-                fail_count = (valid_labels.str.lower() == "negative").sum()
-                total = pass_count + fail_count
-                if total > 0:
-                    metrics["pass_rate"] = (pass_count / total) * 100
-                    metrics["pass_count"] = pass_count
-                    metrics["fail_count"] = fail_count
-                else:
-                    metrics["pass_rate"] = None
-                    metrics["pass_count"] = 0
-                    metrics["fail_count"] = 0
-            else:
-                metrics["pass_rate"] = None
-                metrics["pass_count"] = 0
-                metrics["fail_count"] = 0
-        else:
-            metrics["pass_rate"] = None
-            metrics["pass_count"] = 0
-            metrics["fail_count"] = 0
-    else:
-        metrics["pass_rate"] = None
-        metrics["pass_count"] = 0
-        metrics["fail_count"] = 0
+            metrics["pass_count"] = int(total_pass)
+            metrics["fail_count"] = int(total_fail)
+            return metrics
 
+    # Fallback 2: From Label column (Positive = Pass)
+    if "Label" in df.columns:
+        valid_labels = df["Label"].dropna()
+        valid_labels = valid_labels[valid_labels.str.lower() != "invalid"]
+        if len(valid_labels) > 0:
+            pass_count = (valid_labels.str.lower() == "positive").sum()
+            fail_count = (valid_labels.str.lower() == "negative").sum()
+            total = pass_count + fail_count
+            if total > 0:
+                metrics["pass_rate"] = (pass_count / total) * 100
+                metrics["pass_count"] = int(pass_count)
+                metrics["fail_count"] = int(fail_count)
+                return metrics
+
+    metrics["pass_rate"] = None
+    metrics["pass_count"] = 0
+    metrics["fail_count"] = 0
     return metrics
 
 
@@ -795,8 +1140,76 @@ def calculate_aht_metrics(df: pd.DataFrame) -> Dict:
     return metrics
 
 
-def calculate_volume_metrics(df: pd.DataFrame) -> Dict:
-    """Calculate call volume metrics."""
+def compute_cohort_config(
+    df: pd.DataFrame,
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    cohort_name: str,
+) -> Dict[str, Any]:
+    """
+    Compute cohort config: total_calls, days_in_period, calls_per_day.
+    Uses explicit start_date and end_date. days_in_period is INCLUSIVE (calendar days).
+    """
+    total_calls = len(df)
+    if total_calls == 0 or "Call Date" not in df.columns:
+        return {
+            "total_calls": 0,
+            "days_in_period": 0,
+            "calls_per_day": None,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+    valid_dates = df["Call Date"].dropna()
+    if len(valid_dates) == 0:
+        return {
+            "total_calls": total_calls,
+            "days_in_period": 0,
+            "calls_per_day": None,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+    min_dt = pd.Timestamp(valid_dates.min())
+    max_dt = pd.Timestamp(valid_dates.max())
+
+    if start_date is None:
+        start_date = min_dt.to_pydatetime()
+    else:
+        start_date = pd.Timestamp(start_date)
+    if end_date is None:
+        end_date = max_dt.to_pydatetime()
+    else:
+        end_date = pd.Timestamp(end_date)
+
+    # Clamp to actual data range
+    start_date = max(start_date, min_dt)
+    end_date = min(end_date, max_dt)
+    # days_in_period: inclusive calendar days
+    days_in_period = (end_date - start_date).days + 1
+    if days_in_period <= 0:
+        days_in_period = 1
+
+    calls_per_day = total_calls / days_in_period
+
+    return {
+        "total_calls": total_calls,
+        "days_in_period": days_in_period,
+        "calls_per_day": calls_per_day,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+
+
+def calculate_volume_metrics(
+    df: pd.DataFrame,
+    cohort_config: Optional[Dict[str, Any]] = None,
+) -> Dict:
+    """
+    Calculate call volume metrics.
+    If cohort_config provided, uses its total_calls, days_in_period, calls_per_day.
+    Otherwise falls back to inferring from data (for backward compatibility).
+    """
     metrics = {}
 
     # Total calls (exclude Invalid labels if present)
@@ -811,21 +1224,29 @@ def calculate_volume_metrics(df: pd.DataFrame) -> Dict:
         valid_calls = df
         metrics["total_calls"] = len(df)
 
-    # Calls per day - use valid_calls for date range calculation
-    if "Call Date" in valid_calls.columns and metrics["total_calls"] > 0:
-        # Filter out NaT values before calculating date range
-        valid_dates = valid_calls["Call Date"].dropna()
-        if len(valid_dates) > 0:
-            date_range = (valid_dates.max() - valid_dates.min()).days + 1
-            if date_range > 0:
-                metrics["calls_per_day"] = metrics["total_calls"] / date_range
-            else:
-                metrics["calls_per_day"] = metrics["total_calls"]
-        else:
-            # All dates are NaT - cannot calculate calls per day
-            metrics["calls_per_day"] = None
+    if cohort_config:
+        metrics["total_calls"] = cohort_config["total_calls"]
+        metrics["days_in_period"] = cohort_config["days_in_period"]
+        metrics["calls_per_day"] = cohort_config["calls_per_day"]
     else:
-        metrics["calls_per_day"] = None
+        # Fallback: infer from data
+        if "Call Date" in valid_calls.columns and metrics["total_calls"] > 0:
+            valid_dates = valid_calls["Call Date"].dropna()
+            if len(valid_dates) > 0:
+                days_in_period = (
+                    pd.Timestamp(valid_dates.max())
+                    - pd.Timestamp(valid_dates.min())
+                ).days + 1
+                metrics["days_in_period"] = max(1, days_in_period)
+                metrics["calls_per_day"] = (
+                    metrics["total_calls"] / metrics["days_in_period"]
+                )
+            else:
+                metrics["days_in_period"] = 0
+                metrics["calls_per_day"] = None
+        else:
+            metrics["days_in_period"] = 0
+            metrics["calls_per_day"] = None
 
     return metrics
 
@@ -932,7 +1353,15 @@ def calculate_consistency_metrics(df: pd.DataFrame) -> Dict:
 
 
 def calculate_quality_distribution(df: pd.DataFrame) -> Dict:
-    """Calculate quality tier distribution."""
+    """
+    Calculate quality tier distribution.
+    Buckets aligned with PASS_THRESHOLD=70:
+    - Excellent: 90-100
+    - Good: 70-89
+    - Fair: 60-69
+    - Poor: <60
+    Pass = Excellent + Good
+    """
     metrics = {}
 
     if "QA Score" in df.columns:
@@ -940,8 +1369,8 @@ def calculate_quality_distribution(df: pd.DataFrame) -> Dict:
         if len(valid_scores) > 0:
             total = len(valid_scores)
             excellent = ((valid_scores >= 90) & (valid_scores <= 100)).sum()
-            good = ((valid_scores >= 75) & (valid_scores < 90)).sum()
-            fair = ((valid_scores >= 60) & (valid_scores < 75)).sum()
+            good = ((valid_scores >= PASS_THRESHOLD) & (valid_scores < 90)).sum()
+            fair = ((valid_scores >= 60) & (valid_scores < PASS_THRESHOLD)).sum()
             poor = (valid_scores < 60).sum()
 
             metrics["excellent_count"] = excellent
@@ -1094,55 +1523,105 @@ def calculate_rubric_improvements(
 
 
 def calculate_reason_metrics(df: pd.DataFrame) -> Dict:
-    """Calculate call reason distribution metrics."""
+    """
+    Calculate call reason distribution metrics.
+    Canonicalizes labels before aggregation (strip, lowercase, collapse spaces).
+    Display labels use Title Case.
+    Percentages use calls_with_reason as denominator (% of calls that have reason data).
+    """
     metrics = {}
 
-    if "Reason" not in df.columns:
+    reason_col = None
+    for col in df.columns:
+        if col.lower() == "reason":
+            reason_col = col
+            break
+    if reason_col is None:
         return metrics
 
-    reason_counts = df["Reason"].value_counts()
-    total_calls = len(df[df["Reason"].notna()])
+    total_calls = len(df)
+    # Canonicalize before aggregation
+    canonical = df[reason_col].fillna("").apply(canonicalize_label)
+    # Aggregate by canonical key
+    reason_counts = canonical[canonical != ""].value_counts()
+    calls_with_reason = int(reason_counts.sum()) if len(reason_counts) > 0 else 0
 
-    if total_calls == 0:
+    if calls_with_reason == 0 or total_calls == 0:
+        metrics["reason_distribution"] = {}
+        metrics["top_reason"] = None
+        metrics["top_reason_count"] = 0
+        metrics["top_reason_pct"] = 0
+        metrics["unique_reasons"] = 0
+        metrics["reason_calls_with_data"] = 0
         return metrics
 
-    metrics["reason_distribution"] = reason_counts.to_dict()
-    metrics["top_reason"] = reason_counts.index[0] if len(reason_counts) > 0 else None
-    metrics["top_reason_count"] = reason_counts.iloc[0] if len(reason_counts) > 0 else 0
-    metrics["top_reason_pct"] = (
-        (reason_counts.iloc[0] / total_calls * 100) if len(reason_counts) > 0 else 0
-    )
-    metrics["unique_reasons"] = len(reason_counts)
-    metrics["reason_calls_with_data"] = total_calls
+    # Build distribution with display labels (Title Case)
+    dist = {}
+    for canonical_key, count in reason_counts.items():
+        display_label = label_to_display(canonical_key)
+        if display_label in dist:
+            dist[display_label] += count
+        else:
+            dist[display_label] = count
+
+    metrics["reason_distribution"] = dist
+    top_canonical = reason_counts.index[0]
+    metrics["top_reason"] = label_to_display(top_canonical)
+    metrics["top_reason_count"] = int(reason_counts.iloc[0])
+    # Percentages use calls_with_reason as denominator (% of calls that have reason data)
+    metrics["top_reason_pct"] = (reason_counts.iloc[0] / calls_with_reason) * 100
+    metrics["unique_reasons"] = len(dist)
+    metrics["reason_calls_with_data"] = calls_with_reason
 
     return metrics
 
 
 def calculate_outcome_metrics(df: pd.DataFrame) -> Dict:
-    """Calculate call outcome distribution metrics."""
+    """
+    Calculate call outcome distribution metrics.
+    Canonicalizes labels before aggregation.
+    Percentages use calls_with_outcome as denominator (% of calls that have outcome data).
+    """
     metrics = {}
 
-    if "Outcome" not in df.columns:
+    outcome_col = None
+    for col in df.columns:
+        if col.lower() == "outcome":
+            outcome_col = col
+            break
+    if outcome_col is None:
         return metrics
 
-    outcome_counts = df["Outcome"].value_counts()
-    total_calls = len(df[df["Outcome"].notna()])
+    total_calls = len(df)
+    canonical = df[outcome_col].fillna("").apply(canonicalize_label)
+    outcome_counts = canonical[canonical != ""].value_counts()
+    calls_with_outcome = int(outcome_counts.sum()) if len(outcome_counts) > 0 else 0
 
-    if total_calls == 0:
+    if calls_with_outcome == 0 or total_calls == 0:
+        metrics["outcome_distribution"] = {}
+        metrics["top_outcome"] = None
+        metrics["top_outcome_count"] = 0
+        metrics["top_outcome_pct"] = 0
+        metrics["unique_outcomes"] = 0
+        metrics["outcome_calls_with_data"] = 0
         return metrics
 
-    metrics["outcome_distribution"] = outcome_counts.to_dict()
-    metrics["top_outcome"] = (
-        outcome_counts.index[0] if len(outcome_counts) > 0 else None
-    )
-    metrics["top_outcome_count"] = (
-        outcome_counts.iloc[0] if len(outcome_counts) > 0 else 0
-    )
-    metrics["top_outcome_pct"] = (
-        (outcome_counts.iloc[0] / total_calls * 100) if len(outcome_counts) > 0 else 0
-    )
-    metrics["unique_outcomes"] = len(outcome_counts)
-    metrics["outcome_calls_with_data"] = total_calls
+    dist = {}
+    for canonical_key, count in outcome_counts.items():
+        display_label = label_to_display(canonical_key)
+        if display_label in dist:
+            dist[display_label] += count
+        else:
+            dist[display_label] = count
+
+    metrics["outcome_distribution"] = dist
+    top_canonical = outcome_counts.index[0]
+    metrics["top_outcome"] = label_to_display(top_canonical)
+    metrics["top_outcome_count"] = int(outcome_counts.iloc[0])
+    # Percentages use calls_with_outcome as denominator (% of calls that have outcome data)
+    metrics["top_outcome_pct"] = (outcome_counts.iloc[0] / calls_with_outcome) * 100
+    metrics["unique_outcomes"] = len(dist)
+    metrics["outcome_calls_with_data"] = calls_with_outcome
 
     return metrics
 
@@ -1203,19 +1682,23 @@ def calculate_product_metrics(df: pd.DataFrame) -> Dict:
     return metrics
 
 
-def calculate_all_metrics(df: pd.DataFrame) -> Dict:
+def calculate_all_metrics(
+    df: pd.DataFrame,
+    cohort_config: Optional[Dict[str, Any]] = None,
+) -> Dict:
     """Calculate all KPIs for a dataset."""
     metrics = {}
 
     metrics.update(calculate_qa_metrics(df))
     metrics.update(calculate_pass_rate_metrics(df))
     metrics.update(calculate_aht_metrics(df))
-    metrics.update(calculate_volume_metrics(df))
+    metrics.update(calculate_volume_metrics(df, cohort_config=cohort_config))
     metrics.update(calculate_rubric_metrics(df))
     metrics.update(calculate_agent_metrics(df))
     metrics.update(calculate_consistency_metrics(df))
     metrics.update(calculate_quality_distribution(df))
     metrics.update(calculate_trend_metrics(df))
+
     metrics.update(calculate_reason_metrics(df))
     metrics.update(calculate_outcome_metrics(df))
     metrics.update(calculate_product_metrics(df))
@@ -1273,17 +1756,21 @@ def create_comparison_chart(
     # Calculate and display percentage change
     if previous_value and previous_value != 0:
         pct_change = ((bpo_value - previous_value) / previous_value) * 100
-        change_text = f"{pct_change:+.1f}%"
+        change_text = f"Change: {pct_change:+.1f}%"
+        # AHT: increase = bad (red), decrease = good (green)
+        is_aht = "AHT" in metric_name or "Handle Time" in metric_name
+        change_color = "#e74c3c" if (is_aht and pct_change > 0) or (not is_aht and pct_change < 0) else "#2ecc71"
         ax.text(
             0.5,
             0.95,
-            f"Change: {change_text}",
+            change_text,
             transform=ax.transAxes,
             ha="center",
             va="top",
             fontsize=11,
             fontweight="bold",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+            color=change_color,
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5, edgecolor=change_color),
         )
 
     ax.set_ylabel(metric_name, fontsize=12, fontweight="bold")
@@ -1306,8 +1793,13 @@ def create_improvement_summary_chart(improvements: Dict) -> plt.Figure:
         if pct_change is not None:
             metrics.append(metric.replace("_", " ").title())
             pct_changes.append(pct_change)
-            # Green for positive improvement, red for negative
-            colors_list.append("#2ecc71" if pct_change > 0 else "#e74c3c")
+            # AHT: lower is better—increase (pct>0) = bad/red, decrease (pct<0) = good/green
+            # Other metrics: higher is better—increase = good/green, decrease = bad/red
+            is_aht = "aht" in metric.lower() or "handle time" in metric.lower()
+            if is_aht:
+                colors_list.append("#e74c3c" if pct_change > 0 else "#2ecc71")
+            else:
+                colors_list.append("#2ecc71" if pct_change > 0 else "#e74c3c")
 
     if not metrics:
         ax.text(
@@ -1355,44 +1847,74 @@ def create_improvement_summary_chart(improvements: Dict) -> plt.Figure:
 def create_distribution_comparison(
     previous_scores: pd.Series, bpo_scores: pd.Series
 ) -> plt.Figure:
-    """Create a histogram/box plot comparing score distributions."""
+    """
+    Create a histogram/box plot comparing score distributions.
+    Histogram uses normalized % of calls per bin (not raw counts) for fair
+    comparison across unequal cohort sizes. Shared bin edges across cohorts.
+    """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-    # Histogram comparison
-    ax1.hist(
-        previous_scores.dropna(),
-        bins=20,
-        alpha=0.6,
-        label="Previous Center",
-        color="#e74c3c",
-        edgecolor="black",
-    )
-    ax1.hist(
-        bpo_scores.dropna(),
-        bins=20,
-        alpha=0.6,
-        label="BPO Centers",
-        color="#2ecc71",
-        edgecolor="black",
-    )
+    prev_vals = previous_scores.dropna().values
+    bpo_vals = bpo_scores.dropna().values
+
+    # Shared bin edges (0-100 for QA scores)
+    bins = np.linspace(0, 100, 21)
+
+    if len(prev_vals) > 0:
+        prev_weights = np.ones_like(prev_vals, dtype=float) / len(prev_vals) * 100
+        ax1.hist(
+            prev_vals,
+            bins=bins,
+            alpha=0.6,
+            label="Previous Center",
+            color="#e74c3c",
+            edgecolor="black",
+            weights=prev_weights,
+        )
+    if len(bpo_vals) > 0:
+        bpo_weights = np.ones_like(bpo_vals, dtype=float) / len(bpo_vals) * 100
+        ax1.hist(
+            bpo_vals,
+            bins=bins,
+            alpha=0.6,
+            label="BPO Centers",
+            color="#2ecc71",
+            edgecolor="black",
+            weights=bpo_weights,
+        )
     ax1.set_xlabel("QA Score", fontsize=12, fontweight="bold")
-    ax1.set_ylabel("Frequency", fontsize=12, fontweight="bold")
-    ax1.set_title("Score Distribution Comparison", fontsize=14, fontweight="bold")
+    ax1.set_ylabel("% of Calls", fontsize=12, fontweight="bold")
+    ax1.set_title("Score Distribution Comparison (Normalized)", fontsize=14, fontweight="bold")
     ax1.legend()
     ax1.grid(axis="y", alpha=0.3)
 
-    # Box plot comparison
-    data_to_plot = [previous_scores.dropna().values, bpo_scores.dropna().values]
-    bp = ax2.boxplot(
-        data_to_plot,
-        tick_labels=["Previous\nCenter", "BPO\nCenters"],
-        patch_artist=True,
-        showmeans=True,
-    )
-    # Check if boxes were created before accessing (in case data is empty after dropna)
-    if "boxes" in bp and len(bp["boxes"]) >= 2:
-        bp["boxes"][0].set_facecolor("#e74c3c")
-        bp["boxes"][1].set_facecolor("#2ecc71")
+    # Box plot comparison (filter out empty arrays)
+    data_to_plot = [prev_vals, bpo_vals]
+    data_to_plot = [d for d in data_to_plot if len(d) > 0]
+    tick_labels = ["Previous\nCenter", "BPO\nCenters"]
+    if len(data_to_plot) == 2:
+        labels = tick_labels
+    elif len(data_to_plot) == 1:
+        labels = [tick_labels[0] if len(prev_vals) > 0 else tick_labels[1]]
+    else:
+        labels = []
+    if data_to_plot:
+        bp = ax2.boxplot(
+            data_to_plot,
+            tick_labels=labels,
+            patch_artist=True,
+            showmeans=True,
+        )
+        # Color boxes by cohort
+        if "boxes" in bp:
+            colors = ["#e74c3c", "#2ecc71"]
+            for i, box in enumerate(bp["boxes"]):
+                box.set_facecolor(colors[i % 2])
+    else:
+        ax2.text(
+            0.5, 0.5, "No score data available",
+            ha="center", va="center", transform=ax2.transAxes,
+        )
     ax2.set_ylabel("QA Score", fontsize=12, fontweight="bold")
     ax2.set_title("Score Distribution (Box Plot)", fontsize=14, fontweight="bold")
     ax2.grid(axis="y", alpha=0.3)
@@ -1402,14 +1924,22 @@ def create_distribution_comparison(
 
 
 def create_quality_tier_chart(previous_metrics: Dict, bpo_metrics: Dict) -> plt.Figure:
-    """Create pie charts comparing quality tier distributions."""
+    """Create pie charts comparing quality tier distributions.
+    Pass = Excellent + Good (score >= PASS_THRESHOLD).
+    Passing is defined as a QA score ≥ 70%."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    fig.suptitle(
+        f"Quality Distribution | Passing = QA score ≥ {PASS_THRESHOLD}% (Excellent + Good)",
+        fontsize=12,
+        fontweight="bold",
+        y=1.02,
+    )
 
     # Previous Center tiers
     prev_labels = [
         "Excellent\n(90-100)",
-        "Good\n(75-89)",
-        "Fair\n(60-74)",
+        "Good\n(70-89)",
+        "Fair\n(60-69)",
         "Poor\n(<60)",
     ]
     prev_sizes = [
@@ -1435,8 +1965,8 @@ def create_quality_tier_chart(previous_metrics: Dict, bpo_metrics: Dict) -> plt.
     # BPO Centers tiers
     bpo_labels = [
         "Excellent\n(90-100)",
-        "Good\n(75-89)",
-        "Fair\n(60-74)",
+        "Good\n(70-89)",
+        "Fair\n(60-69)",
         "Poor\n(<60)",
     ]
     bpo_sizes = [
@@ -1461,7 +1991,7 @@ def create_quality_tier_chart(previous_metrics: Dict, bpo_metrics: Dict) -> plt.
 
 
 def create_trend_chart(bpo_df: pd.DataFrame) -> plt.Figure:
-    """Create a time series chart showing trends over time."""
+    """Create a time series chart showing Monthly Performance Trends."""
     fig, ax = plt.subplots(figsize=(12, 6))
 
     if "Call Date" in bpo_df.columns and "QA Score" in bpo_df.columns:
@@ -1470,31 +2000,31 @@ def create_trend_chart(bpo_df: pd.DataFrame) -> plt.Figure:
         df_copy["Call Date"] = pd.to_datetime(df_copy["Call Date"])
         df_copy = df_copy.sort_values("Call Date")
 
-        # Weekly averages
-        df_copy["Week"] = df_copy["Call Date"].dt.to_period("W")
-        weekly_avg = df_copy.groupby("Week")["QA Score"].mean()
+        # Monthly aggregation only
+        df_copy["year_month"] = df_copy["Call Date"].dt.to_period("M")
+        monthly_avg = df_copy.groupby("year_month")["QA Score"].mean()
 
         # Convert period to datetime for plotting
-        weekly_dates = [pd.Period.to_timestamp(w) for w in weekly_avg.index]
+        month_dates = [pd.Period.to_timestamp(m) for m in monthly_avg.index]
 
         ax.plot(
-            weekly_dates,
-            weekly_avg.values,
+            month_dates,
+            monthly_avg.values,
             marker="o",
             linewidth=2,
             markersize=8,
             color="#2ecc71",
-            label="Weekly Average QA Score",
+            label="Monthly Avg QA Score",
         )
-        ax.fill_between(weekly_dates, weekly_avg.values, alpha=0.3, color="#2ecc71")
+        ax.fill_between(month_dates, monthly_avg.values, alpha=0.3, color="#2ecc71")
 
         # Add trend line
-        if len(weekly_avg) > 1:
-            z = np.polyfit(range(len(weekly_avg)), weekly_avg.values, 1)
+        if len(monthly_avg) > 1:
+            z = np.polyfit(range(len(monthly_avg)), monthly_avg.values, 1)
             p = np.poly1d(z)
             ax.plot(
-                weekly_dates,
-                p(range(len(weekly_avg))),
+                month_dates,
+                p(range(len(monthly_avg))),
                 "--",
                 color="#34495e",
                 linewidth=2,
@@ -1505,7 +2035,7 @@ def create_trend_chart(bpo_df: pd.DataFrame) -> plt.Figure:
         ax.set_xlabel("Date", fontsize=12, fontweight="bold")
         ax.set_ylabel("QA Score", fontsize=12, fontweight="bold")
         ax.set_title(
-            "BPO Centers Performance Trend (Weekly Average)",
+            "Monthly Performance Trends",
             fontsize=14,
             fontweight="bold",
         )
@@ -1601,8 +2131,14 @@ def create_rubric_improvement_chart(improvements: List[Dict]) -> plt.Figure:
 def create_reason_comparison_chart(
     previous_reasons: Dict, bpo_reasons: Dict
 ) -> plt.Figure:
-    """Create side-by-side comparison chart for call reasons."""
+    """Create side-by-side comparison chart for call reasons (counts)."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig.suptitle(
+        "Top 10 Call Reasons (counts). Note: Percentages use denominator = calls with reason data only.",
+        fontsize=10,
+        fontweight="bold",
+        y=1.02,
+    )
 
     # Previous center reasons (top 10)
     if previous_reasons:
@@ -1663,8 +2199,14 @@ def create_reason_comparison_chart(
 def create_outcome_comparison_chart(
     previous_outcomes: Dict, bpo_outcomes: Dict
 ) -> plt.Figure:
-    """Create side-by-side comparison chart for call outcomes."""
+    """Create side-by-side comparison chart for call outcomes (counts)."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig.suptitle(
+        "Top 10 Call Outcomes (counts). Note: Percentages use denominator = calls with outcome data only.",
+        fontsize=10,
+        fontweight="bold",
+        y=1.02,
+    )
 
     # Previous center outcomes (top 10)
     if previous_outcomes:
@@ -1782,8 +2324,14 @@ def create_product_comparison_chart(
     return fig
 
 
-def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
-    """Create a heatmap showing agent performance across multiple metrics."""
+def create_agent_performance_heatmap(
+    bpo_df: pd.DataFrame,
+    total_calls_bpo: Optional[int] = None,
+) -> plt.Figure:
+    """
+    Create a heatmap showing agent performance across multiple metrics.
+    Call_Count = nunique(call_id) per agent - displayed as integer with comma formatting.
+    """
     if bpo_df is None or len(bpo_df) == 0:
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.text(
@@ -1808,97 +2356,76 @@ def create_agent_performance_heatmap(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
-    # Calculate agent metrics
-    # Build aggregation dictionary conditionally to avoid KeyError for missing columns
-    agg_dict = {
-        "QA Score": ["mean", "count"],
-    }
-    if "Rubric Pass Count" in bpo_df.columns:
-        agg_dict["Rubric Pass Count"] = "sum"
-    if "Rubric Fail Count" in bpo_df.columns:
-        agg_dict["Rubric Fail Count"] = "sum"
+    df_work = bpo_df.copy()
+    df_work["Agent"] = df_work["Agent"].fillna("Unknown Agent")
+    df_work.loc[df_work["Agent"].astype(str).str.strip() == "", "Agent"] = "Unknown Agent"
 
-    agent_metrics = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
+    call_id_col = "call_id" if "call_id" in df_work.columns else None
+    if call_id_col is None:
+        for c in df_work.columns:
+            if c.lower() in ("call_id", "call id", "callid"):
+                call_id_col = c
+                break
 
-    # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
-    # When using ["mean", "count"], pandas creates columns as tuples like ('QA Score', 'mean'), ('QA Score', 'count')
-    # After reset_index(), these are in a regular Index, not a MultiIndex, so check for tuple columns
-    if isinstance(agent_metrics.columns, pd.MultiIndex):
-        agent_metrics.columns = [
-            "_".join(col).strip() if col[1] else col[0]
-            for col in agent_metrics.columns.values
-        ]
-    elif any(isinstance(col, tuple) for col in agent_metrics.columns):
-        # Handle case where columns are tuples in a regular Index (not MultiIndex)
-        agent_metrics.columns = [
-            "_".join(str(c) for c in col).strip()
-            if len(col) > 1 and col[1]
-            else str(col[0])
-            for col in agent_metrics.columns.values
-        ]
+    def _agent_pass_rate(group):
+        scores = group["QA Score"].dropna()
+        if len(scores) == 0:
+            return np.nan
+        return (scores >= PASS_THRESHOLD).sum() / len(scores) * 100
 
-    # Build column mapping based on what columns actually exist
-    column_mapping = {}
-    if "QA Score_mean" in agent_metrics.columns:
-        column_mapping["QA Score_mean"] = "Avg_Score"
-    if "QA Score_count" in agent_metrics.columns:
-        column_mapping["QA Score_count"] = "Call_Count"
-    if "Rubric Pass Count_sum" in agent_metrics.columns:
-        column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
-    if "Rubric Fail Count_sum" in agent_metrics.columns:
-        column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
+    if call_id_col:
+        call_counts = df_work.groupby("Agent")[call_id_col].nunique()
+    else:
+        call_counts = df_work.groupby("Agent").size()
 
-    agent_metrics.rename(columns=column_mapping, inplace=True)
+    agent_metrics = df_work.groupby("Agent").agg({"QA Score": "mean"}).reset_index()
+    agent_metrics = agent_metrics.rename(columns={"QA Score": "Avg_Score"})
+    agent_metrics["Call_Count"] = agent_metrics["Agent"].map(call_counts).fillna(0).astype(int)
+    agent_metrics["Pass_Rate"] = df_work.groupby("Agent", group_keys=False).apply(
+        _agent_pass_rate, include_groups=False
+    ).values
 
-    # Ensure all expected columns exist, create with 0 if missing
-    if "Pass_Count" not in agent_metrics.columns:
-        agent_metrics["Pass_Count"] = 0
-    if "Fail_Count" not in agent_metrics.columns:
-        agent_metrics["Fail_Count"] = 0
+    total_calls = total_calls_bpo if total_calls_bpo is not None else int(agent_metrics["Call_Count"].sum())
 
-    # Calculate pass rate - only when there's actual rubric data
-    # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
-    total_rubric = agent_metrics["Pass_Count"] + agent_metrics["Fail_Count"]
-    agent_metrics["Pass_Rate"] = (
-        agent_metrics["Pass_Count"] / total_rubric * 100
-    ).where(
-        total_rubric > 0, np.nan
-    )  # Use np.nan instead of pd.NA for matplotlib compatibility
-
-    # Sort by average score
     agent_metrics = agent_metrics.sort_values("Avg_Score", ascending=False)
 
-    # Prepare data for heatmap
-    heatmap_data = agent_metrics[["Avg_Score", "Pass_Rate", "Call_Count"]].copy()
-    heatmap_data.index = agent_metrics["Agent"]
+    # Data for heatmap: Avg_Score, Pass_Rate (0-100), Call_Count (use % share for color scale)
+    heatmap_color = agent_metrics[["Avg_Score", "Pass_Rate"]].copy()
+    heatmap_color["Call_Count"] = (
+        (agent_metrics["Call_Count"] / total_calls * 100) if total_calls > 0
+        else pd.Series([0] * len(agent_metrics), index=agent_metrics.index)
+    )
+    heatmap_color = heatmap_color.fillna(0)
+    heatmap_color.index = agent_metrics["Agent"]
 
-    # Normalize data for better visualization (0-100 scale)
-    heatmap_data["Avg_Score"] = heatmap_data["Avg_Score"]  # Already 0-100
-    # Handle NA values in Pass_Rate (when no rubric data exists)
-    # Fill NA with 0 for visualization purposes (heatmap needs numeric values)
-    heatmap_data["Pass_Rate"] = heatmap_data["Pass_Rate"].fillna(
-        0
-    )  # Already 0-100, or 0 if no data
-    heatmap_data["Call_Count"] = (
-        (heatmap_data["Call_Count"] / heatmap_data["Call_Count"].max() * 100)
-        if heatmap_data["Call_Count"].max() > 0
-        else pd.Series([0] * len(heatmap_data), index=heatmap_data.index)
+    # Custom annot: display actual Call_Count as integer with comma (not %)
+    annot_values = []
+    for _, row in agent_metrics.iterrows():
+        annot_values.append([
+            f"{row['Avg_Score']:.1f}" if pd.notna(row["Avg_Score"]) else "—",
+            f"{row['Pass_Rate']:.1f}" if pd.notna(row["Pass_Rate"]) else "—",
+            f"{int(row['Call_Count']):,}",
+        ])
+    annot_df = pd.DataFrame(
+        np.array(annot_values).T,
+        index=["Avg_Score", "Pass_Rate", "Call_Count"],
+        columns=agent_metrics["Agent"].tolist(),
     )
 
     fig, ax = plt.subplots(figsize=(14, max(8, len(agent_metrics) * 0.5)))
     sns.heatmap(
-        heatmap_data.T,
-        annot=True,
-        fmt=".1f",
+        heatmap_color.T,
+        annot=annot_df,
+        fmt="",
         cmap="RdYlGn",
         vmin=0,
         vmax=100,
-        cbar_kws={"label": "Score (0-100)"},
+        cbar_kws={"label": "Score / Share (0-100)"},
         linewidths=0.5,
         ax=ax,
     )
     ax.set_title(
-        "Agent Performance Heatmap\n(Average Score, Pass Rate, Call Volume)",
+        "Agent Performance Heatmap\n(Avg Score, Pass Rate %, Call Count)",
         fontsize=14,
         fontweight="bold",
         pad=20,
@@ -1954,77 +2481,22 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
-    # Create month-year column
+    # Monthly aggregation only; pass = QA score >= PASS_THRESHOLD
     bpo_df["Month"] = bpo_df["Call Date"].dt.to_period("M")
 
-    # Calculate monthly metrics
-    # Build aggregation dictionary conditionally to avoid KeyError for missing columns
-    agg_dict = {}
-    if "QA Score" in bpo_df.columns:
-        agg_dict["QA Score"] = ["mean", "count"]
-    if "Rubric Pass Count" in bpo_df.columns:
-        agg_dict["Rubric Pass Count"] = "sum"
-    if "Rubric Fail Count" in bpo_df.columns:
-        agg_dict["Rubric Fail Count"] = "sum"
+    def _monthly_pass_rate(group):
+        scores = group["QA Score"].dropna()
+        if len(scores) == 0:
+            return np.nan
+        return (scores >= PASS_THRESHOLD).sum() / len(scores) * 100
 
-    # If no aggregation columns available, return error
-    if not agg_dict:
-        fig, ax = plt.subplots(figsize=(14, 8))
-        ax.text(
-            0.5,
-            0.5,
-            "No valid metrics available for trend analysis",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-        )
-        return fig
-
-    monthly_metrics = bpo_df.groupby("Month").agg(agg_dict).reset_index()
-
-    # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
-    # After reset_index(), columns may be tuples in a regular Index, not a MultiIndex
-    if isinstance(monthly_metrics.columns, pd.MultiIndex):
-        monthly_metrics.columns = [
-            "_".join(col).strip() if col[1] else col[0]
-            for col in monthly_metrics.columns.values
-        ]
-    elif any(isinstance(col, tuple) for col in monthly_metrics.columns):
-        # Handle case where columns are tuples in a regular Index (not MultiIndex)
-        monthly_metrics.columns = [
-            "_".join(str(c) for c in col).strip()
-            if len(col) > 1 and col[1]
-            else str(col[0])
-            for col in monthly_metrics.columns.values
-        ]
-
-    # Build column mapping based on what columns actually exist
-    column_mapping = {}
-    if "QA Score_mean" in monthly_metrics.columns:
-        column_mapping["QA Score_mean"] = "Avg_Score"
-    if "QA Score_count" in monthly_metrics.columns:
-        column_mapping["QA Score_count"] = "Call_Count"
-    if "Rubric Pass Count_sum" in monthly_metrics.columns:
-        column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
-    if "Rubric Fail Count_sum" in monthly_metrics.columns:
-        column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
-
-    monthly_metrics.rename(columns=column_mapping, inplace=True)
-
-    # Ensure all expected columns exist, create with 0 if missing
-    if "Pass_Count" not in monthly_metrics.columns:
-        monthly_metrics["Pass_Count"] = 0
-    if "Fail_Count" not in monthly_metrics.columns:
-        monthly_metrics["Fail_Count"] = 0
-
-    # Calculate pass rate - only when there's actual rubric data
-    # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
-    total_rubric = monthly_metrics["Pass_Count"] + monthly_metrics["Fail_Count"]
-    monthly_metrics["Pass_Rate"] = (
-        monthly_metrics["Pass_Count"] / total_rubric * 100
-    ).where(
-        total_rubric > 0, np.nan
-    )  # Use np.nan instead of pd.NA for matplotlib compatibility
+    monthly_metrics = bpo_df.groupby("Month").agg(
+        {"QA Score": ["mean", "count"]}
+    ).reset_index()
+    monthly_metrics.columns = ["Month", "Avg_Score", "Call_Count"]
+    monthly_metrics["Pass_Rate"] = bpo_df.groupby("Month", group_keys=False).apply(
+        _monthly_pass_rate, include_groups=False
+    ).values
 
     # Ensure Avg_Score exists (should always exist if QA Score was validated, but check defensively)
     if "Avg_Score" not in monthly_metrics.columns:
@@ -2165,7 +2637,8 @@ def create_monthly_trend_analysis(bpo_df: pd.DataFrame) -> plt.Figure:
 
 
 def create_top_failure_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
-    """Create a chart showing top failure reasons with impact analysis."""
+    """Create a chart showing top failure reasons with impact analysis.
+    Supports both wide format (columns 1.1.0, 1.2.0, etc.) and Rubric Details dict column."""
     if bpo_df is None or len(bpo_df) == 0:
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.text(
@@ -2178,41 +2651,80 @@ def create_top_failure_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
-    # Find rubric columns
+    # Find rubric columns (wide format: 1.1.0, 1.2.0, etc.)
     rubric_columns = [
         col
         for col in bpo_df.columns
         if re.match(r"^\d+\.\d+\.\d+$", str(col)) and "__reason" not in str(col).lower()
     ]
 
-    if not rubric_columns:
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(
-            0.5,
-            0.5,
-            "No rubric data available",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-        )
-        return fig
+    # Rubric Details column (dict per row: {"1.1.0": {"status": "Pass/Fail/N/A"}, ...})
+    rubric_details_col = None
+    for col in bpo_df.columns:
+        if str(col).strip().lower() == "rubric details":
+            rubric_details_col = col
+            break
 
-    # Calculate failure counts and percentages
     failure_data = []
     total_calls = len(bpo_df)
 
-    for col in rubric_columns:
-        failures = 0
-        for value in bpo_df[col]:
-            value_str = str(value).strip().upper() if pd.notna(value) else ""
-            if value is False or value_str == "FALSE" or value_str == "F":
-                failures += 1
+    if rubric_columns:
+        # Wide format: one column per rubric code
+        for col in rubric_columns:
+            failures = 0
+            for value in bpo_df[col]:
+                value_str = str(value).strip().upper() if pd.notna(value) else ""
+                if value is False or value_str == "FALSE" or value_str == "F":
+                    failures += 1
 
-        if failures > 0:
-            failure_pct = (failures / total_calls) * 100
-            failure_data.append(
-                {"Code": col, "Failures": failures, "Failure_Pct": failure_pct}
-            )
+            if failures > 0:
+                failure_pct = (failures / total_calls) * 100
+                failure_data.append(
+                    {"Code": col, "Failures": failures, "Failure_Pct": failure_pct}
+                )
+    elif rubric_details_col:
+        # Rubric Details format: dict with code -> {status, note}
+        failure_counts = {}
+        for _, row in bpo_df.iterrows():
+            details = row.get(rubric_details_col)
+            if not isinstance(details, dict):
+                continue
+            for code, item in details.items():
+                if not isinstance(item, dict):
+                    continue
+                status = str(item.get("status", "")).strip().lower()
+                if status in ("fail", "false"):
+                    failure_counts[code] = failure_counts.get(code, 0) + 1
+
+        for code, failures in failure_counts.items():
+            if failures > 0 and re.match(r"^\d+\.\d+\.\d+$", str(code)):
+                failure_pct = (failures / total_calls) * 100
+                failure_data.append(
+                    {"Code": code, "Failures": failures, "Failure_Pct": failure_pct}
+                )
+    else:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.6,
+            "Rubric breakdown unavailable for this dataset",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=14,
+            fontweight="bold",
+        )
+        ax.text(
+            0.5,
+            0.45,
+            "Missing rubric columns (e.g. 1.1.0, 1.2.0) or Rubric Details column.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=11,
+        )
+        return fig
 
     if not failure_data:
         fig, ax = plt.subplots(figsize=(12, 8))
@@ -2350,7 +2862,15 @@ def create_bpo_only_kpi_dashboard(bpo_metrics: Dict) -> plt.Figure:
             ax.set_ylim(ymin, ymax)
         ax.grid(True, alpha=0.3, axis="y")
 
-    plt.tight_layout()
+    fig.text(
+        0.5,
+        0.01,
+        PASS_DEFINITION_TEXT,
+        ha="center",
+        fontsize=9,
+        style="italic",
+    )
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
     return fig
 
 
@@ -2428,7 +2948,12 @@ def create_kpi_dashboard(previous_metrics: Dict, bpo_metrics: Dict) -> plt.Figur
         # Calculate and show improvement
         if prev_val != 0:
             improvement = ((bpo_val - prev_val) / prev_val) * 100
-            improvement_color = "#28A745" if improvement > 0 else "#DC3545"
+            # AHT: increase = bad (red), decrease = good (green)
+            is_aht = metric_key == "avg_aht" or "handle time" in metric_name.lower()
+            if is_aht:
+                improvement_color = "#DC3545" if improvement > 0 else "#28A745"
+            else:
+                improvement_color = "#28A745" if improvement > 0 else "#DC3545"
             improvement_text = f"{improvement:+.1f}%"
             ax.text(
                 0.5,
@@ -2453,12 +2978,27 @@ def create_kpi_dashboard(previous_metrics: Dict, bpo_metrics: Dict) -> plt.Figur
             ax.set_ylim(ymin, ymax)
         ax.grid(True, alpha=0.3, axis="y")
 
-    plt.tight_layout()
+    fig.text(
+        0.5,
+        0.01,
+        PASS_DEFINITION_TEXT,
+        ha="center",
+        fontsize=9,
+        style="italic",
+    )
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
     return fig
 
 
-def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
-    """Create an agent leaderboard with rankings."""
+def create_agent_leaderboard(
+    bpo_df: pd.DataFrame,
+    total_calls: Optional[int] = None,
+) -> plt.Figure:
+    """
+    Create an agent leaderboard with rankings.
+    Uses nunique(call_id) for Call_Count. Adds Other/Unknown row when showing Top N
+    so displayed totals reconcile to total_calls_bpo.
+    """
     if bpo_df is None or len(bpo_df) == 0 or "Agent" not in bpo_df.columns:
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.text(
@@ -2471,8 +3011,23 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
-    # Check for required QA Score column
-    if "QA Score" not in bpo_df.columns:
+    if total_calls is None or total_calls <= 0:
+        total_calls = len(bpo_df)  # Fallback for legacy callers
+
+    df_work = bpo_df.copy()
+    df_work["Agent"] = df_work["Agent"].fillna("Unknown Agent")
+    df_work.loc[df_work["Agent"].astype(str).str.strip() == "", "Agent"] = "Unknown Agent"
+
+    call_id_col = "call_id" if "call_id" in df_work.columns else None
+    if call_id_col is None:
+        for c in df_work.columns:
+            if c.lower() in ("call_id", "call id", "callid"):
+                call_id_col = c
+                break
+    if call_id_col is None:
+        call_id_col = "Call ID" if "Call ID" in df_work.columns else None
+
+    if "QA Score" not in df_work.columns:
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.text(
             0.5,
@@ -2484,116 +3039,73 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
-    # Calculate agent performance
-    # Build aggregation dictionary conditionally to avoid KeyError for missing columns
-    agg_dict = {}
-    if "QA Score" in bpo_df.columns:
-        agg_dict["QA Score"] = ["mean", "count"]
-    if "Rubric Pass Count" in bpo_df.columns:
-        agg_dict["Rubric Pass Count"] = "sum"
-    if "Rubric Fail Count" in bpo_df.columns:
-        agg_dict["Rubric Fail Count"] = "sum"
+    def _agent_pass_rate(group):
+        scores = group["QA Score"].dropna()
+        if len(scores) == 0:
+            return np.nan
+        return (scores >= PASS_THRESHOLD).sum() / len(scores) * 100
 
-    # If no aggregation columns available, return error
-    if not agg_dict:
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(
-            0.5,
-            0.5,
-            "No valid metrics available for leaderboard",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-        )
-        return fig
+    # Use nunique(call_id) for true call counts
+    if call_id_col:
+        call_counts = df_work.groupby("Agent")[call_id_col].nunique()
+    else:
+        call_counts = df_work.groupby("Agent").size()
 
-    agent_perf = bpo_df.groupby("Agent").agg(agg_dict).reset_index()
-
-    # Flatten MultiIndex columns from groupby().agg() with multiple aggregation functions
-    # After reset_index(), columns may be tuples in a regular Index, not a MultiIndex
-    if isinstance(agent_perf.columns, pd.MultiIndex):
-        agent_perf.columns = [
-            "_".join(col).strip() if col[1] else col[0]
-            for col in agent_perf.columns.values
-        ]
-    elif any(isinstance(col, tuple) for col in agent_perf.columns):
-        # Handle case where columns are tuples in a regular Index (not MultiIndex)
-        agent_perf.columns = [
-            "_".join(str(c) for c in col).strip()
-            if len(col) > 1 and col[1]
-            else str(col[0])
-            for col in agent_perf.columns.values
-        ]
-
-    # Build column mapping based on what columns actually exist
-    column_mapping = {}
-    if "QA Score_mean" in agent_perf.columns:
-        column_mapping["QA Score_mean"] = "Avg_Score"
-    if "QA Score_count" in agent_perf.columns:
-        column_mapping["QA Score_count"] = "Call_Count"
-    if "Rubric Pass Count_sum" in agent_perf.columns:
-        column_mapping["Rubric Pass Count_sum"] = "Pass_Count"
-    if "Rubric Fail Count_sum" in agent_perf.columns:
-        column_mapping["Rubric Fail Count_sum"] = "Fail_Count"
-
-    agent_perf.rename(columns=column_mapping, inplace=True)
-
-    # Ensure all expected columns exist, create with 0 if missing
-    if "Pass_Count" not in agent_perf.columns:
-        agent_perf["Pass_Count"] = 0
-    if "Fail_Count" not in agent_perf.columns:
-        agent_perf["Fail_Count"] = 0
-
-    # Calculate pass rate - only when there's actual rubric data
-    # When Pass_Count + Fail_Count = 0, there's no rubric data, so pass rate should be NaN/None
-    total_rubric = agent_perf["Pass_Count"] + agent_perf["Fail_Count"]
-    agent_perf["Pass_Rate"] = (agent_perf["Pass_Count"] / total_rubric * 100).where(
-        total_rubric > 0,
-        np.nan,  # Use np.nan instead of pd.NA for matplotlib compatibility
+    agg_df = df_work.groupby("Agent").agg({"QA Score": "mean"}).reset_index()
+    agg_df = agg_df.rename(columns={"QA Score": "Avg_Score"})
+    agg_df["Call_Count"] = agg_df["Agent"].map(call_counts).fillna(0).astype(int)
+    pass_rates = df_work.groupby("Agent", group_keys=False).apply(
+        _agent_pass_rate, include_groups=False
     )
+    agg_df["Pass_Rate"] = agg_df["Agent"].map(pass_rates).values
 
-    # Ensure Avg_Score exists (should always exist if QA Score was validated, but check defensively)
-    if "Avg_Score" not in agent_perf.columns:
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(
-            0.5,
-            0.5,
-            "Average score data not available for leaderboard",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
+    agg_df = agg_df.sort_values("Avg_Score", ascending=False)
+    agent_sum_all = int(agg_df["Call_Count"].sum())
+    if abs(agent_sum_all - total_calls) >= 1:
+        raise ValueError(
+            f"Agent leaderboard does not reconcile to cohort totals: "
+            f"sum(agent_call_counts)={agent_sum_all} != total_calls_bpo={total_calls}"
         )
-        return fig
 
-    # Sort by average score
-    agent_perf = agent_perf.sort_values("Avg_Score", ascending=False)
-    agent_perf["Rank"] = range(1, len(agent_perf) + 1)
+    top_agents = agg_df.head(AGENT_LEADERBOARD_TOP_N)
+    top_n_sum = int(top_agents["Call_Count"].sum())
+    other_count = total_calls - top_n_sum
 
-    # Take top 15 agents
-    top_agents = agent_perf.head(15)
+    # Add Other/Unknown row so totals reconcile visually
+    if other_count > 0:
+        other_row = pd.DataFrame([{
+            "Agent": "Other/Unknown",
+            "Avg_Score": np.nan,
+            "Call_Count": other_count,
+            "Pass_Rate": np.nan,
+        }])
+        display_df = pd.concat([top_agents, other_row], ignore_index=True)
+    else:
+        display_df = top_agents.copy()
 
-    fig, ax = plt.subplots(figsize=(14, 10))
+    display_df["Rank"] = range(1, len(display_df) + 1)
 
-    # Create horizontal bar chart
-    y_pos = np.arange(len(top_agents))
-    ax.barh(
-        y_pos,
-        top_agents["Avg_Score"],
-        color=plt.cm.RdYlGn(top_agents["Avg_Score"] / 100),
-        alpha=0.8,
-    )
+    fig, ax = plt.subplots(figsize=(14, max(8, len(display_df) * 0.5)))
 
-    # Add value labels
-    for i, (idx, row) in enumerate(top_agents.iterrows()):
+    y_pos = np.arange(len(display_df))
+    scores_plot = display_df["Avg_Score"].fillna(0).values
+    bar_colors = [
+        [0.9, 0.9, 0.9, 0.8] if agent == "Other/Unknown"
+        else plt.cm.RdYlGn(score / 100)
+        for agent, score in zip(display_df["Agent"], scores_plot)
+    ]
+    ax.barh(y_pos, scores_plot, color=bar_colors, alpha=0.8)
+
+    for i, (_, row) in enumerate(display_df.iterrows()):
         score = row["Avg_Score"]
+        score_val = float(score) if pd.notna(score) else 0.0
+        score_str = f"{score:.1f}" if pd.notna(score) else "—"
+        ax.text(score_val + 1, i, score_str, va="center", fontsize=9, fontweight="bold")
+        count_str = f"{int(row['Call_Count']):,}"
         ax.text(
-            score + 1, i, f"{score:.1f}", va="center", fontsize=9, fontweight="bold"
-        )
-        # Add call count
-        ax.text(
-            score + 1,
+            score_val + 1,
             i - 0.25,
-            f"({int(row['Call_Count'])} calls)",
+            f"({count_str} calls)",
             va="center",
             fontsize=8,
             style="italic",
@@ -2601,12 +3113,13 @@ def create_agent_leaderboard(bpo_df: pd.DataFrame) -> plt.Figure:
         )
 
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(
-        [f"#{row['Rank']} {row['Agent']}" for _, row in top_agents.iterrows()]
-    )
+    ax.set_yticklabels([f"#{int(r['Rank'])} {r['Agent']}" for _, r in display_df.iterrows()])
     ax.set_xlabel("Average QA Score", fontsize=11, fontweight="bold")
     ax.set_title(
-        "Agent Performance Leaderboard (Top 15)", fontsize=14, fontweight="bold", pad=20
+        f"Agent Performance Leaderboard (Top {AGENT_LEADERBOARD_TOP_N} + Other)",
+        fontsize=14,
+        fontweight="bold",
+        pad=20,
     )
     ax.set_xlim(0, 100)
     ax.grid(True, alpha=0.3, axis="x")
@@ -2649,11 +3162,13 @@ def create_top_call_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
-    # Get top reasons
-    reason_counts = bpo_df[reason_col].value_counts().head(10)
-    total_calls = bpo_df[reason_col].notna().sum()
-
-    if len(reason_counts) == 0:
+    # Canonicalize and aggregate (same pipeline as calculate_reason_metrics)
+    canonical = bpo_df[reason_col].fillna("").apply(canonicalize_label)
+    reason_counts_raw = canonical[canonical != ""].value_counts()
+    dist = {label_to_display(k): v for k, v in reason_counts_raw.items()}
+    reason_counts = pd.Series(dist).sort_values(ascending=False).head(10)
+    calls_with_reason = int(reason_counts_raw.sum()) if len(reason_counts_raw) > 0 else 0
+    if len(reason_counts) == 0 or calls_with_reason == 0:
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.text(
             0.5,
@@ -2666,7 +3181,11 @@ def create_top_call_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
         return fig
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-    fig.suptitle("Top 10 Call Reasons", fontsize=14, fontweight="bold")
+    fig.suptitle(
+        "Top 10 Call Reasons\n(% of calls with reason data; denominator excludes calls without reason)",
+        fontsize=12,
+        fontweight="bold",
+    )
 
     # Left: Count chart
     bars1 = ax1.barh(
@@ -2690,10 +3209,10 @@ def create_top_call_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
             fontweight="bold",
         )
 
-    # Right: Percentage chart
-    reason_pct = (reason_counts / total_calls * 100).round(1)
+    # Right: Percentage chart (% of calls with reason data only)
+    reason_pct = (reason_counts / calls_with_reason * 100).round(1)
     bars2 = ax2.barh(reason_pct.index, reason_pct.values, color="#9B59B6", alpha=0.7)
-    ax2.set_xlabel("Percentage of Calls (%)", fontsize=11, fontweight="bold")
+    ax2.set_xlabel("% of Calls", fontsize=11, fontweight="bold")
     ax2.set_title("Percentage Distribution", fontsize=12, fontweight="bold")
     ax2.grid(True, alpha=0.3, axis="x")
     ax2.invert_yaxis()
@@ -2748,11 +3267,13 @@ def create_top_call_outcomes_chart(bpo_df: pd.DataFrame) -> plt.Figure:
         )
         return fig
 
-    # Get top outcomes
-    outcome_counts = bpo_df[outcome_col].value_counts().head(10)
-    total_calls = bpo_df[outcome_col].notna().sum()
-
-    if len(outcome_counts) == 0:
+    # Canonicalize and aggregate (same pipeline as calculate_outcome_metrics)
+    canonical = bpo_df[outcome_col].fillna("").apply(canonicalize_label)
+    outcome_counts_raw = canonical[canonical != ""].value_counts()
+    dist = {label_to_display(k): v for k, v in outcome_counts_raw.items()}
+    outcome_counts = pd.Series(dist).sort_values(ascending=False).head(10)
+    calls_with_outcome = int(outcome_counts_raw.sum()) if len(outcome_counts_raw) > 0 else 0
+    if len(outcome_counts) == 0 or calls_with_outcome == 0:
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.text(
             0.5,
@@ -2765,7 +3286,11 @@ def create_top_call_outcomes_chart(bpo_df: pd.DataFrame) -> plt.Figure:
         return fig
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-    fig.suptitle("Top 10 Call Outcomes", fontsize=14, fontweight="bold")
+    fig.suptitle(
+        "Top 10 Call Outcomes\n(% of calls with outcome data; denominator excludes calls without outcome)",
+        fontsize=12,
+        fontweight="bold",
+    )
 
     # Left: Count chart
     bars1 = ax1.barh(
@@ -2789,10 +3314,10 @@ def create_top_call_outcomes_chart(bpo_df: pd.DataFrame) -> plt.Figure:
             fontweight="bold",
         )
 
-    # Right: Percentage chart
-    outcome_pct = (outcome_counts / total_calls * 100).round(1)
+    # Right: Percentage chart (% of calls with outcome data only)
+    outcome_pct = (outcome_counts / calls_with_outcome * 100).round(1)
     bars2 = ax2.barh(outcome_pct.index, outcome_pct.values, color="#F39C12", alpha=0.7)
-    ax2.set_xlabel("Percentage of Calls (%)", fontsize=11, fontweight="bold")
+    ax2.set_xlabel("% of Calls", fontsize=11, fontweight="bold")
     ax2.set_title("Percentage Distribution", fontsize=12, fontweight="bold")
     ax2.grid(True, alpha=0.3, axis="x")
     ax2.invert_yaxis()
@@ -2930,6 +3455,8 @@ def generate_pdf_report(
     bpo_start_date: datetime,
     previous_data: pd.DataFrame = None,
     bpo_data: pd.DataFrame = None,
+    cohort_config: Optional[Dict[str, Any]] = None,
+    total_calls_bpo: Optional[int] = None,
 ):
     """Generate multi-page PDF comparison report."""
     print(f"\n📄 Generating PDF report: {output_path}")
@@ -2996,13 +3523,41 @@ def generate_pdf_report(
         pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
 
-        # Page 2: Executive Summary
+        # Page 2: Cohort Definition
+        if cohort_config:
+            fig = plt.figure(figsize=(11, 8.5))
+            ax = fig.add_subplot(111)
+            ax.axis("off")
+            cohort_lines = ["COHORT DEFINITION", ""]
+            cohort_lines.append(
+                PASS_DEFINITION_TEXT
+            )
+            cohort_lines.append("")
+            for name, cfg in cohort_config.items():
+                cohort_lines.append(f"{name}:")
+                cohort_lines.append(f"  Start Date: {cfg.get('start_date', 'N/A')}")
+                cohort_lines.append(f"  End Date: {cfg.get('end_date', 'N/A')}")
+                cohort_lines.append(f"  Days in Period: {cfg.get('days_in_period', 'N/A')}")
+                cohort_lines.append(f"  Total Calls: {cfg.get('total_calls', 'N/A')}")
+                cpd = cfg.get("calls_per_day")
+                cohort_lines.append(
+                    f"  Calls Per Day: {cpd:.2f}" if cpd is not None else "  Calls Per Day: N/A"
+                )
+                cohort_lines.append("")
+            ax.text(0.1, 0.95, "\n".join(cohort_lines), transform=ax.transAxes,
+                    fontsize=11, verticalalignment="top", family="monospace")
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+        # Page 3: Executive Summary
         fig = plt.figure(figsize=(11, 8.5))
         ax = fig.add_subplot(111)
         ax.axis("off")
 
         has_previous_data = previous_data is not None and len(previous_data) > 0
         summary_lines = ["EXECUTIVE SUMMARY", ""]
+        summary_lines.append(PASS_DEFINITION_TEXT)
+        summary_lines.append("")
 
         if not has_previous_data:
             summary_lines.append("BPO Centers Performance Overview")
@@ -3047,20 +3602,21 @@ def generate_pdf_report(
             improvements["AHT"] = pct
             summary_lines.append(f"• Average Handle Time: {pct:+.1f}% change")
 
-        # Add consistency improvements
+        # Consistency: show absolute std change (e.g. 29.0 → 28.9)
         if (
             previous_metrics.get("score_std") is not None
             and bpo_metrics.get("score_std") is not None
-            and previous_metrics["score_std"] != 0
         ):
-            std_improvement = (
-                (previous_metrics["score_std"] - bpo_metrics["score_std"])
-                / previous_metrics["score_std"]
-            ) * 100
-            if std_improvement > 0:
-                improvements["Consistency (Lower Std Dev)"] = std_improvement
+            prev_std = previous_metrics["score_std"]
+            bpo_std = bpo_metrics["score_std"]
+            delta_std = bpo_std - prev_std
+            if abs(delta_std) < CONSISTENCY_NO_CHANGE_THRESHOLD:
                 summary_lines.append(
-                    f"• Consistency: {std_improvement:+.1f}% improvement (lower std dev)"
+                    "• Consistency: No material change in score consistency"
+                )
+            else:
+                summary_lines.append(
+                    f"• Consistency: {prev_std:.1f} → {bpo_std:.1f} (std dev)"
                 )
 
         # Add quality tier improvements
@@ -3217,6 +3773,18 @@ def generate_pdf_report(
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
+        if (
+            previous_metrics.get("calls_per_day") is not None
+            and bpo_metrics.get("calls_per_day") is not None
+        ):
+            fig = create_comparison_chart(
+                "Calls Per Day",
+                previous_metrics["calls_per_day"],
+                bpo_metrics["calls_per_day"],
+            )
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
         # Improvement Summary Chart (only if we have previous data)
         if improvements and has_previous_data:
             fig = create_improvement_summary_chart(improvements)
@@ -3313,14 +3881,20 @@ def generate_pdf_report(
         # Agent Performance Heatmap
         if bpo_data is not None and len(bpo_data) > 0:
             print("  📊 Generating Agent Performance Heatmap...")
-            fig = create_agent_performance_heatmap(bpo_data)
+            fig = create_agent_performance_heatmap(
+                bpo_data,
+                total_calls_bpo=total_calls_bpo,
+            )
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
         # Agent Leaderboard
         if bpo_data is not None and len(bpo_data) > 0:
             print("  📊 Generating Agent Leaderboard...")
-            fig = create_agent_leaderboard(bpo_data)
+            fig = create_agent_leaderboard(
+                bpo_data,
+                total_calls=total_calls_bpo if total_calls_bpo is not None else bpo_metrics.get("total_calls"),
+            )
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
@@ -3462,29 +4036,115 @@ def main():
         print("📊 Loading data...")
         if csv_paths:
             previous_data = load_previous_center_data(csv_paths)
-            print("\n📈 Calculating metrics...")
-            previous_metrics = calculate_all_metrics(previous_data)
         else:
+            previous_data = None
             print("   (Skipping previous center data - BPO-only report)")
-            previous_metrics = {}
 
         bpo_data = load_bpo_centers_data(Path(args.cache), bpo_start_date)
 
-        if not csv_paths:
-            print("\n📈 Calculating BPO metrics...")
-        else:
-            print("\n📈 Calculating BPO metrics...")
-        bpo_metrics = calculate_all_metrics(bpo_data)
+        if bpo_data is None or len(bpo_data) == 0:
+            raise ValueError("No BPO Centers data loaded. Cannot generate report.")
 
-        # Generate report
+        # Apply global filters to get canonical dataframes (shared across all report sections)
+        df_prev = (
+            apply_global_filters(previous_data, "previous")
+            if previous_data is not None and len(previous_data) > 0
+            else None
+        )
+        df_bpo = apply_global_filters(bpo_data, "bpo")
+        total_calls_bpo = len(df_bpo)
+
+        if len(df_bpo) == 0:
+            raise ValueError(
+                "No BPO data remaining after global filters (call_id, QA Score, Call Date, dedupe)."
+            )
+
+        # Compute cohort config from canonical dataframes
+        previous_config = None
+        if df_prev is not None and len(df_prev) > 0:
+            previous_config = compute_cohort_config(
+                df_prev,
+                start_date=None,
+                end_date=None,
+                cohort_name="Previous Contact Center",
+            )
+
+        bpo_end = None
+        if len(df_bpo) > 0 and "Call Date" in df_bpo.columns:
+            bpo_end = pd.Timestamp(df_bpo["Call Date"].max())
+        bpo_config = compute_cohort_config(
+            df_bpo,
+            start_date=bpo_start_date,
+            end_date=bpo_end,
+            cohort_name="BPO Centers",
+        )
+
+        print("\n📈 Calculating metrics...")
+        previous_metrics = (
+            calculate_all_metrics(df_prev, cohort_config=previous_config)
+            if df_prev is not None
+            else {}
+        )
+        bpo_metrics = calculate_all_metrics(df_bpo, cohort_config=bpo_config)
+
+        # Master validation block (stops if any check fails)
+        cohort_cfg_dict = {}
+        if previous_config:
+            cohort_cfg_dict["Previous Contact Center"] = previous_config
+        cohort_cfg_dict["BPO Centers"] = bpo_config
+        validate_report(
+            df_prev,
+            df_bpo,
+            cohort_cfg_dict,
+            previous_metrics,
+            bpo_metrics,
+        )
+
+        # Agent reconciliation stats (for runtime log and validation)
+        agent_stats = _compute_agent_reconciliation_stats(df_bpo, total_calls_bpo)
+
+        # Runtime output: COHORT SUMMARY + AGENT RECONCILIATION
+        print("\nCOHORT SUMMARY")
+        print("--------------")
+        if previous_config:
+            print("Previous:")
+            print(f"  Start: {previous_config.get('start_date')}")
+            print(f"  End: {previous_config.get('end_date')}")
+            print(f"  Days: {previous_config.get('days_in_period')}")
+            print(f"  Total Calls: {previous_config.get('total_calls')}")
+            pcpd = previous_config.get("calls_per_day")
+            print(f"  Calls/Day: {pcpd:.2f}" if pcpd is not None else "  Calls/Day: N/A")
+            print()
+        print("BPO:")
+        print(f"  BPO TOTAL CALLS: {total_calls_bpo}")
+        print(f"  Start: {bpo_config.get('start_date')}")
+        print(f"  End: {bpo_config.get('end_date')}")
+        print(f"  Days: {bpo_config.get('days_in_period')}")
+        cpd = bpo_config.get("calls_per_day")
+        print(f"  Calls/Day: {cpd:.2f}" if cpd is not None else "  Calls/Day: N/A")
+        print()
+        print("AGENT RECONCILIATION")
+        print("--------------------")
+        print(f"  AGENT SUM (ALL): {agent_stats['agent_sum_all']}")
+        if agent_stats.get("top_n_sum") is not None:
+            print(f"  TOP N SUM: {agent_stats['top_n_sum']} (top {AGENT_LEADERBOARD_TOP_N})")
+            print(f"  OTHER/UNKNOWN: {agent_stats['other_unknown']}")
+        print()
+        print(f"PASS THRESHOLD: {PASS_THRESHOLD}")
+        print("VALIDATION: PASSED")
+        print()
+
+        # Generate report (use canonical df_bpo)
         output_path = Path(args.output)
         generate_pdf_report(
             previous_metrics,
             bpo_metrics,
             output_path,
             bpo_start_date,
-            previous_data,
-            bpo_data,
+            df_prev,
+            df_bpo,
+            cohort_config=cohort_cfg_dict,
+            total_calls_bpo=total_calls_bpo,
         )
 
         print("\n" + "=" * 80)
