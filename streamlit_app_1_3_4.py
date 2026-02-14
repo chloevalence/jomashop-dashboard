@@ -7803,12 +7803,13 @@ else:
 
 def _get_demo_samsung_data():
     """Return minimal hardcoded Samsung customer support demo data. Memory-efficient; no S3/disk."""
-    base_date = datetime(2025, 2, 10)
+    # Use Feb 2026 to match default month selector (month_options: Feb 2026 -> July 2025)
+    base_date = datetime(2026, 2, 10)
     # 1 detailed call + 6 minimal placeholders
     detailed = {
-        "call_id": "20250210_143022_SAMSUNG-DEMO-001",
+        "call_id": "20260210_143022_SAMSUNG-DEMO-001",
         "call_date": base_date,
-        "date_raw": "02102025",
+        "date_raw": "02102026",
         "time": "14:30",
         "agent": "Samsung Support Agent 1",
         "company": "Samsung",
@@ -7826,11 +7827,11 @@ def _get_demo_samsung_data():
         "rubric_fail_count": 1,
     }
     minimal = [
-        {"call_id": f"20250210_12000{i}_SAMSUNG-DEMO-00{i+2}", "call_date": base_date, "agent": "Samsung Support Agent 1", "qa_score": 78.0, "label": "Positive", "reason": "Order status", "outcome": "Resolved", "summary": "Order tracking inquiry.", "speaking_time_per_speaker": {"total": "3:15"}, "rubric_details": {}, "rubric_pass_count": 2, "rubric_fail_count": 0}
+        {"call_id": f"20260210_12000{i}_SAMSUNG-DEMO-00{i+2}", "call_date": base_date, "agent": "Samsung Support Agent 1", "qa_score": 78.0, "label": "Positive", "reason": "Order status", "outcome": "Resolved", "summary": "Order tracking inquiry.", "speaking_time_per_speaker": {"total": "3:15"}, "rubric_details": {}, "rubric_pass_count": 2, "rubric_fail_count": 0}
         for i in range(2, 8)
     ]
     for i, m in enumerate(minimal):
-        m.setdefault("date_raw", "02102025")
+        m.setdefault("date_raw", "02102026")
         m.setdefault("time", "12:00")
         m.setdefault("company", "Samsung")
         m.setdefault("strengths", "")
@@ -9102,6 +9103,12 @@ MAX_DATE_RANGE_DAYS = 30
 if "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
     st.session_state._selected_year = 2026
     st.session_state._selected_month = 2
+# Demo mode: ensure Feb 2026 on first load so date filter matches demo data
+if is_anonymous_user and st.session_state.get("_demo_mode"):
+    if not st.session_state.get("_demo_month_initialized", False):
+        st.session_state._selected_year = 2026
+        st.session_state._selected_month = 2
+        st.session_state._demo_month_initialized = True
 
 st.sidebar.markdown("### 📆 Date Range")
 
