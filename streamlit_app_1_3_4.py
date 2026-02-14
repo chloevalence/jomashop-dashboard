@@ -779,6 +779,24 @@ KNOWN_AGENT_MAPPINGS = {
     "bp agent 113827380": "Agent 11",  # Space version
 }
 
+# Pass threshold: QA score >= 70 = pass (Excellent + Good)
+PASS_THRESHOLD = 70
+
+
+def canonicalize_label(label):
+    """Canonicalize category label for aggregation (strip, lowercase, collapse spaces)."""
+    if pd.isna(label) or label is None:
+        return ""
+    s = str(label).strip().lower()
+    return " ".join(s.split())
+
+
+def label_to_display(canonical):
+    """Convert canonical label to Title Case for display."""
+    if not canonical:
+        return "Unknown"
+    return canonical.title()
+
 
 def load_agent_mapping():
     """Load agent ID mapping from file, or return known mappings if file doesn't exist."""
@@ -5068,7 +5086,11 @@ def calculate_historical_baselines(df, current_start_date, current_end_date):
 
 
 def calculate_pass_rate(df):
-    """Calculate pass rate from dataframe."""
+    """Calculate pass rate from dataframe. Primary: QA Score >= 70. Fallback: Rubric."""
+    if "QA Score" in df.columns:
+        valid_scores = df["QA Score"].dropna()
+        if len(valid_scores) > 0:
+            return float((valid_scores >= PASS_THRESHOLD).sum() / len(valid_scores) * 100)
     if "Rubric Pass Count" in df.columns and "Rubric Fail Count" in df.columns:
         total_pass = df["Rubric Pass Count"].sum()
         total_fail = df["Rubric Fail Count"].sum()
@@ -10024,15 +10046,13 @@ if show_comparison and user_agent_id:
             if not pd.isna(agent_avg_score):
                 agent_metric["avg_score"] = agent_avg_score
 
-        # Pass rate per agent
-        if (
-            "Rubric Pass Count" in agent_data.columns
-            and "Rubric Fail Count" in agent_data.columns
-        ):
-            total_pass = agent_data["Rubric Pass Count"].sum()
-            total_fail = agent_data["Rubric Fail Count"].sum()
-            if (total_pass + total_fail) > 0:
-                agent_metric["pass_rate"] = total_pass / (total_pass + total_fail) * 100
+        # Pass rate per agent (QA Score >= 70)
+        if "QA Score" in agent_data.columns:
+            scores = agent_data["QA Score"].dropna()
+            if len(scores) > 0:
+                agent_metric["pass_rate"] = (
+                    scores >= PASS_THRESHOLD
+                ).sum() / len(scores) * 100
 
         # Average AHT per agent
         if "Call Duration (min)" in agent_data.columns:
@@ -10410,21 +10430,7 @@ if show_comparison and user_agent_id:
         )
 
     with col3:
-        my_total_pass = (
-            filtered_df["Rubric Pass Count"].sum()
-            if "Rubric Pass Count" in filtered_df.columns
-            else 0
-        )
-        my_total_fail = (
-            filtered_df["Rubric Fail Count"].sum()
-            if "Rubric Fail Count" in filtered_df.columns
-            else 0
-        )
-        my_pass_rate = (
-            (my_total_pass / (my_total_pass + my_total_fail) * 100)
-            if (my_total_pass + my_total_fail) > 0
-            else 0
-        )
+        my_pass_rate = calculate_pass_rate(filtered_df) or 0
         delta_pass = my_pass_rate - overall_pass_rate if overall_pass_rate else None
         st.metric(
             "My Pass Rate",
@@ -10578,22 +10584,11 @@ else:
         )
         st.metric("Avg QA Score", f"{avg_score:.1f}%" if avg_score else "N/A")
     with col3:
-        total_pass = (
-            filtered_df["Rubric Pass Count"].sum()
-            if "Rubric Pass Count" in filtered_df.columns
-            else 0
+        pass_rate = calculate_pass_rate(filtered_df)
+        st.metric(
+            "Pass Rate",
+            f"{pass_rate:.1f}%" if pass_rate is not None else "N/A",
         )
-        total_fail = (
-            filtered_df["Rubric Fail Count"].sum()
-            if "Rubric Fail Count" in filtered_df.columns
-            else 0
-        )
-        pass_rate = (
-            (total_pass / (total_pass + total_fail) * 100)
-            if (total_pass + total_fail) > 0
-            else 0
-        )
-        st.metric("Pass Rate", f"{pass_rate:.1f}%")
     with col4:
         avg_aht = (
             filtered_df["Call Duration (min)"].mean()
@@ -10613,29 +10608,30 @@ if not user_agent_id:
     # Admin view - show all agents
     st.subheader("Agent Leaderboard")
 
-    # Ensure Agent column is normalized (safety check)
-    if "Agent" in filtered_df.columns:
-        filtered_df = filtered_df.copy()
-        filtered_df["Agent"] = filtered_df["Agent"].apply(normalize_agent_id)
+    # Ensure Agent column is normalized; bucket missing as Unknown Agent
+    lb_df = filtered_df.copy()
+    if "Agent" in lb_df.columns:
+        lb_df["Agent"] = lb_df["Agent"].apply(normalize_agent_id)
+        lb_df["Agent"] = lb_df["Agent"].fillna("Unknown Agent")
+        lb_df.loc[lb_df["Agent"].astype(str).str.strip() == "", "Agent"] = "Unknown Agent"
 
-    agent_performance = (
-        filtered_df.groupby("Agent")
-        .agg(
-            Total_Calls=("Call ID", "count"),
-            Avg_QA_Score=("QA Score", "mean"),
-            Total_Pass=("Rubric Pass Count", "sum"),
-            Total_Fail=("Rubric Fail Count", "sum"),
-            Avg_Call_Duration=("Call Duration (min)", "mean"),
-        )
-        .reset_index()
+    count_col = "Call ID" if "Call ID" in lb_df.columns else "call_id"
+    agent_performance = lb_df.groupby("Agent").agg(
+        Total_Calls=(count_col, "count"),
+        Avg_QA_Score=("QA Score", "mean"),
+        Avg_Call_Duration=("Call Duration (min)", "mean"),
+    ).reset_index()
+
+    # Pass rate from QA Score >= PASS_THRESHOLD (70)
+    lb_df["_pass"] = (lb_df["QA Score"] >= PASS_THRESHOLD).astype(float)
+    pr_agg = lb_df.groupby("Agent").agg(
+        pass_sum=("_pass", "sum"),
+        n=("QA Score", "count"),
     )
-
-    # Calculate pass rate
+    pr_agg["Pass_Rate"] = (pr_agg["pass_sum"] / pr_agg["n"] * 100).fillna(0)
     agent_performance["Pass_Rate"] = (
-        agent_performance["Total_Pass"]
-        / (agent_performance["Total_Pass"] + agent_performance["Total_Fail"])
-        * 100
-    ).fillna(0)
+        agent_performance["Agent"].map(pr_agg["Pass_Rate"]).fillna(0)
+    )
 
     # Add percentile rankings
     percentile_rankings = calculate_percentile_rankings(filtered_df, "QA Score")
@@ -10910,10 +10906,24 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
         with reason_tab1:
             if "Reason" in filtered_df.columns:
                 reason_col1, reason_col2 = st.columns(2)
+                total_filtered = len(filtered_df)
+                reason_canonical = (
+                    filtered_df["Reason"].fillna("").apply(canonicalize_label)
+                )
+                reason_counts_raw = reason_canonical[
+                    reason_canonical != ""
+                ].value_counts()
+                dist = {
+                    label_to_display(k): v
+                    for k, v in reason_counts_raw.items()
+                }
+                reason_counts = (
+                    pd.Series(dist).sort_values(ascending=False).head(10)
+                )
+                calls_with_reason = int(reason_counts_raw.sum()) if len(reason_counts_raw) > 0 else 0
 
                 with reason_col1:
                     st.write("**Most Common Call Reasons**")
-                    reason_counts = filtered_df["Reason"].value_counts().head(10)
                     if len(reason_counts) > 0:
                         fig_reason, ax_reason = plt.subplots(figsize=(8, 6))
                         reason_counts.plot(kind="barh", ax=ax_reason, color="steelblue")
@@ -10921,35 +10931,51 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         ax_reason.set_title("Top 10 Call Reasons")
                         plt.tight_layout()
                         st_pyplot_safe(fig_reason)
+                        if total_filtered > 0:
+                            st.caption(
+                                f"% of total calls (denominator: {total_filtered:,})"
+                            )
 
                 with reason_col2:
                     st.write("**Reason Distribution**")
-                    reason_counts_all = filtered_df["Reason"].value_counts()
-                    if len(reason_counts_all) > 0:
-                        # Show top 10 in pie chart, rest as "Other"
-                        top_reasons = reason_counts_all.head(10)
+                    if len(reason_counts_raw) > 0 and total_filtered > 0:
+                        top_reasons = reason_counts_raw.head(10)
                         other_count = (
-                            reason_counts_all.iloc[10:].sum()
-                            if len(reason_counts_all) > 10
+                            reason_counts_raw.iloc[10:].sum()
+                            if len(reason_counts_raw) > 10
                             else 0
                         )
-
+                        top_display = {
+                            label_to_display(k): v for k, v in top_reasons.items()
+                        }
                         if other_count > 0:
                             pie_data = pd.concat(
-                                [top_reasons, pd.Series({"Other": other_count})]
+                                [
+                                    pd.Series(top_display),
+                                    pd.Series({"Other": other_count}),
+                                ]
                             )
                         else:
-                            pie_data = top_reasons
+                            pie_data = pd.Series(top_display)
+                        # Percentages = count / total_filtered (% of total calls)
+                        pct_values = (pie_data.values / total_filtered * 100)
+                        no_data = total_filtered - pie_data.values.sum()
+                        if no_data > 0:
+                            pie_data = pd.concat(
+                                [pie_data, pd.Series({"No reason data": no_data})]
+                            )
+                            pct_values = pie_data.values / total_filtered * 100
 
                         fig_reason_pie, ax_reason_pie = plt.subplots(figsize=(8, 6))
                         wedges, texts, autotexts = ax_reason_pie.pie(
-                            pie_data.values,
-                            labels=None,  # Remove labels from pie chart
+                            pct_values,
+                            labels=None,
                             autopct="%1.1f%%",
                             startangle=90,
                         )
-                        ax_reason_pie.set_title("Call Reasons Distribution")
-                        # Add legend with labels
+                        ax_reason_pie.set_title(
+                            "Call Reasons Distribution\n(% of total calls)"
+                        )
                         ax_reason_pie.legend(
                             wedges,
                             pie_data.index,
@@ -10959,16 +10985,20 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         )
                         plt.tight_layout()
                         st_pyplot_safe(fig_reason_pie)
+                        st.caption(
+                            f"Denominator: {total_filtered:,} total calls"
+                        )
 
                 # Trend over time
                 if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
                     st.write("**Reason Trends Over Time**")
-                    # Get top 5 reasons for trend
-                    top_5_reasons = (
-                        filtered_df["Reason"].value_counts().head(5).index.tolist()
+                    top_5_canonical = (
+                        reason_counts_raw.head(5).index.tolist()
+                        if len(reason_counts_raw) > 0
+                        else []
                     )
                     filtered_df_reason = filtered_df[
-                        filtered_df["Reason"].isin(top_5_reasons)
+                        reason_canonical.isin(top_5_canonical)
                     ].copy()
                     filtered_df_reason["Call Date"] = pd.to_datetime(
                         filtered_df_reason["Call Date"], errors="coerce"
@@ -10985,6 +11015,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             .reset_index()
                         )
                         reason_trend.columns = ["Date", "Reason", "Count"]
+                        reason_trend["Reason"] = reason_trend["Reason"].apply(
+                            lambda x: label_to_display(canonicalize_label(x))
+                        )
                         reason_trend_pivot = reason_trend.pivot(
                             index="Date", columns="Reason", values="Count"
                         ).fillna(0)
@@ -10992,7 +11025,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         fig_reason_trend, ax_reason_trend = plt.subplots(
                             figsize=(12, 6)
                         )
-                        for reason in top_5_reasons:
+                        for reason in [
+                            label_to_display(r) for r in top_5_canonical
+                        ]:
                             if reason in reason_trend_pivot.columns:
                                 ax_reason_trend.plot(
                                     reason_trend_pivot.index,
@@ -11013,46 +11048,87 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
         with reason_tab2:
             if "Outcome" in filtered_df.columns:
                 outcome_col1, outcome_col2 = st.columns(2)
+                total_filtered_outcome = len(filtered_df)
+                outcome_canonical = (
+                    filtered_df["Outcome"].fillna("").apply(canonicalize_label)
+                )
+                outcome_counts_raw = outcome_canonical[
+                    outcome_canonical != ""
+                ].value_counts()
+                outcome_dist = {
+                    label_to_display(k): v for k, v in outcome_counts_raw.items()
+                }
+                outcome_counts = (
+                    pd.Series(outcome_dist)
+                    .sort_values(ascending=False)
+                    .head(10)
+                )
+                calls_with_outcome = (
+                    int(outcome_counts_raw.sum())
+                    if len(outcome_counts_raw) > 0
+                    else 0
+                )
 
                 with outcome_col1:
                     st.write("**Most Common Outcomes**")
-                    outcome_counts = filtered_df["Outcome"].value_counts().head(10)
                     if len(outcome_counts) > 0:
                         fig_outcome, ax_outcome = plt.subplots(figsize=(8, 6))
-                        outcome_counts.plot(kind="barh", ax=ax_outcome, color="green")
+                        outcome_counts.plot(
+                            kind="barh", ax=ax_outcome, color="green"
+                        )
                         ax_outcome.set_xlabel("Number of Calls")
                         ax_outcome.set_title("Top 10 Outcomes")
                         plt.tight_layout()
                         st_pyplot_safe(fig_outcome)
+                        st.caption(
+                            f"% of total calls (denominator: {total_filtered_outcome:,})"
+                        )
 
                 with outcome_col2:
                     st.write("**Outcome Distribution**")
-                    outcome_counts_all = filtered_df["Outcome"].value_counts()
-                    if len(outcome_counts_all) > 0:
-                        # Show top 10 in pie chart, rest as "Other"
-                        top_outcomes = outcome_counts_all.head(10)
+                    if len(outcome_counts_raw) > 0 and total_filtered_outcome > 0:
+                        top_outcomes = outcome_counts_raw.head(10)
                         other_count = (
-                            outcome_counts_all.iloc[10:].sum()
-                            if len(outcome_counts_all) > 10
+                            outcome_counts_raw.iloc[10:].sum()
+                            if len(outcome_counts_raw) > 10
                             else 0
                         )
-
+                        top_display = {
+                            label_to_display(k): v
+                            for k, v in top_outcomes.items()
+                        }
                         if other_count > 0:
                             pie_data = pd.concat(
-                                [top_outcomes, pd.Series({"Other": other_count})]
+                                [
+                                    pd.Series(top_display),
+                                    pd.Series({"Other": other_count}),
+                                ]
                             )
                         else:
-                            pie_data = top_outcomes
+                            pie_data = pd.Series(top_display)
+                        pct_values = pie_data.values / total_filtered_outcome * 100
+                        no_data = total_filtered_outcome - pie_data.values.sum()
+                        if no_data > 0:
+                            pie_data = pd.concat(
+                                [
+                                    pie_data,
+                                    pd.Series({"No outcome data": no_data}),
+                                ]
+                            )
+                            pct_values = pie_data.values / total_filtered_outcome * 100
 
-                        fig_outcome_pie, ax_outcome_pie = plt.subplots(figsize=(8, 6))
+                        fig_outcome_pie, ax_outcome_pie = plt.subplots(
+                            figsize=(8, 6)
+                        )
                         wedges, texts, autotexts = ax_outcome_pie.pie(
-                            pie_data.values,
-                            labels=None,  # Remove labels from pie chart
+                            pct_values,
+                            labels=None,
                             autopct="%1.1f%%",
                             startangle=90,
                         )
-                        ax_outcome_pie.set_title("Outcomes Distribution")
-                        # Add legend with labels
+                        ax_outcome_pie.set_title(
+                            "Outcomes Distribution\n(% of total calls)"
+                        )
                         ax_outcome_pie.legend(
                             wedges,
                             pie_data.index,
@@ -11062,16 +11138,20 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         )
                         plt.tight_layout()
                         st_pyplot_safe(fig_outcome_pie)
+                        st.caption(
+                            f"Denominator: {total_filtered_outcome:,} total calls"
+                        )
 
                 # Trend over time
                 if "Call Date" in filtered_df.columns and len(filtered_df) > 0:
                     st.write("**Outcome Trends Over Time**")
-                    # Get top 5 outcomes for trend
-                    top_5_outcomes = (
-                        filtered_df["Outcome"].value_counts().head(5).index.tolist()
+                    top_5_outcome_canonical = (
+                        outcome_counts_raw.head(5).index.tolist()
+                        if len(outcome_counts_raw) > 0
+                        else []
                     )
                     filtered_df_outcome = filtered_df[
-                        filtered_df["Outcome"].isin(top_5_outcomes)
+                        outcome_canonical.isin(top_5_outcome_canonical)
                     ].copy()
                     filtered_df_outcome["Call Date"] = pd.to_datetime(
                         filtered_df_outcome["Call Date"], errors="coerce"
@@ -11090,6 +11170,9 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             .reset_index()
                         )
                         outcome_trend.columns = ["Date", "Outcome", "Count"]
+                        outcome_trend["Outcome"] = outcome_trend["Outcome"].apply(
+                            lambda x: label_to_display(canonicalize_label(x))
+                        )
                         outcome_trend_pivot = outcome_trend.pivot(
                             index="Date", columns="Outcome", values="Count"
                         ).fillna(0)
@@ -11097,7 +11180,10 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         fig_outcome_trend, ax_outcome_trend = plt.subplots(
                             figsize=(12, 6)
                         )
-                        for outcome in top_5_outcomes:
+                        for outcome in [
+                            label_to_display(o)
+                            for o in top_5_outcome_canonical
+                        ]:
                             if outcome in outcome_trend_pivot.columns:
                                 ax_outcome_trend.plot(
                                     outcome_trend_pivot.index,
@@ -12870,19 +12956,14 @@ else:
                                 else 0.0
                             )
                             total_calls = int(len(agent_data))
-                            pass_count = (
-                                int(agent_data["Rubric Pass Count"].sum())
-                                if "Rubric Pass Count" in agent_data.columns
-                                else 0
-                            )
-                            fail_count = (
-                                int(agent_data["Rubric Fail Count"].sum())
-                                if "Rubric Fail Count" in agent_data.columns
-                                else 0
+                            scores = (
+                                agent_data["QA Score"].dropna()
+                                if "QA Score" in agent_data.columns
+                                else pd.Series(dtype=float)
                             )
                             pass_rate = (
-                                float((pass_count / (pass_count + fail_count) * 100))
-                                if (pass_count + fail_count) > 0
+                                float((scores >= PASS_THRESHOLD).sum() / len(scores) * 100)
+                                if len(scores) > 0
                                 else 0.0
                             )
                             agent_comparison_list.append(
