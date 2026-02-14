@@ -7869,10 +7869,22 @@ def _get_demo_samsung_data():
         "challenges": "Customer initially frustrated.",
         "coaching_suggestions": ["Acknowledge customer frustration sooner", "Review warranty process documentation for faster lookup"],
         "speaking_time_per_speaker": {"total": "5:30"},
-        "rubric_details": {},
-        "rubric_pass_count": 0,
-        "rubric_fail_count": 0,
+        "rubric_details": {"1.1.0": {"status": "Pass", "note": ""}, "1.2.0": {"status": "Fail", "note": "Could have acknowledged frustration sooner"}},
+        "rubric_pass_count": 1,
+        "rubric_fail_count": 1,
     }
+
+    # Rubric templates for analysis sections (Most Common Failure Reasons, Rubric Code Correlation, Rubric Code Analysis)
+    # Mix of Pass/Fail for 1.1.0, 1.2.0, 2.1.0, 3.1.0 with some high-AHT (longer duration) for correlation
+    rubric_templates = [
+        {"1.1.0": {"status": "Fail", "note": "Greeting"}, "2.1.0": {"status": "Pass", "note": ""}},
+        {"1.2.0": {"status": "Fail", "note": "Procedure"}, "3.1.0": {"status": "Pass", "note": ""}},
+        {"2.1.0": {"status": "Fail", "note": "Timing"}, "3.1.0": {"status": "Fail", "note": ""}},
+        {"1.1.0": {"status": "Pass", "note": ""}, "1.2.0": {"status": "Fail", "note": ""}},
+        {"3.1.0": {"status": "Fail", "note": "Resolution"}, "2.1.0": {"status": "Pass", "note": ""}},
+        {"1.1.0": {"status": "Pass", "note": ""}, "3.1.0": {"status": "Fail", "note": ""}},
+        {"1.2.0": {"status": "Pass", "note": ""}, "2.1.0": {"status": "Fail", "note": ""}},
+    ]
 
     # 6 at-risk calls for Agent 3: declining scores Feb 15-28 to trigger identify_at_risk_agents
     at_risk_agent = "Samsung Support Agent 3"
@@ -7885,14 +7897,15 @@ def _get_demo_samsung_data():
             d = base + timedelta(days=at_risk_dates[i] - 1)
             qa_score = at_risk_scores[i]
             agent = at_risk_agent
-            rubric_details = {}
+            rubric_details = rubric_templates[i % len(rubric_templates)]  # at-risk calls get rubric too
         else:
             d = base + timedelta(days=random.randint(0, 27))
             qa_score = round(random.uniform(55, 95), 1)
             # Agent 3 only has the 6 at-risk calls above; others in Feb 15+ go to Agent 1/2 so only 1 at-risk agent
             agent = random.choice([agents[0], agents[1]]) if d.day >= 15 else random.choice(agents)
-            rubric_details = {}
-        m, s = random.randint(2, 8), random.randint(0, 59)
+            rubric_details = rubric_templates[(i - 6) % len(rubric_templates)] if i < 6 + 40 else {}
+        # Vary duration: some longer (6-12 min) for high-AHT correlation with rubric failures
+        m, s = (random.randint(6, 12), random.randint(0, 59)) if rubric_details and i % 3 == 0 else (random.randint(2, 8), random.randint(0, 59))
         pass_count = random.randint(1, 3) if not rubric_details else sum(1 for v in rubric_details.values() if isinstance(v, dict) and v.get("status") == "Pass")
         fail_count = random.randint(0, 2) if not rubric_details else sum(1 for v in rubric_details.values() if isinstance(v, dict) and v.get("status") == "Fail")
         out.append({
@@ -9798,8 +9811,9 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("###  Rubric Code Filters")
 
 # Collect all rubric codes (both pass and fail)
+# Demo mode: keep sidebar filter empty (fake rubrics only in Rubric Reference)
 all_rubric_codes = []
-if "Rubric Details" in meta_df.columns:
+if "Rubric Details" in meta_df.columns and not (is_anonymous_user and st.session_state.get("_demo_mode")):
     for idx, row in meta_df.iterrows():
         rubric_details = row.get("Rubric Details", {})
         if isinstance(rubric_details, dict):
@@ -9809,34 +9823,34 @@ if "Rubric Details" in meta_df.columns:
 
     all_rubric_codes.sort()
 
-    if all_rubric_codes:
-        rubric_filter_type = st.sidebar.radio(
+if all_rubric_codes:
+    rubric_filter_type = st.sidebar.radio(
             "Filter Type",
             options=["Any Status", "Failed Only", "Passed Only"],
             index=0,
             horizontal=True,
-        )
+    )
 
-        selected_rubric_codes = st.sidebar.multiselect(
+    selected_rubric_codes = st.sidebar.multiselect(
             f"Select Rubric Codes ({rubric_filter_type})",
             options=all_rubric_codes,
             default=st.session_state.selected_rubric_codes
             if st.session_state.selected_rubric_codes
             else [],
             help="Show calls that match these rubric codes",
-        )
-        st.session_state.selected_rubric_codes = selected_rubric_codes
-        st.session_state.rubric_filter_type = rubric_filter_type
+    )
+    st.session_state.selected_rubric_codes = selected_rubric_codes
+    st.session_state.rubric_filter_type = rubric_filter_type
 
-        # Also collect failed codes for backward compatibility
-        failed_rubric_codes = [code for code in all_rubric_codes]
-        selected_failed_codes = (
-            selected_rubric_codes if rubric_filter_type == "Failed Only" else []
-        )
-    else:
-        selected_rubric_codes = []
-        selected_failed_codes = []
-        rubric_filter_type = "Any Status"
+    # Also collect failed codes for backward compatibility
+    failed_rubric_codes = [code for code in all_rubric_codes]
+    selected_failed_codes = (
+        selected_rubric_codes if rubric_filter_type == "Failed Only" else []
+    )
+else:
+    selected_rubric_codes = []
+    selected_failed_codes = []
+    rubric_filter_type = "Any Status"
 
 # Day of Week and Time of Day filters (within Date Range section)
 st.sidebar.markdown("---")
