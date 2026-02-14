@@ -7802,13 +7802,19 @@ else:
 
 
 def _get_demo_samsung_data():
-    """Return minimal hardcoded Samsung customer support demo data. Memory-efficient; no S3/disk."""
-    # Use Feb 2026 to match default month selector (month_options: Feb 2026 -> July 2025)
-    base_date = datetime(2026, 2, 10)
-    # 1 detailed call + 6 minimal placeholders
+    """Return demo Samsung customer support data: 1 detailed call + 519 BS rows for charts/leaderboard."""
+    import random
+
+    random.seed(42)
+    agents = ["Samsung Support Agent 1", "Samsung Support Agent 2", "Samsung Support Agent 3"]
+    reasons = ["Warranty inquiry", "Order status", "Screen repair", "Refund request", "Device setup"]
+    outcomes = ["Resolved", "Escalated", "Resolved", "Pending", "Resolved"]
+    labels = ["Positive", "Positive", "Neutral", "Negative", "Positive"]
+
+    # 1 detailed example call
     detailed = {
         "call_id": "20260210_143022_SAMSUNG-DEMO-001",
-        "call_date": base_date,
+        "call_date": datetime(2026, 2, 10),
         "date_raw": "02102026",
         "time": "14:30",
         "agent": "Samsung Support Agent 1",
@@ -7826,18 +7832,33 @@ def _get_demo_samsung_data():
         "rubric_pass_count": 1,
         "rubric_fail_count": 1,
     }
-    minimal = [
-        {"call_id": f"20260210_12000{i}_SAMSUNG-DEMO-00{i+2}", "call_date": base_date, "agent": "Samsung Support Agent 1", "qa_score": 78.0, "label": "Positive", "reason": "Order status", "outcome": "Resolved", "summary": "Order tracking inquiry.", "speaking_time_per_speaker": {"total": "3:15"}, "rubric_details": {}, "rubric_pass_count": 2, "rubric_fail_count": 0}
-        for i in range(2, 8)
-    ]
-    for i, m in enumerate(minimal):
-        m.setdefault("date_raw", "02102026")
-        m.setdefault("time", "12:00")
-        m.setdefault("company", "Samsung")
-        m.setdefault("strengths", "")
-        m.setdefault("challenges", "")
-        m.setdefault("coaching_suggestions", [])
-    return [detailed] + minimal
+
+    out = [detailed]
+    base = datetime(2026, 2, 1).date()
+    for i in range(519):
+        d = base + timedelta(days=random.randint(0, 27))
+        m, s = random.randint(2, 8), random.randint(0, 59)
+        out.append({
+            "call_id": f"202602{d.day:02d}_{100000 + i}_SAMSUNG-DEMO",
+            "call_date": datetime(d.year, d.month, d.day, random.randint(8, 18), random.randint(0, 59)),
+            "date_raw": f"{d.month:02d}{d.day:02d}{d.year}",
+            "time": f"{random.randint(9, 17):02d}:{random.randint(0, 59):02d}",
+            "agent": random.choice(agents),
+            "company": "Samsung",
+            "qa_score": round(random.uniform(55, 95), 1),
+            "label": random.choice(labels),
+            "reason": random.choice(reasons),
+            "outcome": random.choice(outcomes),
+            "summary": f"Brief support call.",
+            "strengths": "",
+            "challenges": "",
+            "coaching_suggestions": [],
+            "speaking_time_per_speaker": {"total": f"{m}:{s:02d}"},
+            "rubric_details": {},
+            "rubric_pass_count": random.randint(1, 3),
+            "rubric_fail_count": random.randint(0, 2),
+        })
+    return out
 
 
 # Now load the actual data
