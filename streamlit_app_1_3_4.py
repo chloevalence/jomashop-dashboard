@@ -6745,7 +6745,7 @@ st.sidebar.success(f"Welcome, {current_name} 👋")
 
 # Show view mode
 if is_anonymous_user:
-    st.sidebar.info(" Anonymous View: De-identified Data")
+    st.sidebar.info(" Demo View: Samsung Customer Support")
 elif user_agent_id:
     st.sidebar.info(f"Agent View: {user_agent_id}")
 elif is_regular_admin():
@@ -7696,9 +7696,10 @@ else:
 # Only test S3 connection AFTER user is logged in (moved from before login)
 status_text = st.empty()
 
-# Check if data is already loaded - skip S3 test if so
+# Check if data is already loaded - skip S3 test if so (or anonymous/demo user)
 data_already_loaded = (
-    "merged_calls" in st.session_state
+    is_anonymous_user
+    or "merged_calls" in st.session_state
     or st.session_state.get("_s3_cache_result") is not None
     or st.session_state.get("_data_load_in_progress", False)
 )
@@ -7799,6 +7800,45 @@ else:
 # Always load all files - caching handles performance
 # First load will process all CSV files, then cached indefinitely for instant access
 
+
+def _get_demo_samsung_data():
+    """Return minimal hardcoded Samsung customer support demo data. Memory-efficient; no S3/disk."""
+    base_date = datetime(2025, 2, 10)
+    # 1 detailed call + 6 minimal placeholders
+    detailed = {
+        "call_id": "20250210_143022_SAMSUNG-DEMO-001",
+        "call_date": base_date,
+        "date_raw": "02102025",
+        "time": "14:30",
+        "agent": "Samsung Support Agent 1",
+        "company": "Samsung",
+        "qa_score": 85.0,
+        "label": "Positive",
+        "reason": "Warranty inquiry",
+        "outcome": "Resolved",
+        "summary": "Customer called regarding Galaxy S24 screen crack. Verified purchase date and warranty status. Provided warranty claim process. Customer satisfied.",
+        "strengths": "Clear explanation of warranty terms.",
+        "challenges": "Customer initially frustrated.",
+        "coaching_suggestions": [],
+        "speaking_time_per_speaker": {"total": "5:30"},
+        "rubric_details": {"1.1.0": {"status": "Pass", "note": ""}, "1.2.0": {"status": "Fail", "note": "Could have acknowledged frustration sooner"}},
+        "rubric_pass_count": 1,
+        "rubric_fail_count": 1,
+    }
+    minimal = [
+        {"call_id": f"20250210_12000{i}_SAMSUNG-DEMO-00{i+2}", "call_date": base_date, "agent": "Samsung Support Agent 1", "qa_score": 78.0, "label": "Positive", "reason": "Order status", "outcome": "Resolved", "summary": "Order tracking inquiry.", "speaking_time_per_speaker": {"total": "3:15"}, "rubric_details": {}, "rubric_pass_count": 2, "rubric_fail_count": 0}
+        for i in range(2, 8)
+    ]
+    for i, m in enumerate(minimal):
+        m.setdefault("date_raw", "02102025")
+        m.setdefault("time", "12:00")
+        m.setdefault("company", "Samsung")
+        m.setdefault("strengths", "")
+        m.setdefault("challenges", "")
+        m.setdefault("coaching_suggestions", [])
+    return [detailed] + minimal
+
+
 # Now load the actual data
 logger.debug("Entering data loading section...")
 # Initialize call_data and errors to prevent undefined variable errors
@@ -7807,473 +7847,478 @@ errors = []
 # Initialize meta_df to prevent NameError
 meta_df = pd.DataFrame()
 try:
-    # Loading message is now handled by cycling messages in the loading section below
-    # status_text.text(" Loading CSV files from S3...")  # Removed - using cycling messages instead
-    logger.debug("Status text updated, starting timer...")
-
     t0 = time.time()
-    was_processing = False  # Track if we actually processed files
-    logger.debug(f"Timer started at {t0}")
-
-    # Check if we have merged data from smart refresh
-    logger.debug("Checking for merged calls in session state...")
-    if "merged_calls" in st.session_state:
-        logger.info("Found merged calls in session state, using cached data")
-        # Use merged data from smart refresh
-        call_data = st.session_state["merged_calls"]
-        errors = st.session_state.get("merged_errors", [])
-        # Clear the temporary session state
-        del st.session_state["merged_calls"]
-        if "merged_errors" in st.session_state:
-            del st.session_state["merged_errors"]
-        # CRITICAL: Apply 30-day filter to prevent memory issues
-        # Skip when: _load_all_data_for_date_range or _requested_date_range (monthly—already scoped)
-        if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
-            if call_data and MAX_DAYS_TO_LOAD is not None:
-                original_count = len(call_data)
-                call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
-                filtered_count = len(call_data)
-                if filtered_count < original_count:
-                    logger.info(
-                        f"Filtered merged calls from {original_count} to {filtered_count} calls "
-                        f"(last {MAX_DAYS_TO_LOAD} days only)"
-                    )
-        # Note: Disk cache already has the merged data from refresh, Streamlit cache will update on next access
-        elapsed = time.time() - t0
+    if is_anonymous_user:
+        call_data = _get_demo_samsung_data()
+        errors = []
+        st.session_state["_demo_mode"] = True
         status_text.empty()
-        logger.info(f"Merged data loaded in {elapsed:.2f} seconds")
+        logger.info("Demo mode: loaded Samsung sample data")
     else:
-        # Check if refresh is in progress - skip main data loading to prevent conflicts
-        if st.session_state.get("refresh_in_progress", False):
-            logger.info(
-                " Refresh in progress - skipping main data load to prevent conflicts"
-            )
-            # Use disk cache if available, but don't trigger a new load
-            try:
-                disk_result = load_cached_data_from_disk()
-                # CRITICAL FIX: Check if disk_result is None before accessing its elements
-                if disk_result and disk_result[0] and len(disk_result[0]) > 0:
-                    call_data = disk_result[0]
-                    # CRITICAL FIX: Check if disk_result is None before accessing disk_result[1]
-                    errors = (
-                        disk_result[1]
-                        if (disk_result and disk_result[1] is not None)
-                        else []
-                    )
-                    # CRITICAL: Apply 30-day filter to prevent memory issues
-                    # Skip when: _load_all_data_for_date_range or _requested_date_range (monthly)
-                    if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
-                        if call_data and MAX_DAYS_TO_LOAD is not None:
-                            original_count = len(call_data)
-                            call_data = filter_calls_by_date(
-                                call_data, MAX_DAYS_TO_LOAD
-                            )
-                            filtered_count = len(call_data)
-                            if filtered_count < original_count:
-                                logger.info(
-                                    f"Filtered disk cache from {original_count} to {filtered_count} calls "
-                                    f"(last {MAX_DAYS_TO_LOAD} days only)"
-                                )
-                    logger.info(
-                        f" Using disk cache during refresh: {len(call_data)} calls"
-                    )
-                else:
-                    call_data = []
-                    errors = []
-                    logger.info(
-                        " No disk cache available during refresh - will load after refresh completes"
-                    )
-            except Exception as e:
-                logger.warning(f"Could not load disk cache during refresh: {e}")
-                call_data = []
-                errors = []
+        # Loading message is now handled by cycling messages in the loading section below
+        logger.debug("Status text updated, starting timer...")
+        was_processing = False  # Track if we actually processed files
+        logger.debug(f"Timer started at {t0}")
+
+        # Check if we have merged data from smart refresh
+        logger.debug("Checking for merged calls in session state...")
+        if "merged_calls" in st.session_state:
+            logger.info("Found merged calls in session state, using cached data")
+            # Use merged data from smart refresh
+            call_data = st.session_state["merged_calls"]
+            errors = st.session_state.get("merged_errors", [])
+            # Clear the temporary session state
+            del st.session_state["merged_calls"]
+            if "merged_errors" in st.session_state:
+                del st.session_state["merged_errors"]
+            # CRITICAL: Apply 30-day filter to prevent memory issues
+            # Skip when: _load_all_data_for_date_range or _requested_date_range (monthly—already scoped)
+            if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
+                if call_data and MAX_DAYS_TO_LOAD is not None:
+                    original_count = len(call_data)
+                    call_data = filter_calls_by_date(call_data, MAX_DAYS_TO_LOAD)
+                    filtered_count = len(call_data)
+                    if filtered_count < original_count:
+                        logger.info(
+                            f"Filtered merged calls from {original_count} to {filtered_count} calls "
+                            f"(last {MAX_DAYS_TO_LOAD} days only)"
+                        )
+            # Note: Disk cache already has the merged data from refresh, Streamlit cache will update on next access
             elapsed = time.time() - t0
             status_text.empty()
+            logger.info(f"Merged data loaded in {elapsed:.2f} seconds")
         else:
-            logger.debug(
-                "No merged calls found, proceeding with normal load from cache or S3"
-            )
-            # Check if data is already loaded and not stale - skip reload if so
-            # Only use cached data if it's substantial (at least 100 calls) to avoid using stale/partial data
-            # BUT: Skip only when we need to load a different month (not when cache already matches)
-            requested_range = st.session_state.get("_requested_date_range", None)
-            has_matching_cache = False
-            if "_s3_cache_result" in st.session_state:
-                cr = st.session_state["_s3_cache_result"]
-                cd = cr[0] if isinstance(cr, tuple) and len(cr) > 0 else cr
-                if cd and len(cd) >= 100:
-                    if requested_range is None:
-                        has_matching_cache = True
-                    else:
-                        try:
-                            # Use min/max date in cache so we only match when cache is exclusively that month
-                            req_month = (requested_range[0].year, requested_range[0].month)
-                            min_date = None
-                            max_date = None
-                            for call in cd:
-                                for date_field in ["Call Date", "call_date", "date"]:
-                                    if date_field not in call or not call[date_field]:
-                                        continue
-                                    try:
-                                        dv = call[date_field]
-                                        if isinstance(dv, str):
-                                            dv = datetime.strptime(
-                                                dv.split()[0] if dv else "1970-01-01",
-                                                "%Y-%m-%d",
-                                            )
-                                        if hasattr(dv, "year"):
-                                            d = dv.date() if hasattr(dv, "date") else dv
-                                            if min_date is None or d < min_date:
-                                                min_date = d
-                                            if max_date is None or d > max_date:
-                                                max_date = d
-                                        break
-                                    except Exception:
-                                        continue
-                            if (
-                                requested_range
-                                and len(requested_range) >= 1
-                                and requested_range[0] is not None
-                                and hasattr(requested_range[0], "year")
-                                and min_date is not None
-                                and max_date is not None
-                                and (min_date.year, min_date.month) == req_month
-                                and (max_date.year, max_date.month) == req_month
-                            ):
-                                has_matching_cache = True
-                        except Exception:
-                            pass
-            should_skip_session_cache = (
-                st.session_state.get("_load_all_data_for_date_range", False)
-                or (requested_range is not None and not has_matching_cache)
-            )
-
-            if should_skip_session_cache:
+            # Check if refresh is in progress - skip main data loading to prevent conflicts
+            if st.session_state.get("refresh_in_progress", False):
                 logger.info(
-                    f"Skipping session cache - need to load data for requested date range: {requested_range}"
+                    " Refresh in progress - skipping main data load to prevent conflicts"
                 )
-                # Clear session cache to ensure we load fresh data
-                if "_s3_cache_result" in st.session_state:
-                    del st.session_state["_s3_cache_result"]
-                if "_s3_cache_timestamp" in st.session_state:
-                    del st.session_state["_s3_cache_timestamp"]
-
-            if (
-                not should_skip_session_cache
-                and "_s3_cache_result" in st.session_state
-                and st.session_state["_s3_cache_result"] is not None
-                and not st.session_state.get("reload_all_triggered", False)
-                and not st.session_state.get("_data_load_in_progress", False)
-            ):
-                logger.debug(
-                    "Data already loaded in session state, checking cached result"
-                )
-                cached_result = st.session_state["_s3_cache_result"]
-                # CRITICAL FIX: Unpack tuple before checking length
-                # Handle both tuple (data, errors) and just data formats for backward compatibility
-                if isinstance(cached_result, tuple):
-                    cached_data, cached_errors = cached_result
-                else:
-                    cached_data = cached_result
-                    cached_errors = st.session_state.get("_last_load_errors", [])
-
-                # Only use cached data if it's substantial (at least 100 calls)
-                # This prevents using stale/partial data from previous sessions
-                if cached_data and len(cached_data) >= 100:
-                    call_data = cached_data
-                    errors = cached_errors
-                    # CRITICAL: Apply 30-day filter to prevent memory issues
-                    # Unless user has requested a specific date range that requires all data
-                    if (
-                        not st.session_state.get("_load_all_data_for_date_range", False)
-                        and not st.session_state.get("_requested_date_range")
-                    ):
-                        if call_data and MAX_DAYS_TO_LOAD is not None:
-                            original_count = len(call_data)
-                            call_data = filter_calls_by_date(
-                                call_data, MAX_DAYS_TO_LOAD
-                            )
-                            filtered_count = len(call_data)
-                            if filtered_count < original_count:
-                                logger.info(
-                                    f"Filtered session cache from {original_count} to {filtered_count} calls "
-                                    f"(last {MAX_DAYS_TO_LOAD} days only)"
+                # Use disk cache if available, but don't trigger a new load
+                try:
+                    disk_result = load_cached_data_from_disk()
+                    # CRITICAL FIX: Check if disk_result is None before accessing its elements
+                    if disk_result and disk_result[0] and len(disk_result[0]) > 0:
+                        call_data = disk_result[0]
+                        # CRITICAL FIX: Check if disk_result is None before accessing disk_result[1]
+                        errors = (
+                            disk_result[1]
+                            if (disk_result and disk_result[1] is not None)
+                            else []
+                        )
+                        # CRITICAL: Apply 30-day filter to prevent memory issues
+                        # Skip when: _load_all_data_for_date_range or _requested_date_range (monthly)
+                        if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
+                            if call_data and MAX_DAYS_TO_LOAD is not None:
+                                original_count = len(call_data)
+                                call_data = filter_calls_by_date(
+                                    call_data, MAX_DAYS_TO_LOAD
                                 )
-                    elapsed = time.time() - t0
-                    status_text.empty()
-                    log_memory_usage(
-                        f"Using cached data from session ({len(call_data)} calls)"
-                    )
+                                filtered_count = len(call_data)
+                                if filtered_count < original_count:
+                                    logger.info(
+                                        f"Filtered disk cache from {original_count} to {filtered_count} calls "
+                                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                                    )
+                        logger.info(
+                            f" Using disk cache during refresh: {len(call_data)} calls"
+                        )
+                    else:
+                        call_data = []
+                        errors = []
+                        logger.info(
+                            " No disk cache available during refresh - will load after refresh completes"
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not load disk cache during refresh: {e}")
+                    call_data = []
+                    errors = []
+                elapsed = time.time() - t0
+                status_text.empty()
+            else:
+                logger.debug(
+                    "No merged calls found, proceeding with normal load from cache or S3"
+                )
+                # Check if data is already loaded and not stale - skip reload if so
+                # Only use cached data if it's substantial (at least 100 calls) to avoid using stale/partial data
+                # BUT: Skip only when we need to load a different month (not when cache already matches)
+                requested_range = st.session_state.get("_requested_date_range", None)
+                has_matching_cache = False
+                if "_s3_cache_result" in st.session_state:
+                    cr = st.session_state["_s3_cache_result"]
+                    cd = cr[0] if isinstance(cr, tuple) and len(cr) > 0 else cr
+                    if cd and len(cd) >= 100:
+                        if requested_range is None:
+                            has_matching_cache = True
+                        else:
+                            try:
+                                # Use min/max date in cache so we only match when cache is exclusively that month
+                                req_month = (requested_range[0].year, requested_range[0].month)
+                                min_date = None
+                                max_date = None
+                                for call in cd:
+                                    for date_field in ["Call Date", "call_date", "date"]:
+                                        if date_field not in call or not call[date_field]:
+                                            continue
+                                        try:
+                                            dv = call[date_field]
+                                            if isinstance(dv, str):
+                                                dv = datetime.strptime(
+                                                    dv.split()[0] if dv else "1970-01-01",
+                                                    "%Y-%m-%d",
+                                                )
+                                            if hasattr(dv, "year"):
+                                                d = dv.date() if hasattr(dv, "date") else dv
+                                                if min_date is None or d < min_date:
+                                                    min_date = d
+                                                if max_date is None or d > max_date:
+                                                    max_date = d
+                                            break
+                                        except Exception:
+                                            continue
+                                if (
+                                    requested_range
+                                    and len(requested_range) >= 1
+                                    and requested_range[0] is not None
+                                    and hasattr(requested_range[0], "year")
+                                    and min_date is not None
+                                    and max_date is not None
+                                    and (min_date.year, min_date.month) == req_month
+                                    and (max_date.year, max_date.month) == req_month
+                                ):
+                                    has_matching_cache = True
+                            except Exception:
+                                pass
+                should_skip_session_cache = (
+                    st.session_state.get("_load_all_data_for_date_range", False)
+                    or (requested_range is not None and not has_matching_cache)
+                )
+
+                if should_skip_session_cache:
                     logger.info(
-                        f"Using cached data from session: {len(call_data)} calls"
+                        f"Skipping session cache - need to load data for requested date range: {requested_range}"
                     )
-                else:
-                    # Cached result is too small or empty, proceed with normal load
-                    logger.debug(
-                        f"Cached result is too small ({len(cached_data) if cached_data else 0} calls), proceeding with normal load"
-                    )
-                    # Clear the invalid cache and proceed to normal load
+                    # Clear session cache to ensure we load fresh data
                     if "_s3_cache_result" in st.session_state:
                         del st.session_state["_s3_cache_result"]
-            else:
-                # Normal load from cache or S3
-                # Load all files - first load will process all CSV files, then cached indefinitely for instant access
-                # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
-                logger.debug("Setting up progress tracking...")
+                    if "_s3_cache_timestamp" in st.session_state:
+                        del st.session_state["_s3_cache_timestamp"]
 
-                # Initialize progress tracking
-                if "csv_processing_progress" not in st.session_state:
-                    st.session_state.csv_processing_progress = {
-                        "processed": 0,
-                        "total": 0,
-                        "errors": 0,
-                    }
-                    logger.debug("Initialized new progress tracking in session state")
-                else:
-                    logger.debug("Using existing progress tracking from session state")
+                if (
+                    not should_skip_session_cache
+                    and "_s3_cache_result" in st.session_state
+                    and st.session_state["_s3_cache_result"] is not None
+                    and not st.session_state.get("reload_all_triggered", False)
+                    and not st.session_state.get("_data_load_in_progress", False)
+                ):
+                    logger.debug(
+                        "Data already loaded in session state, checking cached result"
+                    )
+                    cached_result = st.session_state["_s3_cache_result"]
+                    # CRITICAL FIX: Unpack tuple before checking length
+                    # Handle both tuple (data, errors) and just data formats for backward compatibility
+                    if isinstance(cached_result, tuple):
+                        cached_data, cached_errors = cached_result
+                    else:
+                        cached_data = cached_result
+                        cached_errors = st.session_state.get("_last_load_errors", [])
 
-                # Create progress bar placeholder
-                progress_placeholder = st.empty()
-                progress_bar = None
-                logger.debug("Progress placeholder created")
-
-                # Show progress if we're processing files
-                def update_progress():
-                    if st.session_state.csv_processing_progress["total"] > 0:
-                        processed = st.session_state.csv_processing_progress[
-                            "processed"
-                        ]
-                        total = st.session_state.csv_processing_progress["total"]
-                        errors = st.session_state.csv_processing_progress["errors"]
-                        progress = processed / total if total > 0 else 0
-                        progress_placeholder.progress(
-                            progress,
-                            text=f"Processing CSV files: {processed}/{total} ({errors} errors)",
+                    # Only use cached data if it's substantial (at least 100 calls)
+                    # This prevents using stale/partial data from previous sessions
+                    if cached_data and len(cached_data) >= 100:
+                        call_data = cached_data
+                        errors = cached_errors
+                        # CRITICAL: Apply 30-day filter to prevent memory issues
+                        # Unless user has requested a specific date range that requires all data
+                        if (
+                            not st.session_state.get("_load_all_data_for_date_range", False)
+                            and not st.session_state.get("_requested_date_range")
+                        ):
+                            if call_data and MAX_DAYS_TO_LOAD is not None:
+                                original_count = len(call_data)
+                                call_data = filter_calls_by_date(
+                                    call_data, MAX_DAYS_TO_LOAD
+                                )
+                                filtered_count = len(call_data)
+                                if filtered_count < original_count:
+                                    logger.info(
+                                        f"Filtered session cache from {original_count} to {filtered_count} calls "
+                                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                                    )
+                        elapsed = time.time() - t0
+                        status_text.empty()
+                        log_memory_usage(
+                            f"Using cached data from session ({len(call_data)} calls)"
                         )
+                        logger.info(
+                            f"Using cached data from session: {len(call_data)} calls"
+                        )
+                    else:
+                        # Cached result is too small or empty, proceed with normal load
+                        logger.debug(
+                            f"Cached result is too small ({len(cached_data) if cached_data else 0} calls), proceeding with normal load"
+                        )
+                        # Clear the invalid cache and proceed to normal load
+                        if "_s3_cache_result" in st.session_state:
+                            del st.session_state["_s3_cache_result"]
+                else:
+                    # Normal load from cache or S3
+                    # Load all files - first load will process all CSV files, then cached indefinitely for instant access
+                    # After first load, data is CACHED indefinitely - subsequent loads will be INSTANT until you manually refresh
+                    logger.debug("Setting up progress tracking...")
 
-                # Load data (this will trigger processing if not cached)
-                # SIMPLE approach: Just call the cached function. Streamlit's cache handles everything.
-                # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
-                logger.debug(
-                    "Loading data - Streamlit cache will handle it automatically"
-                )
+                    # Initialize progress tracking
+                    if "csv_processing_progress" not in st.session_state:
+                        st.session_state.csv_processing_progress = {
+                            "processed": 0,
+                            "total": 0,
+                            "errors": 0,
+                        }
+                        logger.debug("Initialized new progress tracking in session state")
+                    else:
+                        logger.debug("Using existing progress tracking from session state")
 
-                try:
-                    # Add timeout wrapper
-                    def timeout_handler(signum, frame):
-                        raise TimeoutError("Data loading timed out after 5 minutes")
+                    # Create progress bar placeholder
+                    progress_placeholder = st.empty()
+                    progress_bar = None
+                    logger.debug("Progress placeholder created")
 
-                    # Cycling loading messages
-                    loading_messages = [
-                        "Importing a small mountain of calls…",
-                        "Scoring the customer's vibe…",
-                        "Annotating the chaos…",
-                        "Crunching the numbers…",
-                    ]
+                    # Show progress if we're processing files
+                    def update_progress():
+                        if st.session_state.csv_processing_progress["total"] > 0:
+                            processed = st.session_state.csv_processing_progress[
+                                "processed"
+                            ]
+                            total = st.session_state.csv_processing_progress["total"]
+                            errors = st.session_state.csv_processing_progress["errors"]
+                            progress = processed / total if total > 0 else 0
+                            progress_placeholder.progress(
+                                progress,
+                                text=f"Processing CSV files: {processed}/{total} ({errors} errors)",
+                            )
 
-                    # Use cache_version to force cache refresh when refresh completes
-                    cache_version = st.session_state.get("_cache_version", 0)
+                    # Load data (this will trigger processing if not cached)
+                    # SIMPLE approach: Just call the cached function. Streamlit's cache handles everything.
+                    # If cache exists, it's instant. If not, it loads from S3 (only happens once, then cached).
+                    logger.debug(
+                        "Loading data - Streamlit cache will handle it automatically"
+                    )
 
-                    # Set up threading for loading with message updates
-                    result_queue = queue.Queue()
-                    exception_queue = queue.Queue()
-                    stop_flag = threading.Event()
+                    try:
+                        # Add timeout wrapper
+                        def timeout_handler(signum, frame):
+                            raise TimeoutError("Data loading timed out after 5 minutes")
 
-                    def load_data_thread():
-                        """Load data in a separate thread"""
+                        # Cycling loading messages
+                        loading_messages = [
+                            "Importing a small mountain of calls…",
+                            "Scoring the customer's vibe…",
+                            "Annotating the chaos…",
+                            "Crunching the numbers…",
+                        ]
+
+                        # Use cache_version to force cache refresh when refresh completes
+                        cache_version = st.session_state.get("_cache_version", 0)
+
+                        # Set up threading for loading with message updates
+                        result_queue = queue.Queue()
+                        exception_queue = queue.Queue()
+                        stop_flag = threading.Event()
+
+                        def load_data_thread():
+                            """Load data in a separate thread"""
+                            try:
+                                result = load_all_calls_cached(
+                                    cache_version=cache_version,
+                                    requested_range=requested_range,
+                                )
+                                result_queue.put(result)
+                            except Exception as e:
+                                exception_queue.put(e)
+
+                        # Start loading thread
+                        load_thread = threading.Thread(target=load_data_thread, daemon=True)
+                        load_thread.start()
+
+                        # Display cycling messages while loading using status_text (same location as old messages)
+                        # Cycle messages in main thread (Streamlit requires main thread context)
+                        message_idx = 0
+                        start_time = time.time()
+                        last_update_time = start_time
+
+                        while load_thread.is_alive():
+                            # Update message every 2 seconds
+                            current_time = time.time()
+                            if current_time - last_update_time >= 2.0:
+                                message_idx = (message_idx + 1) % len(loading_messages)
+                                if status_text is not None:
+                                    status_text.text(f" {loading_messages[message_idx]}")
+                                last_update_time = current_time
+
+                            time.sleep(0.3)  # Check every 0.3 seconds
+
+                        # Wait for load thread to finish
+                        load_thread.join(timeout=1.0)
+
+                        # Check for exceptions
                         try:
-                            result = load_all_calls_cached(
+                            exception = exception_queue.get_nowait()
+                            raise exception
+                        except queue.Empty:
+                            pass
+
+                        # Get result
+                        try:
+                            call_data, errors = result_queue.get(timeout=0.1)
+                        except queue.Empty:
+                            # Fallback: load directly if thread failed
+                            call_data, errors = load_all_calls_cached(
                                 cache_version=cache_version,
                                 requested_range=requested_range,
                             )
-                            result_queue.put(result)
-                        except Exception as e:
-                            exception_queue.put(e)
-
-                    # Start loading thread
-                    load_thread = threading.Thread(target=load_data_thread, daemon=True)
-                    load_thread.start()
-
-                    # Display cycling messages while loading using status_text (same location as old messages)
-                    # Cycle messages in main thread (Streamlit requires main thread context)
-                    message_idx = 0
-                    start_time = time.time()
-                    last_update_time = start_time
-
-                    while load_thread.is_alive():
-                        # Update message every 2 seconds
-                        current_time = time.time()
-                        if current_time - last_update_time >= 2.0:
-                            message_idx = (message_idx + 1) % len(loading_messages)
-                            if status_text is not None:
-                                status_text.text(f" {loading_messages[message_idx]}")
-                            last_update_time = current_time
-
-                        time.sleep(0.3)  # Check every 0.3 seconds
-
-                    # Wait for load thread to finish
-                    load_thread.join(timeout=1.0)
-
-                    # Check for exceptions
-                    try:
-                        exception = exception_queue.get_nowait()
-                        raise exception
-                    except queue.Empty:
-                        pass
-
-                    # Get result
-                    try:
-                        call_data, errors = result_queue.get(timeout=0.1)
-                    except queue.Empty:
-                        # Fallback: load directly if thread failed
-                        call_data, errors = load_all_calls_cached(
-                            cache_version=cache_version,
-                            requested_range=requested_range,
-                        )
-                    # Normalize in case loader returned None
-                    call_data = call_data if isinstance(call_data, list) else []
-                    errors = errors if isinstance(errors, list) else []
-                    # CRITICAL: Apply 30-day filter to prevent memory issues
-                    # Skip when: (a) _load_all_data_for_date_range, or (b) _requested_date_range (monthly—already scoped)
-                    if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
-                        if call_data and MAX_DAYS_TO_LOAD is not None:
-                            original_count = len(call_data)
-                            call_data = filter_calls_by_date(
-                                call_data, MAX_DAYS_TO_LOAD
-                            )
-                            filtered_count = len(call_data)
-                            if filtered_count < original_count:
-                                logger.info(
-                                    f"Filtered loaded data from {original_count} to {filtered_count} calls "
-                                    f"(last {MAX_DAYS_TO_LOAD} days only)"
+                        # Normalize in case loader returned None
+                        call_data = call_data if isinstance(call_data, list) else []
+                        errors = errors if isinstance(errors, list) else []
+                        # CRITICAL: Apply 30-day filter to prevent memory issues
+                        # Skip when: (a) _load_all_data_for_date_range, or (b) _requested_date_range (monthly—already scoped)
+                        if not st.session_state.get("_load_all_data_for_date_range", False) and not st.session_state.get("_requested_date_range"):
+                            if call_data and MAX_DAYS_TO_LOAD is not None:
+                                original_count = len(call_data)
+                                call_data = filter_calls_by_date(
+                                    call_data, MAX_DAYS_TO_LOAD
                                 )
-                    # CRITICAL FIX: Store tuple (data, errors) instead of just data
-                    # Store data and errors in session state for reuse
-                    st.session_state["_s3_cache_result"] = (call_data, errors)
-                    st.session_state["_last_load_errors"] = errors
-                    if call_data:
-                        st.session_state["_s3_cache_timestamp"] = time.time()
-                    logger.info(
-                        f"Data loaded. Got {len(call_data) if call_data else 0} calls"
-                    )
-                    log_memory_usage(
-                        f"Data loading complete ({len(call_data) if call_data else 0} calls)"
-                    )
+                                filtered_count = len(call_data)
+                                if filtered_count < original_count:
+                                    logger.info(
+                                        f"Filtered loaded data from {original_count} to {filtered_count} calls "
+                                        f"(last {MAX_DAYS_TO_LOAD} days only)"
+                                    )
+                        # CRITICAL FIX: Store tuple (data, errors) instead of just data
+                        # Store data and errors in session state for reuse
+                        st.session_state["_s3_cache_result"] = (call_data, errors)
+                        st.session_state["_last_load_errors"] = errors
+                        if call_data:
+                            st.session_state["_s3_cache_timestamp"] = time.time()
+                        logger.info(
+                            f"Data loaded. Got {len(call_data) if call_data else 0} calls"
+                        )
+                        log_memory_usage(
+                            f"Data loading complete ({len(call_data) if call_data else 0} calls)"
+                        )
 
-                    # Clear loading messages
-                    if status_text is not None:
-                        status_text.empty()
-                except TimeoutError:
-                    logger.exception("Timeout during data loading")
-                    if status_text is not None:
-                        status_text.empty()
-                    st.error(" **Loading Timeout**")
-                    st.error(
-                        "The data loading is taking too long. This might be due to:"
-                    )
-                    st.error("1. Slow S3 connection")
-                    st.error("2. Large number of files to process")
-                    st.error("3. Network issues")
-                    st.info(" **Quick Fixes:**")
-                    st.info(
-                        "1. **Refresh the page** - if cache exists, it will load instantly"
-                    )
-                    st.info(
-                        "2. **Wait 2-3 minutes** and refresh - the cache may be building"
-                    )
-                    st.info("3. **Check your internet connection**")
-                    st.info(
-                        "4. If you're an admin, try the ' Reload ALL Data' button after refresh"
-                    )
-                    st.stop()
-                except Exception as e:
-                    logger.exception("Error during data loading")
-                    if status_text is not None:
-                        status_text.empty()
-                    st.error(" **Error Loading Data**")
-                    st.error(f"**Error:** {str(e)}")
-                    st.error("The app may be trying to load too many files at once.")
-                    st.info(" **Try this:**")
-                    st.info(
-                        "1. **Refresh the page** - if cache exists, it will load instantly"
-                    )
-                    st.info(
-                        "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
-                    )
-                    st.info("3. Wait a few minutes and refresh the page")
-                    st.info("4. Check the terminal/logs for detailed errors")
-                    with st.expander("Show full error details"):
-                        import traceback
+                        # Clear loading messages
+                        if status_text is not None:
+                            status_text.empty()
+                    except TimeoutError:
+                        logger.exception("Timeout during data loading")
+                        if status_text is not None:
+                            status_text.empty()
+                        st.error(" **Loading Timeout**")
+                        st.error(
+                            "The data loading is taking too long. This might be due to:"
+                        )
+                        st.error("1. Slow S3 connection")
+                        st.error("2. Large number of files to process")
+                        st.error("3. Network issues")
+                        st.info(" **Quick Fixes:**")
+                        st.info(
+                            "1. **Refresh the page** - if cache exists, it will load instantly"
+                        )
+                        st.info(
+                            "2. **Wait 2-3 minutes** and refresh - the cache may be building"
+                        )
+                        st.info("3. **Check your internet connection**")
+                        st.info(
+                            "4. If you're an admin, try the ' Reload ALL Data' button after refresh"
+                        )
+                        st.stop()
+                    except Exception as e:
+                        logger.exception("Error during data loading")
+                        if status_text is not None:
+                            status_text.empty()
+                        st.error(" **Error Loading Data**")
+                        st.error(f"**Error:** {str(e)}")
+                        st.error("The app may be trying to load too many files at once.")
+                        st.info(" **Try this:**")
+                        st.info(
+                            "1. **Refresh the page** - if cache exists, it will load instantly"
+                        )
+                        st.info(
+                            "2. Clear the cache by clicking ' Reload ALL Data (Admin Only)' button (if you're an admin)"
+                        )
+                        st.info("3. Wait a few minutes and refresh the page")
+                        st.info("4. Check the terminal/logs for detailed errors")
+                        with st.expander("Show full error details"):
+                            import traceback
 
-                        st.code(traceback.format_exc())
-                    st.stop()
+                            st.code(traceback.format_exc())
+                        st.stop()
 
-        # Clear progress after loading (only if progress_placeholder was created)
-        was_processing = st.session_state.csv_processing_progress.get("total", 0) > 0
-        if was_processing and "progress_placeholder" in locals():
-            progress_placeholder.empty()
-            st.session_state.csv_processing_progress = {
-                "processed": 0,
-                "total": 0,
-                "errors": 0,
-                "processing_start_time": None,
-            }
+            # Clear progress after loading (only if progress_placeholder was created)
+            was_processing = st.session_state.csv_processing_progress.get("total", 0) > 0
+            if was_processing and "progress_placeholder" in locals():
+                progress_placeholder.empty()
+                st.session_state.csv_processing_progress = {
+                    "processed": 0,
+                    "total": 0,
+                    "errors": 0,
+                    "processing_start_time": None,
+                }
 
-        elapsed = time.time() - t0
-        status_text.empty()
+            elapsed = time.time() - t0
+            status_text.empty()
 
-    # Check if we got valid data
-    logger.debug(
-        f"Checking call_data: type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}"
-    )
-    if not call_data and not errors:
-        status_text.empty()
+        # Check if we got valid data
+        logger.debug(
+            f"Checking call_data: type={type(call_data)}, len={len(call_data) if call_data else 0}, truthy={bool(call_data)}"
+        )
+        if not call_data and not errors:
+            status_text.empty()
         
-        # Check if user selected a specific month that has no data
-        requested_range = st.session_state.get("_requested_date_range", None)
-        if requested_range:
-            req_start, req_end = requested_range
-            now = datetime.now().date()
+            # Check if user selected a specific month that has no data
+            requested_range = st.session_state.get("_requested_date_range", None)
+            if requested_range:
+                req_start, req_end = requested_range
+                now = datetime.now().date()
             
-            # Determine the month name for display
-            month_name = req_start.strftime('%B %Y')
+                # Determine the month name for display
+                month_name = req_start.strftime('%B %Y')
             
-            # Check if the requested month is in the future
-            # req_start is the first day of the month, so if it's > now, the entire month is future
-            if req_start > now:
-                st.error(
-                    f"📅 **No Data Available for {month_name}**\n\n"
-                    f"⚠️ This month is in the future and doesn't have any call data yet.\n\n"
-                    f"**Please select a month that has data** (e.g., {now.strftime('%B %Y')} or earlier)."
-                )
-            elif req_end < now - timedelta(days=365):
-                # Very old month (more than 1 year ago)
-                st.warning(
-                    f"📅 **No Data Available for {month_name}**\n\n"
-                    f"⚠️ This month is very old and doesn't have any call data.\n\n"
-                    f"**Please select a more recent month** that has data."
-                )
+                # Check if the requested month is in the future
+                # req_start is the first day of the month, so if it's > now, the entire month is future
+                if req_start > now:
+                    st.error(
+                        f"📅 **No Data Available for {month_name}**\n\n"
+                        f"⚠️ This month is in the future and doesn't have any call data yet.\n\n"
+                        f"**Please select a month that has data** (e.g., {now.strftime('%B %Y')} or earlier)."
+                    )
+                elif req_end < now - timedelta(days=365):
+                    # Very old month (more than 1 year ago)
+                    st.warning(
+                        f"📅 **No Data Available for {month_name}**\n\n"
+                        f"⚠️ This month is very old and doesn't have any call data.\n\n"
+                        f"**Please select a more recent month** that has data."
+                    )
+                else:
+                    # Month should exist but doesn't (within reasonable time range)
+                    st.warning(
+                        f"📅 **No Data Available for {month_name}**\n\n"
+                        f"⚠️ This month doesn't have any call data in the cache.\n\n"
+                        f"**If you're an admin**, you can use 'Initialize Monthly Caches' to build monthly caches from legacy data.\n\n"
+                        f"**Otherwise**, please select a different month that has data."
+                    )
+                # Don't stop - allow date picker to render so user can select a different month
+                # Create empty DataFrame so rest of code can continue
+                call_data = []
+                meta_df = pd.DataFrame()
             else:
-                # Month should exist but doesn't (within reasonable time range)
+                # Generic case - no specific month requested (first load, etc.)
                 st.warning(
-                    f"📅 **No Data Available for {month_name}**\n\n"
-                    f"⚠️ This month doesn't have any call data in the cache.\n\n"
-                    f"**If you're an admin**, you can use 'Initialize Monthly Caches' to build monthly caches from legacy data.\n\n"
-                    f"**Otherwise**, please select a different month that has data."
+                    " No data loaded. This might be the first time loading, or there may be an issue."
                 )
-            # Don't stop - allow date picker to render so user can select a different month
-            # Create empty DataFrame so rest of code can continue
-            call_data = []
-            meta_df = pd.DataFrame()
-        else:
-            # Generic case - no specific month requested (first load, etc.)
-            st.warning(
-                " No data loaded. This might be the first time loading, or there may be an issue."
-            )
-            st.info(
-                " Try refreshing the page or clicking ' Reload ALL Data (Admin Only)' if you're an admin."
-            )
-            st.stop()
+                st.info(
+                    " Try refreshing the page or clicking ' Reload ALL Data (Admin Only)' if you're an admin."
+                )
+                st.stop()
 
     # Handle errors - could be a tuple (errors_list, info_message) or just errors
     if errors:
@@ -8944,9 +8989,8 @@ if "Agent" in meta_df.columns:
                 " Normalization will still work, but cache won't be updated until next save"
             )
 
-# Apply anonymization if user is anonymous
-# Create mappings from full dataset before any filtering
-if is_anonymous_user:
+# Apply anonymization if user is anonymous (skip when using demo data)
+if is_anonymous_user and not st.session_state.get("_demo_mode", False):
     import time
 
     anonymize_start = time.time()
@@ -10144,7 +10188,7 @@ if filtered_df.empty:
 if user_agent_id:
     st.title(f" My QA Performance Dashboard - {user_agent_id}")
 else:
-    st.title(" QA Rubric Dashboard")
+    st.title(" Samsung QA Dashboard" if is_anonymous_user else " Jomashop QA Dashboard")
 
 # Data Loading Note
 if MAX_DAYS_TO_LOAD is not None:
@@ -10920,7 +10964,9 @@ else:
 with st.expander("Call Reason & Outcome Analysis", expanded=False):
     st.subheader("Call Reason & Outcome Analysis")
     st.caption(
-        "Percentages for reasons and outcomes use denominator = calls with reason/outcome data only (excludes calls without data)."
+        "Each call has at most one reason and one outcome. Percentages = (count ÷ calls with recorded reason/outcome). "
+        "Calls without a recorded reason or outcome are excluded from the denominator. "
+        "Note: A call can have zero or one recorded reason/outcome."
     )
     if (
         "Reason" in filtered_df.columns
@@ -10962,8 +11008,8 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         if calls_with_reason > 0:
                             no_reason = total_filtered - calls_with_reason
                             st.caption(
-                                f"Percentages use denominator = calls with reason data only (n={calls_with_reason:,}). "
-                                f"{no_reason:,} calls have no reason data."
+                                f"Denominator = calls with recorded reason (n={calls_with_reason:,}). "
+                                f"{no_reason:,} calls have no reason data. Note: A call can have zero or one recorded reason."
                             )
 
                 with reason_col2:
@@ -10998,7 +11044,7 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             startangle=90,
                         )
                         ax_reason_pie.set_title(
-                            "Call Reasons Distribution\n(% of calls with reason data)"
+                            "Call Reasons Distribution\n(Percentages = reason count ÷ calls with recorded reason)"
                         )
                         ax_reason_pie.legend(
                             wedges,
@@ -11011,8 +11057,8 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         st_pyplot_safe(fig_reason_pie)
                         no_reason = total_filtered - calls_with_reason
                         st.caption(
-                            f"Percentages use denominator = calls with reason data only (n={calls_with_reason:,}). "
-                            f"{no_reason:,} calls have no reason data."
+                            f"Denominator = calls with recorded reason (n={calls_with_reason:,}). "
+                            f"{no_reason:,} calls have no reason data. Note: A call can have zero or one recorded reason."
                         )
 
                 # Trend over time
@@ -11109,8 +11155,8 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         if calls_with_outcome > 0:
                             no_outcome = total_filtered_outcome - calls_with_outcome
                             st.caption(
-                                f"Percentages use denominator = calls with outcome data only (n={calls_with_outcome:,}). "
-                                f"{no_outcome:,} calls have no outcome data."
+                                f"Denominator = calls with recorded outcome (n={calls_with_outcome:,}). "
+                                f"{no_outcome:,} calls have no outcome data. Note: A call can have zero or one recorded outcome."
                             )
 
                 with outcome_col2:
@@ -11148,7 +11194,7 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             startangle=90,
                         )
                         ax_outcome_pie.set_title(
-                            "Outcomes Distribution\n(% of calls with outcome data)"
+                            "Outcomes Distribution\n(Percentages = outcome count ÷ calls with recorded outcome)"
                         )
                         ax_outcome_pie.legend(
                             wedges,
@@ -11161,8 +11207,8 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         st_pyplot_safe(fig_outcome_pie)
                         no_outcome = total_filtered_outcome - calls_with_outcome
                         st.caption(
-                            f"Percentages use denominator = calls with outcome data only (n={calls_with_outcome:,}). "
-                            f"{no_outcome:,} calls have no outcome data."
+                            f"Denominator = calls with recorded outcome (n={calls_with_outcome:,}). "
+                            f"{no_outcome:,} calls have no outcome data. Note: A call can have zero or one recorded outcome."
                         )
 
                 # Trend over time
@@ -11225,6 +11271,10 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         st_pyplot_safe(fig_outcome_trend)
 
         with reason_tab3:
+            st.caption(
+                "A single call may reference multiple products. Percentages = (product mentions ÷ total product mentions). "
+                "Share of total product mentions, not share of calls. Percentages may sum to more than 100% if calculated against total calls."
+            )
             # Extract products from Summary, Reason, and Outcome fields
             if (
                 "Summary" in filtered_df.columns
@@ -12343,6 +12393,10 @@ with st.expander("QA Score Trends Over Time", expanded=False):
 # --- Rubric Code Analysis ---
 with st.expander("Rubric Code Analysis", expanded=False):
     st.subheader("Rubric Code Analysis")
+    st.caption(
+        "Fail = number of calls that failed this rubric item. Fail rate = (calls failing this item ÷ calls that had this item evaluated). "
+        "A single call may fail multiple rubric items."
+    )
     if "Rubric Details" in filtered_df.columns:
         # Collect all rubric code statistics
         code_stats = {}
