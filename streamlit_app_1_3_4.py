@@ -8638,27 +8638,28 @@ def extract_products_from_text(text):
         "grand seiko",
     ]
 
-    # Product categories
-    product_categories = [
-        "watch",
-        "watches",
-        "timepiece",
-        "timepieces",
-        "wristwatch",
-        "wristwatches",
-        "bracelet",
-        "bracelets",
-        "necklace",
-        "necklaces",
-        "ring",
-        "rings",
-        "earrings",
-        "pendant",
-        "pendants",
-        "jewelry",
-        "jewellery",
-        "accessories",
-    ]
+    # Product categories (singular/plural normalized to same display name)
+    PRODUCT_CATEGORY_NORMALIZE = {
+        "watch": "Watch",
+        "watches": "Watch",
+        "timepiece": "Timepiece",
+        "timepieces": "Timepiece",
+        "wristwatch": "Wristwatch",
+        "wristwatches": "Wristwatch",
+        "bracelet": "Bracelet",
+        "bracelets": "Bracelet",
+        "necklace": "Necklace",
+        "necklaces": "Necklace",
+        "ring": "Ring",
+        "rings": "Ring",
+        "earrings": "Earrings",
+        "pendant": "Pendant",
+        "pendants": "Pendant",
+        "jewelry": "Jewelry",
+        "jewellery": "Jewelry",
+        "accessories": "Accessories",
+    }
+    product_categories = list(PRODUCT_CATEGORY_NORMALIZE.keys())
 
     # Check for watch brands
     for brand in watch_brands:
@@ -8684,9 +8685,7 @@ def extract_products_from_text(text):
     # Check for product categories
     for category in product_categories:
         if category in text_lower:
-            category_normalized = (
-                category.title() if category != "jewellery" else "Jewelry"
-            )
+            category_normalized = PRODUCT_CATEGORY_NORMALIZE[category]
             if category_normalized not in products:
                 products.append(category_normalized)
 
@@ -9821,7 +9820,7 @@ alert_threshold = st.sidebar.slider(
     max_value=100.0,
     value=70.0,
     step=5.0,
-    help="Agents/calls below this score will be highlighted",
+    help="Agents/calls below this score will be highlighted. Passing = QA score ≥ 70%.",
 )
 
 # Apply preset filters
@@ -10607,6 +10606,7 @@ else:
 if not user_agent_id:
     # Admin view - show all agents
     st.subheader("Agent Leaderboard")
+    st.caption("Passing is defined as a QA score ≥ 70%.")
 
     # Ensure Agent column is normalized; bucket missing as Unknown Agent
     lb_df = filtered_df.copy()
@@ -10615,12 +10615,22 @@ if not user_agent_id:
         lb_df["Agent"] = lb_df["Agent"].fillna("Unknown Agent")
         lb_df.loc[lb_df["Agent"].astype(str).str.strip() == "", "Agent"] = "Unknown Agent"
 
+    # Use nunique(call_id) for true unique call counts so totals reconcile
     count_col = "Call ID" if "Call ID" in lb_df.columns else "call_id"
-    agent_performance = lb_df.groupby("Agent").agg(
-        Total_Calls=(count_col, "count"),
-        Avg_QA_Score=("QA Score", "mean"),
-        Avg_Call_Duration=("Call Duration (min)", "mean"),
-    ).reset_index()
+    if count_col not in lb_df.columns:
+        count_col = "call_id" if "call_id" in lb_df.columns else None
+    if count_col:
+        agent_performance = lb_df.groupby("Agent").agg(
+            Total_Calls=(count_col, "nunique"),
+            Avg_QA_Score=("QA Score", "mean"),
+            Avg_Call_Duration=("Call Duration (min)", "mean"),
+        ).reset_index()
+    else:
+        agent_performance = lb_df.groupby("Agent").agg(
+            Total_Calls=("QA Score", "count"),
+            Avg_QA_Score=("QA Score", "mean"),
+            Avg_Call_Duration=("Call Duration (min)", "mean"),
+        ).reset_index()
 
     # Pass rate from QA Score >= PASS_THRESHOLD (70)
     lb_df["_pass"] = (lb_df["QA Score"] >= PASS_THRESHOLD).astype(float)
@@ -10838,17 +10848,32 @@ if not user_agent_id:  # Admin view only
 else:
     # Agent view - show only their performance summary
     st.subheader("My Performance Summary")
-    my_performance = (
-        filtered_df.groupby("Agent")
-        .agg(
-            Total_Calls=("Call ID", "count"),
-            Avg_QA_Score=("QA Score", "mean"),
-            Total_Pass=("Rubric Pass Count", "sum"),
-            Total_Fail=("Rubric Fail Count", "sum"),
-            Avg_Call_Duration=("Call Duration (min)", "mean"),
+    st.caption("Passing is defined as a QA score ≥ 70%.")
+    call_col = "Call ID" if "Call ID" in filtered_df.columns else "call_id"
+    if call_col in filtered_df.columns:
+        my_performance = (
+            filtered_df.groupby("Agent")
+            .agg(
+                Total_Calls=(call_col, "nunique"),
+                Avg_QA_Score=("QA Score", "mean"),
+                Total_Pass=("Rubric Pass Count", "sum"),
+                Total_Fail=("Rubric Fail Count", "sum"),
+                Avg_Call_Duration=("Call Duration (min)", "mean"),
+            )
+            .reset_index()
         )
-        .reset_index()
-    )
+    else:
+        my_performance = (
+            filtered_df.groupby("Agent")
+            .agg(
+                Total_Calls=("QA Score", "count"),
+                Avg_QA_Score=("QA Score", "mean"),
+                Total_Pass=("Rubric Pass Count", "sum"),
+                Total_Fail=("Rubric Fail Count", "sum"),
+                Avg_Call_Duration=("Call Duration (min)", "mean"),
+            )
+            .reset_index()
+        )
 
     my_performance["Pass_Rate"] = (
         my_performance["Total_Pass"]
@@ -10894,6 +10919,9 @@ else:
 # --- Call Reason & Outcome Analysis ---
 with st.expander("Call Reason & Outcome Analysis", expanded=False):
     st.subheader("Call Reason & Outcome Analysis")
+    st.caption(
+        "Percentages for reasons and outcomes use denominator = calls with reason/outcome data only (excludes calls without data)."
+    )
     if (
         "Reason" in filtered_df.columns
         or "Outcome" in filtered_df.columns
@@ -10931,14 +10959,16 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         ax_reason.set_title("Top 10 Call Reasons")
                         plt.tight_layout()
                         st_pyplot_safe(fig_reason)
-                        if total_filtered > 0:
+                        if calls_with_reason > 0:
+                            no_reason = total_filtered - calls_with_reason
                             st.caption(
-                                f"% of total calls (denominator: {total_filtered:,})"
+                                f"Percentages use denominator = calls with reason data only (n={calls_with_reason:,}). "
+                                f"{no_reason:,} calls have no reason data."
                             )
 
                 with reason_col2:
                     st.write("**Reason Distribution**")
-                    if len(reason_counts_raw) > 0 and total_filtered > 0:
+                    if len(reason_counts_raw) > 0 and calls_with_reason > 0:
                         top_reasons = reason_counts_raw.head(10)
                         other_count = (
                             reason_counts_raw.iloc[10:].sum()
@@ -10957,14 +10987,8 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             )
                         else:
                             pie_data = pd.Series(top_display)
-                        # Percentages = count / total_filtered (% of total calls)
-                        pct_values = (pie_data.values / total_filtered * 100)
-                        no_data = total_filtered - pie_data.values.sum()
-                        if no_data > 0:
-                            pie_data = pd.concat(
-                                [pie_data, pd.Series({"No reason data": no_data})]
-                            )
-                            pct_values = pie_data.values / total_filtered * 100
+                        # Percentages = count / calls_with_reason (% of calls with reason data only)
+                        pct_values = pie_data.values / calls_with_reason * 100
 
                         fig_reason_pie, ax_reason_pie = plt.subplots(figsize=(8, 6))
                         wedges, texts, autotexts = ax_reason_pie.pie(
@@ -10974,7 +10998,7 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             startangle=90,
                         )
                         ax_reason_pie.set_title(
-                            "Call Reasons Distribution\n(% of total calls)"
+                            "Call Reasons Distribution\n(% of calls with reason data)"
                         )
                         ax_reason_pie.legend(
                             wedges,
@@ -10985,8 +11009,10 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         )
                         plt.tight_layout()
                         st_pyplot_safe(fig_reason_pie)
+                        no_reason = total_filtered - calls_with_reason
                         st.caption(
-                            f"Denominator: {total_filtered:,} total calls"
+                            f"Percentages use denominator = calls with reason data only (n={calls_with_reason:,}). "
+                            f"{no_reason:,} calls have no reason data."
                         )
 
                 # Trend over time
@@ -11080,13 +11106,16 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         ax_outcome.set_title("Top 10 Outcomes")
                         plt.tight_layout()
                         st_pyplot_safe(fig_outcome)
-                        st.caption(
-                            f"% of total calls (denominator: {total_filtered_outcome:,})"
-                        )
+                        if calls_with_outcome > 0:
+                            no_outcome = total_filtered_outcome - calls_with_outcome
+                            st.caption(
+                                f"Percentages use denominator = calls with outcome data only (n={calls_with_outcome:,}). "
+                                f"{no_outcome:,} calls have no outcome data."
+                            )
 
                 with outcome_col2:
                     st.write("**Outcome Distribution**")
-                    if len(outcome_counts_raw) > 0 and total_filtered_outcome > 0:
+                    if len(outcome_counts_raw) > 0 and calls_with_outcome > 0:
                         top_outcomes = outcome_counts_raw.head(10)
                         other_count = (
                             outcome_counts_raw.iloc[10:].sum()
@@ -11106,16 +11135,8 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             )
                         else:
                             pie_data = pd.Series(top_display)
-                        pct_values = pie_data.values / total_filtered_outcome * 100
-                        no_data = total_filtered_outcome - pie_data.values.sum()
-                        if no_data > 0:
-                            pie_data = pd.concat(
-                                [
-                                    pie_data,
-                                    pd.Series({"No outcome data": no_data}),
-                                ]
-                            )
-                            pct_values = pie_data.values / total_filtered_outcome * 100
+                        # Percentages = count / calls_with_outcome (% of calls with outcome data only)
+                        pct_values = pie_data.values / calls_with_outcome * 100
 
                         fig_outcome_pie, ax_outcome_pie = plt.subplots(
                             figsize=(8, 6)
@@ -11127,7 +11148,7 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                             startangle=90,
                         )
                         ax_outcome_pie.set_title(
-                            "Outcomes Distribution\n(% of total calls)"
+                            "Outcomes Distribution\n(% of calls with outcome data)"
                         )
                         ax_outcome_pie.legend(
                             wedges,
@@ -11138,8 +11159,10 @@ with st.expander("Call Reason & Outcome Analysis", expanded=False):
                         )
                         plt.tight_layout()
                         st_pyplot_safe(fig_outcome_pie)
+                        no_outcome = total_filtered_outcome - calls_with_outcome
                         st.caption(
-                            f"Denominator: {total_filtered_outcome:,} total calls"
+                            f"Percentages use denominator = calls with outcome data only (n={calls_with_outcome:,}). "
+                            f"{no_outcome:,} calls have no outcome data."
                         )
 
                 # Trend over time
@@ -11746,10 +11769,15 @@ if (
 
             # Analysis by Agent
             st.write("**Top Agents by Long AHT Calls**")
+            aht_call_col = "Call ID" if "Call ID" in long_aht_calls.columns else "call_id"
+            aht_agg = (
+                (aht_call_col, "nunique") if aht_call_col in long_aht_calls.columns
+                else ("QA Score", "count")
+            )
             agent_aht_analysis = (
                 long_aht_calls.groupby("Agent")
                 .agg(
-                    Long_AHT_Calls=("Call ID", "count"),
+                    Long_AHT_Calls=aht_agg,
                     Avg_AHT=("Call Duration (min)", "mean"),
                     Avg_QA_Score=("QA Score", "mean"),
                 )
@@ -14324,18 +14352,32 @@ with ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
                 normalize_agent_id
             )
 
-        # Recalculate agent performance for export
-        agent_perf_export = (
-            export_filtered_df.groupby("Agent")
-            .agg(
-                Total_Calls=("Call ID", "count"),
-                Avg_QA_Score=("QA Score", "mean"),
-                Total_Pass=("Rubric Pass Count", "sum"),
-                Total_Fail=("Rubric Fail Count", "sum"),
-                Avg_Call_Duration=("Call Duration (min)", "mean"),
+        # Recalculate agent performance for export (use nunique for Total_Calls)
+        call_col_export = "Call ID" if "Call ID" in export_filtered_df.columns else "call_id"
+        if call_col_export in export_filtered_df.columns:
+            agent_perf_export = (
+                export_filtered_df.groupby("Agent")
+                .agg(
+                    Total_Calls=(call_col_export, "nunique"),
+                    Avg_QA_Score=("QA Score", "mean"),
+                    Total_Pass=("Rubric Pass Count", "sum"),
+                    Total_Fail=("Rubric Fail Count", "sum"),
+                    Avg_Call_Duration=("Call Duration (min)", "mean"),
+                )
+                .reset_index()
             )
-            .reset_index()
-        )
+        else:
+            agent_perf_export = (
+                export_filtered_df.groupby("Agent")
+                .agg(
+                    Total_Calls=("QA Score", "count"),
+                    Avg_QA_Score=("QA Score", "mean"),
+                    Total_Pass=("Rubric Pass Count", "sum"),
+                    Total_Fail=("Rubric Fail Count", "sum"),
+                    Avg_Call_Duration=("Call Duration (min)", "mean"),
+                )
+                .reset_index()
+            )
         agent_perf_export["Pass_Rate"] = (
             agent_perf_export["Total_Pass"]
             / (agent_perf_export["Total_Pass"] + agent_perf_export["Total_Fail"])
