@@ -7810,6 +7810,22 @@ def _get_demo_samsung_data():
     reasons = ["Warranty inquiry", "Order status", "Screen repair", "Refund request", "Device setup"]
     outcomes = ["Resolved", "Escalated", "Resolved", "Pending", "Resolved"]
     labels = ["Positive", "Positive", "Neutral", "Negative", "Positive"]
+    coaching_pool = [
+        ["Improve product knowledge on warranty terms"],
+        ["Reduce hold time during transfer", "Review escalation process"],
+        ["Communication could be clearer when explaining process"],
+        ["Acknowledge customer frustration before offering solution"],
+        ["Streamline workflow to reduce call duration"],
+        ["Check system access before starting call"],
+        [],
+    ]
+    product_summaries = [
+        "Galaxy S24 screen repair inquiry. Customer satisfied.",
+        "Galaxy Watch setup assistance. Resolved connectivity.",
+        "Galaxy Buds replacement under warranty.",
+        "Smart TV troubleshooting. Remote pairing help.",
+        "Galaxy Tab trade-in question. Explained process.",
+    ]
 
     # 1 detailed example call
     detailed = {
@@ -7826,7 +7842,7 @@ def _get_demo_samsung_data():
         "summary": "Customer called regarding Galaxy S24 screen crack. Verified purchase date and warranty status. Provided warranty claim process. Customer satisfied.",
         "strengths": "Clear explanation of warranty terms.",
         "challenges": "Customer initially frustrated.",
-        "coaching_suggestions": [],
+        "coaching_suggestions": ["Acknowledge customer frustration sooner", "Review warranty process documentation for faster lookup"],
         "speaking_time_per_speaker": {"total": "5:30"},
         "rubric_details": {"1.1.0": {"status": "Pass", "note": ""}, "1.2.0": {"status": "Fail", "note": "Could have acknowledged frustration sooner"}},
         "rubric_pass_count": 1,
@@ -7849,10 +7865,10 @@ def _get_demo_samsung_data():
             "label": random.choice(labels),
             "reason": random.choice(reasons),
             "outcome": random.choice(outcomes),
-            "summary": f"Brief support call.",
+            "summary": random.choice(product_summaries),
             "strengths": "",
             "challenges": "",
-            "coaching_suggestions": [],
+            "coaching_suggestions": random.choice(coaching_pool),
             "speaking_time_per_speaker": {"total": f"{m}:{s:02d}"},
             "rubric_details": {},
             "rubric_pass_count": random.randint(1, 3),
@@ -8728,6 +8744,22 @@ def extract_products_from_text(text):
         "accessories": "Accessories",
     }
     product_categories = list(PRODUCT_CATEGORY_NORMALIZE.keys())
+
+    # Samsung/electronics products (for demo and Samsung support use cases)
+    if "galaxy s24" in text_lower and "Galaxy S24" not in products:
+        products.append("Galaxy S24")
+    if "galaxy s23" in text_lower and "Galaxy S23" not in products:
+        products.append("Galaxy S23")
+    if "galaxy watch" in text_lower and "Galaxy Watch" not in products:
+        products.append("Galaxy Watch")
+    if "galaxy buds" in text_lower and "Galaxy Buds" not in products:
+        products.append("Galaxy Buds")
+    if "galaxy tab" in text_lower and "Galaxy Tab" not in products:
+        products.append("Galaxy Tab")
+    if "smart tv" in text_lower and "Smart TV" not in products:
+        products.append("Smart TV")
+    if "samsung" in text_lower and "Samsung" not in products:
+        products.append("Samsung")
 
     # Check for watch brands
     for brand in watch_brands:
@@ -13716,7 +13748,17 @@ st.markdown("---")
 with st.expander("Individual Call Details", expanded=False):
     st.subheader("Individual Call Details")
     if len(filtered_df) > 0:
-        call_options = filtered_df["Call ID"].tolist()
+        # Demo mode: only show calls with real content (rubric details), not 500+ BS rows
+        if is_anonymous_user and st.session_state.get("_demo_mode"):
+            def _has_real_content(row):
+                rd = row.get("Rubric Details", {})
+                return isinstance(rd, dict) and len(rd) > 0
+            demo_detail_mask = filtered_df.apply(_has_real_content, axis=1)
+            call_options = filtered_df.loc[demo_detail_mask, "Call ID"].tolist()
+            if not call_options:
+                call_options = filtered_df["Call ID"].tolist()[:1]  # fallback to first
+        else:
+            call_options = filtered_df["Call ID"].tolist()
         if call_options:
             st.markdown("### View Call Details")
             selected_call_id = st.selectbox(
