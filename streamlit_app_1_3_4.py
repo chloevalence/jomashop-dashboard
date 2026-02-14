@@ -7851,6 +7851,7 @@ try:
     if is_anonymous_user:
         call_data = _get_demo_samsung_data()
         errors = []
+        was_processing = False
         st.session_state["_demo_mode"] = True
         status_text.empty()
         logger.info("Demo mode: loaded Samsung sample data")
