@@ -6738,13 +6738,21 @@ try:
 except Exception:
     pass
 
+# Demo mode: allow switching to agent view (Samsung Support Agent 1 = best example: has detailed call)
+if is_anonymous_user and st.session_state.get("_demo_agent_view"):
+    user_agent_id = normalize_agent_id(
+        st.session_state.get("_demo_agent_id", "Samsung Support Agent 1")
+    )
+
 # Set is_admin for backward compatibility (but prefer using is_regular_admin() function)
 is_admin = is_regular_admin()
 
 st.sidebar.success(f"Welcome, {current_name} 👋")
 
 # Show view mode
-if is_anonymous_user:
+if is_anonymous_user and user_agent_id:
+    st.sidebar.info(f"Agent View: {user_agent_id}")
+elif is_anonymous_user:
     st.sidebar.info(" Demo View: Samsung Customer Support")
 elif user_agent_id:
     st.sidebar.info(f"Agent View: {user_agent_id}")
@@ -6752,6 +6760,19 @@ elif is_regular_admin():
     st.sidebar.info("Admin View: All Data")
 else:
     st.sidebar.info("User View: All Data")
+
+# Demo mode: toggle between admin view and agent view
+if is_anonymous_user and st.session_state.get("_demo_mode"):
+    if user_agent_id:
+        if st.sidebar.button(" Back to Demo View", help="Switch back to view all demo data"):
+            st.session_state["_demo_agent_view"] = False
+            st.session_state["_demo_agent_id"] = None
+            st.rerun()
+    else:
+        if st.sidebar.button(" View as Agent", help="Switch to agent view (Samsung Support Agent 1)"):
+            st.session_state["_demo_agent_view"] = True
+            st.session_state["_demo_agent_id"] = "Samsung Support Agent 1"
+            st.rerun()
 
 # Logout button
 st.sidebar.markdown("---")
@@ -6762,6 +6783,10 @@ if st.sidebar.button("Logout", help="Log out of your account", type="secondary")
         st.session_state.username = None
         st.session_state.name = None
         st.session_state.user_agent_id = None
+        if "_demo_agent_view" in st.session_state:
+            del st.session_state["_demo_agent_view"]
+        if "_demo_agent_id" in st.session_state:
+            del st.session_state["_demo_agent_id"]
 
         # Clear data-related session state to prevent issues
         if "reload_all_triggered" in st.session_state:
@@ -7802,14 +7827,37 @@ else:
 
 
 def _get_demo_samsung_data():
-    """Return minimal hardcoded Samsung customer support demo data. Memory-efficient; no S3/disk."""
-    base_date = datetime(2025, 2, 10)
-    # 1 detailed call + 6 minimal placeholders
+    """Return demo Samsung customer support data: 1 detailed call + 81 BS rows (82 total) for charts/leaderboard."""
+    import random
+
+    random.seed(42)
+    agents = ["Samsung Support Agent 1", "Samsung Support Agent 2", "Samsung Support Agent 3"]
+    reasons = ["Warranty inquiry", "Order status", "Screen repair", "Refund request", "Device setup"]
+    outcomes = ["Resolved", "Escalated", "Resolved", "Pending", "Resolved"]
+    labels = ["Positive", "Positive", "Neutral", "Negative", "Positive"]
+    coaching_pool = [
+        ["Improve product knowledge on warranty terms"],
+        ["Reduce hold time during transfer", "Review escalation process"],
+        ["Communication could be clearer when explaining process"],
+        ["Acknowledge customer frustration before offering solution"],
+        ["Streamline workflow to reduce call duration"],
+        ["Check system access before starting call"],
+        [],
+    ]
+    product_summaries = [
+        "Galaxy S24 screen repair inquiry. Customer satisfied.",
+        "Galaxy Watch setup assistance. Resolved connectivity.",
+        "Galaxy Buds replacement under warranty.",
+        "Smart TV troubleshooting. Remote pairing help.",
+        "Galaxy Tab trade-in question. Explained process.",
+    ]
+
+    # 1 detailed example call
     detailed = {
-        "call_id": "20250210_143022_SAMSUNG-DEMO-001",
-        "call_date": base_date,
-        "date_raw": "02102025",
-        "time": "14:30",
+        "call_id": "20260210_143022_SAMSUNG-DEMO-001",
+        "call_date": datetime(2026, 2, 10),
+        "date_raw": "02102026",
+        "time": "14:30:00",
         "agent": "Samsung Support Agent 1",
         "company": "Samsung",
         "qa_score": 85.0,
@@ -7819,24 +7867,68 @@ def _get_demo_samsung_data():
         "summary": "Customer called regarding Galaxy S24 screen crack. Verified purchase date and warranty status. Provided warranty claim process. Customer satisfied.",
         "strengths": "Clear explanation of warranty terms.",
         "challenges": "Customer initially frustrated.",
-        "coaching_suggestions": [],
+        "coaching_suggestions": ["Acknowledge customer frustration sooner", "Review warranty process documentation for faster lookup"],
         "speaking_time_per_speaker": {"total": "5:30"},
         "rubric_details": {"1.1.0": {"status": "Pass", "note": ""}, "1.2.0": {"status": "Fail", "note": "Could have acknowledged frustration sooner"}},
         "rubric_pass_count": 1,
         "rubric_fail_count": 1,
     }
-    minimal = [
-        {"call_id": f"20250210_12000{i}_SAMSUNG-DEMO-00{i+2}", "call_date": base_date, "agent": "Samsung Support Agent 1", "qa_score": 78.0, "label": "Positive", "reason": "Order status", "outcome": "Resolved", "summary": "Order tracking inquiry.", "speaking_time_per_speaker": {"total": "3:15"}, "rubric_details": {}, "rubric_pass_count": 2, "rubric_fail_count": 0}
-        for i in range(2, 8)
+
+    # Rubric templates for analysis sections (Most Common Failure Reasons, Rubric Code Correlation, Rubric Code Analysis)
+    # Mix of Pass/Fail for 1.1.0, 1.2.0, 2.1.0, 3.1.0 with some high-AHT (longer duration) for correlation
+    rubric_templates = [
+        {"1.1.0": {"status": "Fail", "note": "Greeting"}, "2.1.0": {"status": "Pass", "note": ""}},
+        {"1.2.0": {"status": "Fail", "note": "Procedure"}, "3.1.0": {"status": "Pass", "note": ""}},
+        {"2.1.0": {"status": "Fail", "note": "Timing"}, "3.1.0": {"status": "Fail", "note": ""}},
+        {"1.1.0": {"status": "Pass", "note": ""}, "1.2.0": {"status": "Fail", "note": ""}},
+        {"3.1.0": {"status": "Fail", "note": "Resolution"}, "2.1.0": {"status": "Pass", "note": ""}},
+        {"1.1.0": {"status": "Pass", "note": ""}, "3.1.0": {"status": "Fail", "note": ""}},
+        {"1.2.0": {"status": "Pass", "note": ""}, "2.1.0": {"status": "Fail", "note": ""}},
     ]
-    for i, m in enumerate(minimal):
-        m.setdefault("date_raw", "02102025")
-        m.setdefault("time", "12:00")
-        m.setdefault("company", "Samsung")
-        m.setdefault("strengths", "")
-        m.setdefault("challenges", "")
-        m.setdefault("coaching_suggestions", [])
-    return [detailed] + minimal
+
+    # 6 at-risk calls for Agent 3: declining scores Feb 15-28 to trigger identify_at_risk_agents
+    at_risk_agent = "Samsung Support Agent 3"
+    at_risk_dates = [15, 18, 21, 24, 26, 28]
+    at_risk_scores = [90, 70, 66, 64, 62, 60]  # declining + close to threshold (recent_avg ~68.7)
+    out = [detailed]
+    base = datetime(2026, 2, 1).date()
+    for i in range(81):
+        if i < 6:
+            d = base + timedelta(days=at_risk_dates[i] - 1)
+            qa_score = at_risk_scores[i]
+            agent = at_risk_agent
+            rubric_details = rubric_templates[i % len(rubric_templates)]  # at-risk calls get rubric too
+        else:
+            d = base + timedelta(days=random.randint(0, 27))
+            qa_score = round(random.uniform(55, 95), 1)
+            # Agent 3 only has the 6 at-risk calls above; others in Feb 15+ go to Agent 1/2 so only 1 at-risk agent
+            agent = random.choice([agents[0], agents[1]]) if d.day >= 15 else random.choice(agents)
+            rubric_details = rubric_templates[(i - 6) % len(rubric_templates)] if i < 6 + 40 else {}
+        # Vary duration: some longer (6-12 min) for high-AHT correlation with rubric failures
+        m, s = (random.randint(6, 12), random.randint(0, 59)) if rubric_details and i % 3 == 0 else (random.randint(2, 8), random.randint(0, 59))
+        pass_count = random.randint(1, 3) if not rubric_details else sum(1 for v in rubric_details.values() if isinstance(v, dict) and v.get("status") == "Pass")
+        fail_count = random.randint(0, 2) if not rubric_details else sum(1 for v in rubric_details.values() if isinstance(v, dict) and v.get("status") == "Fail")
+        out.append({
+            "call_id": f"202602{d.day:02d}_{100000 + i}_SAMSUNG-DEMO",
+            "call_date": datetime(d.year, d.month, d.day, random.randint(8, 18), random.randint(0, 59)),
+            "date_raw": f"{d.month:02d}{d.day:02d}{d.year}",
+            "time": f"{random.randint(9, 17):02d}:{random.randint(0, 59):02d}:00",
+            "agent": agent,
+            "company": "Samsung",
+            "qa_score": qa_score,
+            "label": random.choice(labels),
+            "reason": random.choice(reasons),
+            "outcome": random.choice(outcomes),
+            "summary": random.choice(product_summaries),
+            "strengths": "",
+            "challenges": "",
+            "coaching_suggestions": random.choice(coaching_pool),
+            "speaking_time_per_speaker": {"total": f"{m}:{s:02d}"},
+            "rubric_details": rubric_details,
+            "rubric_pass_count": pass_count if rubric_details else random.randint(1, 3),
+            "rubric_fail_count": fail_count if rubric_details else random.randint(0, 2),
+        })
+    return out
 
 
 # Now load the actual data
@@ -7848,6 +7940,7 @@ errors = []
 meta_df = pd.DataFrame()
 try:
     t0 = time.time()
+    was_processing = False  # Ensure defined for all code paths (including anonymous demo)
     if is_anonymous_user:
         call_data = _get_demo_samsung_data()
         errors = []
@@ -8706,6 +8799,22 @@ def extract_products_from_text(text):
     }
     product_categories = list(PRODUCT_CATEGORY_NORMALIZE.keys())
 
+    # Samsung/electronics products (for demo and Samsung support use cases)
+    if "galaxy s24" in text_lower and "Galaxy S24" not in products:
+        products.append("Galaxy S24")
+    if "galaxy s23" in text_lower and "Galaxy S23" not in products:
+        products.append("Galaxy S23")
+    if "galaxy watch" in text_lower and "Galaxy Watch" not in products:
+        products.append("Galaxy Watch")
+    if "galaxy buds" in text_lower and "Galaxy Buds" not in products:
+        products.append("Galaxy Buds")
+    if "galaxy tab" in text_lower and "Galaxy Tab" not in products:
+        products.append("Galaxy Tab")
+    if "smart tv" in text_lower and "Smart TV" not in products:
+        products.append("Smart TV")
+    if "samsung" in text_lower and "Samsung" not in products:
+        products.append("Samsung")
+
     # Check for watch brands
     for brand in watch_brands:
         if brand in text_lower:
@@ -9101,6 +9210,12 @@ MAX_DATE_RANGE_DAYS = 30
 if "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
     st.session_state._selected_year = 2026
     st.session_state._selected_month = 2
+# Demo mode: ensure Feb 2026 on first load so date filter matches demo data
+if is_anonymous_user and st.session_state.get("_demo_mode"):
+    if not st.session_state.get("_demo_month_initialized", False):
+        st.session_state._selected_year = 2026
+        st.session_state._selected_month = 2
+        st.session_state._demo_month_initialized = True
 
 st.sidebar.markdown("### 📆 Date Range")
 
@@ -9696,8 +9811,9 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("###  Rubric Code Filters")
 
 # Collect all rubric codes (both pass and fail)
+# Demo mode: keep sidebar filter empty (fake rubrics only in Rubric Reference)
 all_rubric_codes = []
-if "Rubric Details" in meta_df.columns:
+if "Rubric Details" in meta_df.columns and not (is_anonymous_user and st.session_state.get("_demo_mode")):
     for idx, row in meta_df.iterrows():
         rubric_details = row.get("Rubric Details", {})
         if isinstance(rubric_details, dict):
@@ -9707,34 +9823,34 @@ if "Rubric Details" in meta_df.columns:
 
     all_rubric_codes.sort()
 
-    if all_rubric_codes:
-        rubric_filter_type = st.sidebar.radio(
+if all_rubric_codes:
+    rubric_filter_type = st.sidebar.radio(
             "Filter Type",
             options=["Any Status", "Failed Only", "Passed Only"],
             index=0,
             horizontal=True,
-        )
+    )
 
-        selected_rubric_codes = st.sidebar.multiselect(
+    selected_rubric_codes = st.sidebar.multiselect(
             f"Select Rubric Codes ({rubric_filter_type})",
             options=all_rubric_codes,
             default=st.session_state.selected_rubric_codes
             if st.session_state.selected_rubric_codes
             else [],
             help="Show calls that match these rubric codes",
-        )
-        st.session_state.selected_rubric_codes = selected_rubric_codes
-        st.session_state.rubric_filter_type = rubric_filter_type
+    )
+    st.session_state.selected_rubric_codes = selected_rubric_codes
+    st.session_state.rubric_filter_type = rubric_filter_type
 
-        # Also collect failed codes for backward compatibility
-        failed_rubric_codes = [code for code in all_rubric_codes]
-        selected_failed_codes = (
-            selected_rubric_codes if rubric_filter_type == "Failed Only" else []
-        )
-    else:
-        selected_rubric_codes = []
-        selected_failed_codes = []
-        rubric_filter_type = "Any Status"
+    # Also collect failed codes for backward compatibility
+    failed_rubric_codes = [code for code in all_rubric_codes]
+    selected_failed_codes = (
+        selected_rubric_codes if rubric_filter_type == "Failed Only" else []
+    )
+else:
+    selected_rubric_codes = []
+    selected_failed_codes = []
+    rubric_filter_type = "Any Status"
 
 # Day of Week and Time of Day filters (within Date Range section)
 st.sidebar.markdown("---")
@@ -13509,11 +13625,21 @@ with st.expander("Coaching Insights", expanded=False):
 # --- Full Rubric Reference ---
 with st.expander("QA Rubric Reference", expanded=False):
     st.subheader("QA Rubric Reference")
-    if rubric_data:
+    # Demo mode: show only 4 fake rubric items (no sidebar filter from call data)
+    if is_anonymous_user and st.session_state.get("_demo_mode"):
+        display_rubric = [
+            {"code": "1.1.0", "section": "Greeting", "item": "Professional greeting", "criterion": "Agent greeted customer appropriately", "weight": "1", "pass": "Greeting within 5 seconds", "fail": "No greeting or delayed", "na": "Call transferred"},
+            {"code": "1.2.0", "section": "Greeting", "item": "Acknowledge concern", "criterion": "Agent acknowledged customer concern", "weight": "1", "pass": "Empathetic acknowledgment", "fail": "Dismissed or ignored", "na": "No stated concern"},
+            {"code": "2.1.0", "section": "Process", "item": "Follow procedure", "criterion": "Correct process followed", "weight": "1", "pass": "Procedure followed", "fail": "Skipped steps or wrong order", "na": "Not applicable"},
+            {"code": "3.1.0", "section": "Closing", "item": "Confirm resolution", "criterion": "Customer confirms resolution", "weight": "1", "pass": "Resolution confirmed", "fail": "Unresolved", "na": "Escalated"},
+        ]
+    else:
+        display_rubric = rubric_data
+    if display_rubric:
         col_rubric_header1, col_rubric_header2 = st.columns([3, 1])
         with col_rubric_header1:
             st.info(
-                f" Complete rubric with {len(rubric_data)} items. Use the tabs below to browse by section or search all items."
+                f" Complete rubric with {len(display_rubric)} items. Use the tabs below to browse by section or search all items."
             )
         with col_rubric_header2:
             # Load and serve the pre-formatted Excel rubric file
@@ -13561,7 +13687,7 @@ with st.expander("QA Rubric Reference", expanded=False):
                 search_lower = rubric_search.lower()
                 filtered_items = [
                     item
-                    for item in rubric_data
+                    for item in display_rubric
                     if (
                         search_lower in item.get("code", "").lower()
                         or search_lower in item.get("section", "").lower()
@@ -13571,8 +13697,8 @@ with st.expander("QA Rubric Reference", expanded=False):
                 ]
                 st.write(f"**Found {len(filtered_items)} matching items**")
             else:
-                filtered_items = rubric_data
-                st.write(f"**All {len(rubric_data)} rubric items**")
+                filtered_items = display_rubric
+                st.write(f"**All {len(display_rubric)} rubric items**")
 
             # Display filtered items with pagination
             items_per_page = 20
@@ -13620,7 +13746,7 @@ with st.expander("QA Rubric Reference", expanded=False):
         with rubric_tab2:
             # Group by section
             sections = {}
-            for item in rubric_data:
+            for item in display_rubric:
                 section = item.get("section", "Other")
                 if section not in sections:
                     sections[section] = []
@@ -13687,7 +13813,17 @@ st.markdown("---")
 with st.expander("Individual Call Details", expanded=False):
     st.subheader("Individual Call Details")
     if len(filtered_df) > 0:
-        call_options = filtered_df["Call ID"].tolist()
+        # Demo mode: only show calls with real content (rubric details), not 500+ BS rows
+        if is_anonymous_user and st.session_state.get("_demo_mode"):
+            def _has_real_content(row):
+                rd = row.get("Rubric Details", {})
+                return isinstance(rd, dict) and len(rd) > 0
+            demo_detail_mask = filtered_df.apply(_has_real_content, axis=1)
+            call_options = filtered_df.loc[demo_detail_mask, "Call ID"].tolist()
+            if not call_options:
+                call_options = filtered_df["Call ID"].tolist()[:1]  # fallback to first
+        else:
+            call_options = filtered_df["Call ID"].tolist()
         if call_options:
             st.markdown("### View Call Details")
             selected_call_id = st.selectbox(
