@@ -14,6 +14,7 @@ qa_results_jomashop.csv
 *_report.pdf
 *_review_report.pdf
 bpo_review_report.pdf
+monthly_report_*.pdf
 # Data files (except template/rubric files)
 *.csv
 !template*.csv

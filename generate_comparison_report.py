@@ -2134,8 +2134,9 @@ def create_reason_comparison_chart(
     """Create side-by-side comparison chart for call reasons (counts)."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     fig.suptitle(
-        "Top 10 Call Reasons (counts). Note: Percentages use denominator = calls with reason data only.",
-        fontsize=10,
+        "Top 10 Call Reasons\nEach call has at most one reason. Percentages = (reason count ÷ calls with recorded reason). "
+        "Calls without a recorded reason are excluded from the denominator.",
+        fontsize=9,
         fontweight="bold",
         y=1.02,
     )
@@ -2192,7 +2193,8 @@ def create_reason_comparison_chart(
         )
         ax2.set_title("BPO Centers\nCall Reasons", fontsize=12, fontweight="bold")
 
-    plt.tight_layout()
+    fig.text(0.5, 0.02, "Note: A call can have zero or one recorded reason.", ha="center", fontsize=8, style="italic")
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
@@ -2202,8 +2204,9 @@ def create_outcome_comparison_chart(
     """Create side-by-side comparison chart for call outcomes (counts)."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     fig.suptitle(
-        "Top 10 Call Outcomes (counts). Note: Percentages use denominator = calls with outcome data only.",
-        fontsize=10,
+        "Top 10 Call Outcomes\nEach call has at most one outcome. Percentages = (outcome count ÷ calls with recorded outcome). "
+        "Calls without a recorded outcome are excluded from the denominator.",
+        fontsize=9,
         fontweight="bold",
         y=1.02,
     )
@@ -2256,7 +2259,8 @@ def create_outcome_comparison_chart(
         )
         ax2.set_title("BPO Centers\nOutcomes", fontsize=12, fontweight="bold")
 
-    plt.tight_layout()
+    fig.text(0.5, 0.02, "Note: A call can have zero or one recorded outcome.", ha="center", fontsize=8, style="italic")
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
@@ -2265,6 +2269,13 @@ def create_product_comparison_chart(
 ) -> plt.Figure:
     """Create side-by-side comparison chart for products discussed."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig.suptitle(
+        "Top 10 Products Discussed\nA single call may reference multiple products. "
+        "Percentages = (product mentions ÷ total product mentions). Share of total product mentions, not share of calls.",
+        fontsize=9,
+        fontweight="bold",
+        y=1.02,
+    )
 
     # Previous center products (top 10)
     if previous_products:
@@ -2320,7 +2331,12 @@ def create_product_comparison_chart(
         )
         ax2.set_title("BPO Centers\nProducts Discussed", fontsize=12, fontweight="bold")
 
-    plt.tight_layout()
+    fig.text(
+        0.5, 0.02,
+        "Note: Because calls may include multiple products, percentages may sum to more than 100% if calculated against total calls.",
+        ha="center", fontsize=8, style="italic",
+    )
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
@@ -2743,7 +2759,11 @@ def create_top_failure_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     fig.suptitle(
-        "Top 10 Rubric Failure Codes - Impact Analysis", fontsize=14, fontweight="bold"
+        "Top 10 Rubric Failure Codes\nFailure count = number of calls that failed this rubric item. "
+        "Failure rate = (calls failing this item ÷ total calls).",
+        fontsize=10,
+        fontweight="bold",
+        y=1.02,
     )
 
     # Left: Bar chart of failure counts
@@ -2773,7 +2793,7 @@ def create_top_failure_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
         failure_df["Code"], failure_df["Failure_Pct"], color="#FF6B35", alpha=0.7
     )
     ax2.set_xlabel("Failure Rate (%)", fontsize=11, fontweight="bold")
-    ax2.set_title("Impact on Total Calls", fontsize=12, fontweight="bold")
+    ax2.set_title("% of Calls Failing This Item", fontsize=12, fontweight="bold")
     ax2.grid(True, alpha=0.3, axis="x")
     ax2.invert_yaxis()
 
@@ -2790,7 +2810,12 @@ def create_top_failure_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
             fontweight="bold",
         )
 
-    plt.tight_layout()
+    fig.text(
+        0.5, 0.02,
+        "Note: Failure count = calls that failed this rubric item. A single call may fail multiple rubric items.",
+        ha="center", fontsize=8, style="italic",
+    )
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
@@ -3182,9 +3207,11 @@ def create_top_call_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     fig.suptitle(
-        "Top 10 Call Reasons\n(% of calls with reason data; denominator excludes calls without reason)",
-        fontsize=12,
+        "Top 10 Call Reasons\nEach call has at most one reason. Percentages = (reason count ÷ calls with recorded reason). "
+        "Calls without a recorded reason are excluded from the denominator.",
+        fontsize=10,
         fontweight="bold",
+        y=1.02,
     )
 
     # Left: Count chart
@@ -3230,7 +3257,8 @@ def create_top_call_reasons_chart(bpo_df: pd.DataFrame) -> plt.Figure:
             fontweight="bold",
         )
 
-    plt.tight_layout()
+    fig.text(0.5, 0.02, "Note: A call can have zero or one recorded reason.", ha="center", fontsize=8, style="italic")
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
@@ -3287,9 +3315,11 @@ def create_top_call_outcomes_chart(bpo_df: pd.DataFrame) -> plt.Figure:
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     fig.suptitle(
-        "Top 10 Call Outcomes\n(% of calls with outcome data; denominator excludes calls without outcome)",
-        fontsize=12,
+        "Top 10 Call Outcomes\nEach call has at most one outcome. Percentages = (outcome count ÷ calls with recorded outcome). "
+        "Calls without a recorded outcome are excluded from the denominator.",
+        fontsize=10,
         fontweight="bold",
+        y=1.02,
     )
 
     # Left: Count chart
@@ -3335,7 +3365,8 @@ def create_top_call_outcomes_chart(bpo_df: pd.DataFrame) -> plt.Figure:
             fontweight="bold",
         )
 
-    plt.tight_layout()
+    fig.text(0.5, 0.02, "Note: A call can have zero or one recorded outcome.", ha="center", fontsize=8, style="italic")
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
@@ -3399,7 +3430,13 @@ def create_top_products_chart(bpo_df: pd.DataFrame) -> plt.Figure:
     total_mentions = len(product_data)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-    fig.suptitle("Top 10 Products Discussed", fontsize=14, fontweight="bold")
+    fig.suptitle(
+        "Top 10 Products Discussed\nA single call may reference multiple products. "
+        "Percentages = (product mentions ÷ total product mentions). Share of total product mentions, not share of calls.",
+        fontsize=10,
+        fontweight="bold",
+        y=1.02,
+    )
 
     # Left: Count chart
     bars1 = ax1.barh(
@@ -3444,7 +3481,12 @@ def create_top_products_chart(bpo_df: pd.DataFrame) -> plt.Figure:
             fontweight="bold",
         )
 
-    plt.tight_layout()
+    fig.text(
+        0.5, 0.02,
+        "Note: Because calls may include multiple products, percentages may sum to more than 100% if calculated against total calls.",
+        ha="center", fontsize=8, style="italic",
+    )
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
