@@ -5694,6 +5694,7 @@ def load_new_calls_only():
         else:
             # Selected month has no data - build processed_keys from all monthly caches
             MONTHS_WITH_DATA = [
+                (2026, 3),
                 (2026, 2),
                 (2026, 1),
                 (2025, 12),
@@ -9235,9 +9236,10 @@ month_names = [
     "December",
 ]
 
-# Single source of truth: 8 months with data, most recent first (February 2026 -> July 2025)
+# Single source of truth: 9 months with data, most recent first (March 2026 -> July 2025)
 # Format: list of tuples (year, month, display_string)
 month_options = [
+    (2026, 3, "March 2026"),
     (2026, 2, "February 2026"),
     (2026, 1, "January 2026"),
     (2025, 12, "December 2025"),
@@ -9259,14 +9261,14 @@ for idx, month_str in enumerate(month_display_options):
         break
 current_index = min(current_index, len(month_display_options) - 1)  # keep in range
 
-# Dropdown: options from month_options so February 2026 is always first
+# Dropdown: options from month_options so most recent month is first
 selected_month_str = st.sidebar.selectbox(
     "Select Month",
     options=month_display_options,
     index=current_index,
-    key="month_selector_8months_v3",  # New key to force fresh widget with 8 options
+    key="month_selector_9months_v1",  # Key updated for 9 months (March 2026 added)
 )
-st.sidebar.caption(f"Latest: {month_display_options[0]}")  # Confirm Feb 2026 is available
+st.sidebar.caption(f"Latest: {month_display_options[0]}")
 
 # Map display string -> (year, month) from single source of truth
 month_to_date = {opt[2]: (opt[0], opt[1]) for opt in month_options}
