@@ -12,4 +12,5 @@ pdfplumber
 tabulate
 reportlab
 pypdf
+pillow
 
