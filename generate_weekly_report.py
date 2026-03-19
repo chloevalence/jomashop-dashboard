@@ -690,6 +690,7 @@ def generate_report(
     sBold = ParagraphStyle("sBold", fontName="Helvetica-Bold", fontSize=8.5, textColor=V_DARK, leading=12)
     sCoach = ParagraphStyle("sCoach", fontName="Helvetica", fontSize=8, textColor=V_DARK, leading=11, leftIndent=8, spaceAfter=1)
     sCallID = ParagraphStyle("sCallID", fontName="Helvetica", fontSize=6.2, textColor=V_GRAY, leading=8, wordWrap="CJK")
+    sTableCell = ParagraphStyle("sTableCell", fontName="Helvetica", fontSize=7, textColor=V_DARK, leading=9, wordWrap="CJK")
 
     doc = SimpleDocTemplate(
         str(output_path), pagesize=letter,
@@ -916,6 +917,10 @@ def generate_report(
 
         if len(agent_fails_df) > 0:
             story.append(Paragraph(f"Failed Calls — Score ≤ 70 ({n_failed})", sH2))
+
+            def _escape(s):
+                return (str(s) or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
             crow = [["Call ID", "Min", "Score", "Reason", "Outcome", "Product"]]
             score_ints = []
             for _, row in agent_fails_df.iterrows():
@@ -926,11 +931,18 @@ def generate_report(
                 score_int = int(score) if isinstance(score, (int, float)) and not pd.isna(score) else 0
                 score_ints.append(score_int)
                 score_str = f"{score:.0f}%" if isinstance(score, (int, float)) and not pd.isna(score) else str(score)
-                reason = (str(row.get("Reason", "") or "")[:55]) + ("…" if len(str(row.get("Reason", "") or "")) > 55 else "")
-                outcome = (str(row.get("Outcome", "") or "")[:55]) + ("…" if len(str(row.get("Outcome", "") or "")) > 55 else "")
-                product = str(row.get("Product", "") or "—")
-                crow.append([Paragraph(cid, sCallID), handle, score_str, reason, outcome, product])
-            cw2 = [TW * 0.23, TW * 0.055, TW * 0.065, TW * 0.255, TW * 0.255, TW * 0.085]
+                reason = _escape(row.get("Reason", "") or "")
+                outcome = _escape(row.get("Outcome", "") or "")
+                product = _escape(row.get("Product", "") or "—")
+                crow.append([
+                    Paragraph(_escape(cid), sCallID),
+                    handle,
+                    score_str,
+                    Paragraph(reason, sTableCell),
+                    Paragraph(outcome, sTableCell),
+                    Paragraph(product, sTableCell),
+                ])
+            cw2 = [TW * 0.18, TW * 0.055, TW * 0.065, TW * 0.28, TW * 0.28, TW * 0.085]
             call_tbl = Table(crow, colWidths=cw2, repeatRows=1)
             call_ts = [
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),

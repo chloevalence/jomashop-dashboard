@@ -2,7 +2,7 @@
 """
 Monthly QA Report Generator
 
-Generates an exportable PDF report for a given month, including:
+Generates an exportable PDF report for a given month with Valence branding, including:
 - Agent leaderboard
 - Pass rates and QA scores over time (all historical data for progress comparison)
 - Call Reason / Outcome / Product distributions for the month
@@ -31,14 +31,16 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, PageBreak
-from reportlab.lib.enums import TA_LEFT
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, PageBreak,
+    Image as RLImage, HRFlowable,
+)
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 # Project root
 PROJECT_ROOT = Path(__file__).parent.resolve()
@@ -46,15 +48,123 @@ LOG_DIR = PROJECT_ROOT / "logs"
 CACHE_FILE = LOG_DIR / "cached_calls_data.json"
 PASS_THRESHOLD = 70
 
-# Report layout: consistent page size (letter) and table font
+# Valence brand colors
+V_PURPLE = colors.HexColor("#4900A7")
+V_BLUE = colors.HexColor("#0974FF")
+V_TEAL = colors.HexColor("#38BDF8")
+V_LTPURP = colors.HexColor("#F5F0FF")
+V_DARK = colors.HexColor("#0A0A0A")
+V_GRAY = colors.HexColor("#64748B")
+V_LGRAY = colors.HexColor("#F1F5F9")
+V_BORDER = colors.HexColor("#E2E8F0")
+V_WHITE = colors.white
+P_PURPLE = "#4900A7"
+P_BLUE = "#0974FF"
+P_TEAL = "#38BDF8"
+P_GRAY = "#64748B"
+P_LGRAY = "#F1F5F9"
+P_GREEN = "#10B981"
+P_AMBER = "#F59E0B"
+
+# Report layout
 PAGE_WIDTH, PAGE_HEIGHT = 8.5, 11
+PAGE_W, PAGE_H = letter
+MARGIN = 0.5 * inch
 TABLE_FONTSIZE = 12
+LOGO_ASPECT = 2000 / 649
+
+# Logo paths
+ASSETS = PROJECT_ROOT / "assets"
+CURSOR_ASSETS = Path.home() / ".cursor" / "projects" / "Users-Chloe-Downloads-jomashop-dashboard" / "assets"
+LOGO_COLORED_SRC = next(
+    (p for p in [
+        ASSETS / "Valence_-_Text_to_right_-_Colored-23dcb8b0-9e37-4af5-ad4e-672f2cb98533.png",
+        CURSOR_ASSETS / "Valence_-_Text_to_right_-_Colored-23dcb8b0-9e37-4af5-ad4e-672f2cb98533.png",
+        ASSETS / "Valence_-_Text_to_right_-_Colored.png",
+    ] if p.exists()),
+    ASSETS / "Valence_-_Text_to_right_-_Colored.png",
+)
+LOGO_WHITE_SRC = next(
+    (p for p in [
+        ASSETS / "Valence_-_Text_to_right_-_White-4a5c4619-1570-4e2f-be11-04224c3cfc8e.png",
+        CURSOR_ASSETS / "Valence_-_Text_to_right_-_White-4a5c4619-1570-4e2f-be11-04224c3cfc8e.png",
+        ASSETS / "Valence_-_Text_to_right_-_White.png",
+    ] if p.exists()),
+    ASSETS / "Valence_-_Text_to_right_-_White.png",
+)
+LOGO_WHITE = str(PROJECT_ROOT / "logo_white_transparent.png")
+LOGO_COLORED = str(PROJECT_ROOT / "logo_colored_transparent.png")
 
 # Month options (must match streamlit month_options for S3 cache keys)
 MONTHS_AVAILABLE = [
     (2026, 3), (2026, 2), (2026, 1),
     (2025, 12), (2025, 11), (2025, 10), (2025, 9), (2025, 8), (2025, 7),
 ]
+
+
+def _make_logos_transparent():
+    """Convert black-background logos to transparent PNGs (Valence template)."""
+    try:
+        from PIL import Image
+        for src, dest, scale in [
+            (LOGO_WHITE_SRC, LOGO_WHITE, 1),
+            (LOGO_COLORED_SRC, LOGO_COLORED, 5),
+        ]:
+            if src.exists():
+                img = Image.open(src).convert("RGBA")
+                arr = np.array(img, dtype=np.uint8)
+                alpha = np.clip(np.max(arr[:, :, :3], axis=2).astype(int) * scale, 0, 255).astype(np.uint8)
+                arr[:, :, 3] = alpha
+                Image.fromarray(arr).save(dest)
+    except Exception:
+        pass
+
+
+def _make_on_page(subtitle: str):
+    """Valence header bar (purple) + white logo; gray footer with page number."""
+    def on_page(cv, doc):
+        cv.saveState()
+        cv.setFillColor(V_PURPLE)
+        cv.rect(0, PAGE_H - 46, PAGE_W, 46, fill=1, stroke=0)
+        if os.path.exists(LOGO_WHITE):
+            logo_h, logo_w = 26, 26 * LOGO_ASPECT
+            logo_y = PAGE_H - 46 + (46 - logo_h) / 2
+            cv.drawImage(LOGO_WHITE, MARGIN, logo_y, width=logo_w, height=logo_h, mask="auto")
+        cv.setFont("Helvetica", 8.5)
+        cv.setFillColorRGB(0.85, 0.75, 1.0)
+        cv.drawRightString(PAGE_W - MARGIN, PAGE_H - 26, subtitle)
+        cv.setFillColor(V_LGRAY)
+        cv.rect(0, 0, PAGE_W, 26, fill=1, stroke=0)
+        cv.setFillColor(V_GRAY)
+        cv.setFont("Helvetica", 7.5)
+        cv.drawString(MARGIN, 8, f"Monthly QA Report  ·  {subtitle}  ·  Confidential  ·  Valence AI")
+        cv.drawRightString(PAGE_W - MARGIN, 8, f"Page {doc.page}")
+        cv.restoreState()
+    return on_page
+
+
+def _style_ax(ax, title="", xlabel="", ylabel=""):
+    """Apply Valence chart styling."""
+    ax.set_facecolor(P_LGRAY)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.tick_params(colors=P_GRAY, labelsize=7.5)
+    ax.grid(axis="x", color="white", linewidth=0.8, zorder=0)
+    if title:
+        ax.set_title(title, fontsize=9.5, fontweight="bold", color="#0A0A0A", pad=6)
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=7.5, color=P_GRAY)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=7.5, color=P_GRAY)
+
+
+def _fig_buf(fig, dpi=150):
+    """Save matplotlib figure to BytesIO."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plt.close(fig)
+    return buf
 
 
 def _get_s3_config() -> Optional[Dict]:
@@ -339,16 +449,18 @@ def _para_html(html: str, style) -> Paragraph:
     return Paragraph(s, style)
 
 
-def _build_agent_pages_reportlab(
-    month_df: pd.DataFrame,
+def _append_agent_pages(
+    story: List,
     rubric_labels: Dict[str, str],
     agent_failures: Dict,
     failing: pd.DataFrame,
     all_agents: List[str],
     month_name: str,
-    output_buffer: io.BytesIO,
+    id_col: str,
+    dur_col: Optional[str],
+    TW: float,
 ):
-    """Build agent coaching + failing calls pages with ReportLab (proper table wrapping)."""
+    """Append agent coaching + failing calls pages to story (Valence styling, text wrap)."""
     styles = getSampleStyleSheet()
     cell_style = ParagraphStyle(
         "Cell",
@@ -360,6 +472,7 @@ def _build_agent_pages_reportlab(
         spaceBefore=2,
         spaceAfter=2,
         alignment=TA_LEFT,
+        wordWrap="CJK",
     )
     header_style = ParagraphStyle(
         "Header",
@@ -367,20 +480,9 @@ def _build_agent_pages_reportlab(
         fontSize=9,
         leading=11,
         fontName="Helvetica-Bold",
+        wordWrap="CJK",
     )
-    col_widths = [1.4 * inch, 0.55 * inch, 0.5 * inch, 2.1 * inch, 2.1 * inch, 0.6 * inch]  # Call ID wider, Product narrower
-
-    doc = SimpleDocTemplate(
-        output_buffer,
-        pagesize=letter,
-        leftMargin=0.5 * inch,
-        rightMargin=0.5 * inch,
-        topMargin=0.5 * inch,
-        bottomMargin=0.75 * inch,
-    )
-    story = []
-    id_col = "Call ID" if "Call ID" in failing.columns else "call_id"
-    dur_col = "Call Duration (min)" if "Call Duration (min)" in failing.columns else None
+    col_widths = [TW * 0.18, TW * 0.055, TW * 0.065, TW * 0.28, TW * 0.28, TW * 0.085]
 
     for agent_idx, agent in enumerate(all_agents):
         fails = agent_failures.get(agent, {})
@@ -408,260 +510,278 @@ def _build_agent_pages_reportlab(
         if len(agent_fails_df) > 0:
             headers = ["Call ID", "Handle (min)", "QA Score", "Reason", "Outcome", "Product"]
             data = [[_para(h, header_style) for h in headers]]
+            score_ints = []
             for _, row in agent_fails_df.iterrows():
                 cid = str(row.get(id_col, row.get("call_id", "—")))
                 dur = row.get(dur_col)
                 handle = f"{dur:.1f}" if isinstance(dur, (int, float)) and not pd.isna(dur) else "—"
                 score = row.get("QA Score", "—")
+                score_int = int(score) if isinstance(score, (int, float)) and not pd.isna(score) else 0
+                score_ints.append(score_int)
                 if isinstance(score, (int, float)) and not pd.isna(score):
-                    score = f"{score:.0f}%"
+                    score_str = f"{score:.0f}%"
                 else:
-                    score = str(score)
+                    score_str = str(score)
                 reason = str(row.get("Reason", "") or "")
                 outcome = str(row.get("Outcome", "") or "")
                 product = str(row.get("Product", "") or "—")
                 data.append([
                     _para(cid, cell_style),
                     _para(handle, cell_style),
-                    _para(score, cell_style),
+                    _para(score_str, cell_style),
                     _para(reason, cell_style),
                     _para(outcome, cell_style),
                     _para(product, cell_style),
                 ])
             tbl = Table(data, colWidths=col_widths, repeatRows=1)
-            tbl.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8e8e8")),
+            tbl_ts = [
+                ("BACKGROUND", (0, 0), (-1, 0), V_PURPLE),
+                ("TEXTCOLOR", (0, 0), (-1, 0), V_WHITE),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, -1), 9),
                 ("LEFTPADDING", (0, 0), (-1, -1), 4),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 3),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("GRID", (0, 0), (-1, -1), 0.3, V_BORDER),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ]))
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [V_WHITE, V_LGRAY]),
+                ("ALIGN", (1, 0), (2, -1), "CENTER"),
+            ]
+            for i, s in enumerate(score_ints):
+                if s < 50 and s > 0:
+                    tbl_ts += [("BACKGROUND", (2, i + 1), (2, i + 1), colors.HexColor("#FEE2E2")), ("TEXTCOLOR", (2, i + 1), (2, i + 1), colors.HexColor("#991B1B"))]
+                elif s < 70 and s > 0:
+                    tbl_ts += [("BACKGROUND", (2, i + 1), (2, i + 1), colors.HexColor("#FEF3C7")), ("TEXTCOLOR", (2, i + 1), (2, i + 1), colors.HexColor("#92400E"))]
+                elif s > 80:
+                    tbl_ts += [("BACKGROUND", (2, i + 1), (2, i + 1), colors.HexColor("#D1FAE5")), ("TEXTCOLOR", (2, i + 1), (2, i + 1), colors.HexColor("#065F46"))]
+            tbl.setStyle(TableStyle(tbl_ts))
             story.append(tbl)
 
         if not is_last_agent:
             story.append(PageBreak())
 
-    doc.build(story)
-
 
 def generate_report(month_df: pd.DataFrame, all_df: pd.DataFrame, year: int, month: int, output_path: Path):
-    """Generate the monthly report PDF."""
+    """Generate the monthly report PDF with Valence branding."""
     month_name = datetime(year, month, 1).strftime("%B %Y")
+    subtitle = month_name
 
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        charts_path = Path(tmp.name)
-    try:
-        with PdfPages(charts_path, metadata={"Creator": "jomashop-dashboard"}) as pdf:
-            # Title page (full page size)
-            fig, ax = plt.subplots(figsize=(PAGE_WIDTH, PAGE_HEIGHT))
-            ax.axis("off")
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            ax.text(0.5, 0.5, f"Monthly QA Report — {month_name}", fontsize=24, ha="center", va="center")
-            fig.subplots_adjust(bottom=0.06)
-            pdf.savefig(fig, bbox_inches="tight")
-            plt.close()
+    _make_logos_transparent()
 
-            # 1. Agent Leaderboard (month)
-            if len(month_df) > 0 and "Agent" in month_df.columns:
-                call_col = "Call ID" if "Call ID" in month_df.columns else "call_id"
-                id_col = call_col if call_col in month_df.columns else None
-                if id_col:
-                    agg = month_df.groupby("Agent").agg(
-                        Total_Calls=(id_col, "nunique"),
-                        Avg_QA_Score=("QA Score", "mean"),
-                        Pass_Rate=("QA Score", lambda s: (s >= PASS_THRESHOLD).mean() * 100),
-                    ).reset_index()
-                else:
-                    agg = month_df.groupby("Agent").agg(
-                        Total_Calls=("QA Score", "count"),
-                        Avg_QA_Score=("QA Score", "mean"),
-                        Pass_Rate=("QA Score", lambda s: (s >= PASS_THRESHOLD).mean() * 100),
-                    ).reset_index()
-                agg = agg.sort_values("Avg_QA_Score", ascending=False)
-                cell_data = []
-                for _, row in agg.iterrows():
-                    r = []
-                    for c in agg.columns:
-                        v = row[c]
-                        if pd.isna(v):
-                            r.append("—")
-                        elif c == "Total_Calls" and isinstance(v, (int, float)):
-                            r.append(str(int(v)))
-                        elif c in ("Avg_QA_Score", "Pass_Rate") and isinstance(v, (int, float)):
-                            r.append(f"{v:.1f}")
-                        else:
-                            r.append(str(v))
-                    cell_data.append(r)
-                fig, ax = plt.subplots(figsize=(PAGE_WIDTH, PAGE_HEIGHT))
-                ax.axis("off")
-                ax.set_xlim(0, 1)
-                ax.set_ylim(0, 1)
-                tbl = ax.table(
-                    cellText=cell_data,
-                    colLabels=agg.columns.tolist(),
-                    loc="center",
-                    cellLoc="center",
-                )
-                _set_table_fontsize(tbl)
-                ax.set_title(f"Agent Leaderboard — {month_name}", fontsize=16)
-                fig.tight_layout()
-                fig.subplots_adjust(bottom=0.06)
-                pdf.savefig(fig, bbox_inches="tight")
-                plt.close()
+    rubric_labels = _load_rubric_labels() if (PROJECT_ROOT / "Rubric_v33.json").exists() else {}
+    agent_failures = defaultdict(lambda: defaultdict(int))
+    if "Rubric Details" in month_df.columns:
+        for _, row in month_df.iterrows():
+            agent = row.get("Agent", "Unknown")
+            rd = row.get("Rubric Details", {})
+            if isinstance(rd, dict):
+                for code, det in rd.items():
+                    if isinstance(det, dict) and det.get("status", "").lower() == "fail":
+                        agent_failures[agent][code] += 1
+    failing = month_df[month_df["QA Score"] < PASS_THRESHOLD] if "QA Score" in month_df.columns else pd.DataFrame()
+    if len(failing) > 0:
+        failing = failing.copy()
+        failing["Product"] = failing.apply(extract_products, axis=1)
+    all_agents = sorted(
+        set(agent_failures.keys()) | (set(failing["Agent"].unique()) if len(failing) > 0 else set()),
+        key=_agent_sort_key,
+    )
 
-            # 2. Pass rates and QA over time (all data)
-            if len(all_df) > 0 and "Call Date" in all_df.columns:
-                all_df = all_df.copy()
-                all_df["Month"] = all_df["Call Date"].dt.to_period("M").astype(str)
-                monthly = all_df.groupby("Month").agg(
-                    Pass_Rate=("QA Score", lambda s: (s >= PASS_THRESHOLD).mean() * 100),
-                    Avg_QA=("QA Score", "mean"),
-                    Calls=("QA Score", "count"),
-                ).reset_index()
-                monthly = monthly.sort_values("Month")
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(PAGE_WIDTH, PAGE_HEIGHT), sharex=True)
-                for ax in (ax1, ax2):
-                    ax.tick_params(axis="both", labelsize=TABLE_FONTSIZE)
-                ax1.plot(monthly["Month"], monthly["Pass_Rate"], marker="o", label="Pass Rate %", linewidth=2, markersize=8)
-                ax1.set_ylabel("Pass Rate %", fontsize=TABLE_FONTSIZE)
-                ax1.set_title("Pass Rate Over Time (All Data)", fontsize=14)
-                ax1.legend(fontsize=TABLE_FONTSIZE)
-                ax1.grid(True, alpha=0.3)
-                ax2.plot(monthly["Month"], monthly["Avg_QA"], marker="o", color="green", label="Avg QA Score", linewidth=2, markersize=8)
-                ax2.set_ylabel("Avg QA Score", fontsize=TABLE_FONTSIZE)
-                ax2.set_xlabel("Month", fontsize=TABLE_FONTSIZE)
-                ax2.set_title("QA Score Over Time (All Data)", fontsize=14)
-                ax2.legend(fontsize=TABLE_FONTSIZE)
-                ax2.grid(True, alpha=0.3)
-                plt.xticks(rotation=45)
-                fig.tight_layout()
-                fig.subplots_adjust(bottom=0.06)
-                pdf.savefig(fig, bbox_inches="tight")
-                plt.close()
+    id_col = "Call ID" if "Call ID" in month_df.columns else "call_id"
+    dur_col = "Call Duration (min)" if "Call Duration (min)" in failing.columns else None
+    TW = PAGE_W - 2 * MARGIN
 
-            # 3. Call Reason / Outcome / Product distributions (month)
-            if len(month_df) > 0:
-                fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(PAGE_WIDTH, PAGE_HEIGHT), sharex=False)
+    sTitleBig = ParagraphStyle("sTitleBig", fontName="Helvetica-Bold", fontSize=34, textColor=V_DARK, leading=40, spaceAfter=4)
+    sSubtitle = ParagraphStyle("sSubtitle", fontName="Helvetica", fontSize=13, textColor=V_GRAY, leading=18)
+    sH1 = ParagraphStyle("sH1", fontName="Helvetica-Bold", fontSize=14, textColor=V_DARK, leading=18, spaceBefore=10, spaceAfter=5)
+    sH2 = ParagraphStyle("sH2", fontName="Helvetica-Bold", fontSize=10.5, textColor=V_DARK, leading=14, spaceBefore=8, spaceAfter=3)
+    sCenter = ParagraphStyle("sCenter", fontName="Helvetica", fontSize=9, textColor=V_DARK, alignment=TA_CENTER, leading=12)
 
-                # Reason distribution
-                if "Reason" in month_df.columns:
-                    reasons = month_df["Reason"].dropna().astype(str).str.strip().str.lower()
-                    reasons = reasons[reasons != ""]
-                    if len(reasons) > 0:
-                        reason_counts = reasons.value_counts().head(12)
-                        ax1.barh(range(len(reason_counts)), reason_counts.values, color="steelblue", alpha=0.8)
-                        ax1.set_yticks(range(len(reason_counts)))
-                        ax1.set_yticklabels([str(s)[:50] + ("…" if len(str(s)) > 50 else "") for s in reason_counts.index], fontsize=TABLE_FONTSIZE)
-                        ax1.invert_yaxis()
-                ax1.set_xlabel("Count", fontsize=TABLE_FONTSIZE)
-                ax1.set_title(f"Call Reason Distribution — {month_name}", fontsize=14)
-                ax1.tick_params(axis="both", labelsize=TABLE_FONTSIZE)
+    doc = SimpleDocTemplate(
+        str(output_path), pagesize=letter,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        topMargin=0.72 * inch, bottomMargin=0.5 * inch,
+    )
+    story = []
 
-                # Outcome distribution
-                if "Outcome" in month_df.columns:
-                    outcomes = month_df["Outcome"].dropna().astype(str).str.strip().str.lower()
-                    outcomes = outcomes[outcomes != ""]
-                    if len(outcomes) > 0:
-                        outcome_counts = outcomes.value_counts().head(12)
-                        ax2.barh(range(len(outcome_counts)), outcome_counts.values, color="seagreen", alpha=0.8)
-                        ax2.set_yticks(range(len(outcome_counts)))
-                        ax2.set_yticklabels([str(s)[:50] + ("…" if len(str(s)) > 50 else "") for s in outcome_counts.index], fontsize=TABLE_FONTSIZE)
-                        ax2.invert_yaxis()
-                ax2.set_xlabel("Count", fontsize=TABLE_FONTSIZE)
-                ax2.set_title(f"Call Outcome Distribution — {month_name}", fontsize=14)
-                ax2.tick_params(axis="both", labelsize=TABLE_FONTSIZE)
+    # ——— COVER PAGE ———
+    story.append(Spacer(1, 1.6 * inch))
+    if os.path.exists(LOGO_COLORED):
+        cover_logo_w, cover_logo_h = 280, 280 / LOGO_ASPECT
+        story.append(RLImage(LOGO_COLORED, width=cover_logo_w, height=cover_logo_h))
+    story.append(Spacer(1, 0.22 * inch))
+    story.append(Paragraph("Monthly QA Report", sTitleBig))
+    story.append(Paragraph(month_name, sSubtitle))
+    story.append(Spacer(1, 0.12 * inch))
+    story.append(HRFlowable(width=TW, thickness=2.5, color=V_PURPLE, spaceAfter=16))
 
-                # Product distribution (from extracted product mentions)
-                all_products = []
-                for _, row in month_df.iterrows():
-                    all_products.extend(extract_products_list(row))
-                if all_products:
-                    product_counts = Counter(all_products)
-                    top_products = product_counts.most_common(12)
-                    ax3.barh(range(len(top_products)), [c for _, c in top_products],
-                             color="coral", alpha=0.8)
-                    ax3.set_yticks(range(len(top_products)))
-                    ax3.set_yticklabels([p for p, _ in top_products], fontsize=TABLE_FONTSIZE)
-                    ax3.invert_yaxis()
-                ax3.set_xlabel("Count (mentions)", fontsize=TABLE_FONTSIZE)
-                ax3.set_title(f"Product Distribution — {month_name}", fontsize=14)
-                ax3.tick_params(axis="both", labelsize=TABLE_FONTSIZE)
+    total_calls = int(month_df[id_col].nunique()) if len(month_df) > 0 and id_col in month_df.columns else 0
+    avg_qa = month_df["QA Score"].mean() if len(month_df) > 0 and "QA Score" in month_df.columns else 0
+    pass_rate = (month_df["QA Score"] >= PASS_THRESHOLD).mean() * 100 if len(month_df) > 0 and "QA Score" in month_df.columns else 0
+    n_agents = month_df["Agent"].nunique() if len(month_df) > 0 and "Agent" in month_df.columns else 0
+    kpis = [
+        (f"{total_calls:,}", "Total Calls"),
+        (f"{avg_qa:.1f}", "Avg QA Score"),
+        (f"{pass_rate:.1f}%", "Pass Rate"),
+        (str(n_agents), "Agents"),
+    ]
+    kpi_cells = [[
+        Paragraph(f'<font size="22" color="#4900A7"><b>{k}</b></font><br/><font size="8" color="#64748B">{lbl}</font>', sCenter)
+        for k, lbl in kpis
+    ]]
+    kpi_tbl = Table(kpi_cells, colWidths=[TW / 4] * 4)
+    kpi_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), V_LTPURP),
+        ("BOX", (0, 0), (-1, -1), 0.5, V_BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, V_BORDER),
+        ("TOPPADDING", (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+    ]))
+    story.append(kpi_tbl)
+    story.append(PageBreak())
 
-                fig.tight_layout()
-                fig.subplots_adjust(bottom=0.06)
-                pdf.savefig(fig, bbox_inches="tight")
-                plt.close()
+    # ——— AGENT LEADERBOARD ———
+    story.append(Paragraph("Agent Leaderboard", sH1))
+    story.append(HRFlowable(width=TW, thickness=1.5, color=V_PURPLE, spaceAfter=7))
+    if len(month_df) > 0 and "Agent" in month_df.columns:
+        call_col = "Call ID" if "Call ID" in month_df.columns else "call_id"
+        id_c = call_col if call_col in month_df.columns else None
+        if id_c:
+            agg = month_df.groupby("Agent").agg(
+                Total_Calls=(id_c, "nunique"),
+                Avg_QA_Score=("QA Score", "mean"),
+                Pass_Rate=("QA Score", lambda s: (s >= PASS_THRESHOLD).mean() * 100),
+            ).reset_index()
+        else:
+            agg = month_df.groupby("Agent").agg(
+                Total_Calls=("QA Score", "count"),
+                Avg_QA_Score=("QA Score", "mean"),
+                Pass_Rate=("QA Score", lambda s: (s >= PASS_THRESHOLD).mean() * 100),
+            ).reset_index()
+        agg = agg.sort_values("Avg_QA_Score", ascending=False)
+        names, scores = list(agg["Agent"]), list(agg["Avg_QA_Score"])
+        fig, ax = plt.subplots(figsize=(7.4, 3.4), facecolor=P_LGRAY)
+        pal = plt.cm.RdYlGn
+        norm = [(s - 48) / 38 for s in scores]
+        ax.barh(names[::-1], scores[::-1], color=[pal(n) for n in norm[::-1]], height=0.62, zorder=3)
+        for bar, s in zip(ax.patches, scores[::-1]):
+            ax.text(bar.get_width() + 0.3, bar.get_y() + bar.get_height() / 2, f"{s:.1f}", va="center", ha="left", fontsize=7.5, color="#0A0A0A", fontweight="bold")
+        ax.axvline(70, color="#888", lw=1, ls="--", zorder=4, alpha=0.7)
+        ax.set_xlim(40, 96)
+        _style_ax(ax, title=f"Agent Leaderboard — Avg QA Score ({month_name})", xlabel="Avg QA Score")
+        fig.tight_layout(pad=0.4)
+        story.append(RLImage(_fig_buf(fig), width=TW, height=TW * 0.43))
+        story.append(Spacer(1, 8))
+        hdr = ["Agent", "Total Calls", "Avg QA Score", "Pass Rate %"]
+        rows = [hdr] + [[a, str(int(b)), f"{c:.1f}", f"{d:.1f}%"] for a, b, c, d in agg.values]
+        cw = [TW * 0.32, TW * 0.22, TW * 0.24, TW * 0.22]
+        tbl = Table(rows, colWidths=cw, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("BACKGROUND", (0, 0), (-1, 0), V_PURPLE),
+            ("TEXTCOLOR", (0, 0), (-1, 0), V_WHITE),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [V_WHITE, V_LGRAY]),
+            ("GRID", (0, 0), (-1, -1), 0.3, V_BORDER),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(tbl)
+    story.append(PageBreak())
 
-            # 4. QA scores and pass rates by time of day (month)
-            if len(month_df) > 0 and "Hour" in month_df.columns and "QA Score" in month_df.columns:
-                by_hour = month_df[month_df["Hour"].notna()].copy()
-                if len(by_hour) > 0:
-                    hourly = by_hour.groupby("Hour").agg(
-                        Avg_QA=("QA Score", "mean"),
-                        Pass_Rate=("QA Score", lambda s: (s >= PASS_THRESHOLD).mean() * 100),
-                        Count=("QA Score", "count"),
-                    )
-                    hourly = hourly[hourly["Count"] > 0]
-                    if len(hourly) > 0:
-                        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(PAGE_WIDTH, PAGE_HEIGHT), sharex=True)
-                        hours = hourly.index
-                        ax1.bar(hours, hourly["Avg_QA"], color="steelblue", alpha=0.8)
-                        ax1.axhline(y=PASS_THRESHOLD, color="gray", linestyle="--", alpha=0.7)
-                        ax1.set_ylabel("Avg QA Score", fontsize=TABLE_FONTSIZE)
-                        ax1.set_title(f"QA Score by Time of Day — {month_name}", fontsize=14)
-                        ax1.set_ylim(0, 100)
-                        ax1.tick_params(axis="both", labelsize=TABLE_FONTSIZE)
-                        ax2.bar(hours, hourly["Pass_Rate"], color="seagreen", alpha=0.8)
-                        ax2.axhline(y=PASS_THRESHOLD, color="gray", linestyle="--", alpha=0.7)
-                        ax2.set_ylabel("Pass Rate %", fontsize=TABLE_FONTSIZE)
-                        ax2.set_xlabel("Hour of Day", fontsize=TABLE_FONTSIZE)
-                        ax2.set_title(f"Pass Rate by Time of Day — {month_name}", fontsize=14)
-                        ax2.set_ylim(0, 100)
-                        ax2.tick_params(axis="both", labelsize=TABLE_FONTSIZE)
-                        fig.tight_layout()
-                        fig.subplots_adjust(bottom=0.06)
-                        pdf.savefig(fig, bbox_inches="tight")
-                        plt.close()
+    # ——— PERFORMANCE TRENDS ———
+    story.append(Paragraph("Performance Trends", sH1))
+    story.append(HRFlowable(width=TW, thickness=1.5, color=V_PURPLE, spaceAfter=7))
+    if len(all_df) > 0 and "Call Date" in all_df.columns:
+        adf = all_df.copy()
+        adf["Month"] = adf["Call Date"].dt.to_period("M").astype(str)
+        monthly = adf.groupby("Month").agg(
+            Pass_Rate=("QA Score", lambda s: (s >= PASS_THRESHOLD).mean() * 100),
+            Avg_QA=("QA Score", "mean"),
+        ).reset_index().sort_values("Month")
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7.4, 5.2), facecolor=P_LGRAY)
+        x = range(len(monthly))
+        ax1.plot(x, monthly["Pass_Rate"], color=P_BLUE, lw=2, marker="o", ms=5, zorder=3)
+        ax1.fill_between(x, monthly["Pass_Rate"], alpha=0.12, color=P_BLUE)
+        _style_ax(ax1, title="Pass Rate % — Monthly Trend", ylabel="Pass Rate %")
+        ax1.set_xticks(list(x))
+        ax1.set_xticklabels(monthly["Month"].tolist(), fontsize=7)
+        ax1.grid(axis="y", color="white", lw=0.8)
+        ax2.plot(x, monthly["Avg_QA"], color=P_GREEN, lw=2, marker="o", ms=5, zorder=3)
+        ax2.fill_between(x, monthly["Avg_QA"], alpha=0.12, color=P_GREEN)
+        ax2.axhline(70, color=P_AMBER, lw=1.2, ls="--", alpha=0.8)
+        _style_ax(ax2, title="Avg QA Score — Monthly Trend", ylabel="Avg QA Score")
+        ax2.set_xticks(list(x))
+        ax2.set_xticklabels(monthly["Month"].tolist(), fontsize=7)
+        ax2.grid(axis="y", color="white", lw=0.8)
+        fig.tight_layout(pad=0.5)
+        story.append(RLImage(_fig_buf(fig), width=TW, height=TW * 0.68))
+    story.append(PageBreak())
 
-        rubric_labels = _load_rubric_labels() if (PROJECT_ROOT / "Rubric_v33.json").exists() else {}
-        agent_failures = defaultdict(lambda: defaultdict(int))
-        if "Rubric Details" in month_df.columns:
-            for _, row in month_df.iterrows():
-                agent = row.get("Agent", "Unknown")
-                rd = row.get("Rubric Details", {})
-                if isinstance(rd, dict):
-                    for code, det in rd.items():
-                        if isinstance(det, dict) and det.get("status", "").lower() == "fail":
-                            agent_failures[agent][code] += 1
-        failing = month_df[month_df["QA Score"] < PASS_THRESHOLD] if "QA Score" in month_df.columns else pd.DataFrame()
-        if len(failing) > 0:
-            failing = failing.copy()
-            failing["Product"] = failing.apply(extract_products, axis=1)
-        all_agents = sorted(
-            set(agent_failures.keys()) | (set(failing["Agent"].unique()) if len(failing) > 0 else set()),
-            key=_agent_sort_key,
-        )
+    # ——— CALL ANALYTICS ———
+    story.append(Paragraph("Call Analytics", sH1))
+    story.append(HRFlowable(width=TW, thickness=1.5, color=V_PURPLE, spaceAfter=7))
+    if len(month_df) > 0:
+        reasons = month_df["Reason"].dropna().astype(str).str.strip().str.lower()
+        reasons = reasons[reasons != ""]
+        outcomes = month_df["Outcome"].dropna().astype(str).str.strip().str.lower()
+        outcomes = outcomes[outcomes != ""]
+        all_prods = []
+        for _, row in month_df.iterrows():
+            all_prods.extend(extract_products_list(row))
+        rc = list(reasons.value_counts().head(8).items()) if len(reasons) > 0 else []
+        oc = list(outcomes.value_counts().head(8).items()) if len(outcomes) > 0 else []
+        pc = Counter(all_prods).most_common(8) if all_prods else []
+        fig, axes = plt.subplots(1, 3, figsize=(7.6, 4.2), facecolor=P_LGRAY)
+        for ax, data, color, label in [
+            (axes[0], rc, P_PURPLE, "Call Reasons"),
+            (axes[1], oc, P_BLUE, "Call Outcomes"),
+            (axes[2], [(p, c) for p, c in pc], P_TEAL, "Products"),
+        ]:
+            if data:
+                labs = [d[0][:30] + "…" if len(str(d[0])) > 30 else str(d[0]) for d in data]
+                vals = [d[1] for d in data]
+                ax.barh(labs[::-1], vals[::-1], color=color, height=0.65, zorder=3)
+            _style_ax(ax, title=label, xlabel="Count")
+        fig.tight_layout(pad=0.7)
+        story.append(RLImage(_fig_buf(fig), width=TW, height=TW * 0.52))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Performance by Time of Day", sH2))
+    if len(month_df) > 0 and "Hour" in month_df.columns and "QA Score" in month_df.columns:
+        by_hour = month_df[month_df["Hour"].notna()]
+        if len(by_hour) > 0:
+            hourly = by_hour.groupby("Hour").agg(
+                Avg_QA=("QA Score", "mean"),
+                Pass_Rate=("QA Score", lambda s: (s >= PASS_THRESHOLD).mean() * 100),
+                Count=("QA Score", "count"),
+            )
+            hourly = hourly[hourly["Count"] > 0]
+            if len(hourly) > 0:
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.4, 3.0), facecolor=P_LGRAY)
+                x = np.arange(len(hourly))
+                ax1.bar(x, hourly["Avg_QA"], color=[P_PURPLE if v >= 70 else "#C4B5FD" for v in hourly["Avg_QA"]], width=0.65, zorder=3)
+                ax1.axhline(70, color="#888", lw=1, ls="--", zorder=4)
+                ax1.set_xticks(x)
+                ax1.set_xticklabels([f"{h}:00" for h in hourly.index], fontsize=6.5)
+                _style_ax(ax1, title="QA Score by Hour", xlabel="Hour", ylabel="Avg QA Score")
+                ax1.set_ylim(0, 95)
+                ax2.bar(x, hourly["Pass_Rate"], color=[P_BLUE if v >= 60 else "#FCA5A5" for v in hourly["Pass_Rate"]], width=0.65, zorder=3)
+                ax2.axhline(60, color="#888", lw=1, ls="--", zorder=4)
+                ax2.set_xticks(x)
+                ax2.set_xticklabels([f"{h}:00" for h in hourly.index], fontsize=6.5)
+                _style_ax(ax2, title="Pass Rate by Hour", xlabel="Hour", ylabel="Pass Rate %")
+                ax2.set_ylim(0, 95)
+                fig.tight_layout(pad=0.5)
+                story.append(RLImage(_fig_buf(fig), width=TW, height=TW * 0.38))
+    story.append(PageBreak())
 
-        agents_buffer = io.BytesIO()
-        _build_agent_pages_reportlab(
-            month_df, rubric_labels, agent_failures, failing, all_agents, month_name, agents_buffer
-        )
+    # ——— AGENT PAGES ———
+    _append_agent_pages(story, rubric_labels, agent_failures, failing, all_agents, month_name, id_col, dur_col, TW)
 
-        from pypdf import PdfWriter, PdfReader
-        writer = PdfWriter()
-        for reader in [PdfReader(charts_path), PdfReader(agents_buffer)]:
-            for page in reader.pages:
-                writer.add_page(page)
-        with open(output_path, "wb") as f:
-            writer.write(f)
-    finally:
-        charts_path.unlink(missing_ok=True)
-
+    on_page = _make_on_page(subtitle)
+    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
     print(f"✅ Report saved to {output_path}")
 
 
