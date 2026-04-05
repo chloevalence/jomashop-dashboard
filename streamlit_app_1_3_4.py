@@ -9042,6 +9042,10 @@ if ("Call Date" not in meta_df.columns) or meta_df["Call Date"].isna().all():
 
         meta_df.dropna(subset=["Call Date"], inplace=True)
 
+# JSON/cache paths often leave Call Date as strings; .dt accessor requires datetimelike dtype
+if "Call Date" in meta_df.columns:
+    meta_df["Call Date"] = pd.to_datetime(meta_df["Call Date"], errors="coerce")
+
 # Normalize agent IDs AFTER column rename (works for both cached and new data)
 # This ensures normalization works regardless of whether data came from cache or fresh load
 # NOTE: This is a verification pass - normalization should have already happened before DataFrame creation
