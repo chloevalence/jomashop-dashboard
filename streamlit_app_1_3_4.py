@@ -8904,6 +8904,30 @@ def extract_products_from_text(text):
 if "meta_df" not in globals() or meta_df is None:
     meta_df = pd.DataFrame()
 
+
+def _consolidate_duplicate_call_date_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Merge duplicate 'Call Date' columns when rows mix JSON keys `call_date` and `Call Date`.
+
+    After rename, both map to 'Call Date', so pd.DataFrame(call_data) can have two columns
+    with the same label. Then df['Call Date'] is a DataFrame and .dt / sort_values break.
+    """
+    if df is None or len(df) == 0:
+        return df
+    dup_positions = [i for i, c in enumerate(df.columns) if c == "Call Date"]
+    if len(dup_positions) <= 1:
+        return df
+    df = df.copy()
+    merged_series = df.iloc[:, dup_positions].bfill(axis=1).iloc[:, 0]
+    keep_positions = [i for i in range(df.shape[1]) if i not in dup_positions]
+    out = df.iloc[:, keep_positions].copy()
+    out["Call Date"] = merged_series
+    logger.info(
+        " Merged %s duplicate 'Call Date' columns (mixed call_date / Call Date in cache)",
+        len(dup_positions),
+    )
+    return out
+
+
 meta_df.rename(
     columns={
         "company": "Company",
@@ -8926,6 +8950,7 @@ meta_df.rename(
     },
     inplace=True,
 )
+meta_df = _consolidate_duplicate_call_date_columns(meta_df)
 
 
 def normalize_categories_in_dataframe(df, column_name):
@@ -9184,7 +9209,8 @@ if len(filter_df) > 0 and "Call Date" in filter_df.columns and not filter_df["Ca
         max_date = max_date.date()
     # Get latest date from loaded data
     latest_data_date = max_date
-    dates = filter_df["Call Date"].dropna().sort_values().dt.date.unique().tolist()
+    _call_dates = pd.to_datetime(filter_df["Call Date"], errors="coerce")
+    dates = _call_dates.dropna().sort_values().dt.date.unique().tolist()
 else:
     # No data available (e.g., selected month has no data) - use fallback dates for date picker
     # This allows the date picker to still render so user can select a different month
