@@ -117,6 +117,22 @@ MAX_DAYS_TO_LOAD = 30  # Load only calls from last 30 days
 # Prevents rapid month switching from overloading the app (S3 loads, cache clears, reruns)
 MONTH_SWITCH_COOLDOWN_SECONDS = 8
 
+# --- Month dropdown + default load: most recent month with data FIRST (update when a new month is published) ---
+# Used for: initial sidebar selection, S3 month when no range is set yet, MONTHS_WITH_DATA fallback.
+MONTH_SELECTOR_OPTIONS = [
+    (2026, 3, "March 2026"),
+    (2026, 2, "February 2026"),
+    (2026, 1, "January 2026"),
+    (2025, 12, "December 2025"),
+    (2025, 11, "November 2025"),
+    (2025, 10, "October 2025"),
+    (2025, 9, "September 2025"),
+    (2025, 8, "August 2025"),
+    (2025, 7, "July 2025"),
+]
+# Bump when MONTH_SELECTOR_OPTIONS[0] changes so existing sessions snap to the new default month once.
+DEFAULT_MONTH_UI_VERSION = 1
+
 
 def filter_calls_by_date_range(call_data, start_date, end_date):
     """Filter calls to only include those within a specific date range.
@@ -4025,8 +4041,11 @@ def load_all_calls_cached(cache_version=0, requested_range=None):
                     )
                 load_year, load_month = start_month
             else:
-                # Default to February 2026 (most recent month with data)
-                load_year, load_month = 2026, 2
+                # Default to most recent month with cache (first entry in MONTH_SELECTOR_OPTIONS)
+                load_year, load_month = (
+                    MONTH_SELECTOR_OPTIONS[0][0],
+                    MONTH_SELECTOR_OPTIONS[0][1],
+                )
                 logger.info(
                     f"No specific date range requested, loading default month: {load_year}-{load_month:02d}"
                 )
@@ -5694,15 +5713,7 @@ def load_new_calls_only():
         else:
             # Selected month has no data - build processed_keys from all monthly caches
             MONTHS_WITH_DATA = [
-                (2026, 3),
-                (2026, 2),
-                (2026, 1),
-                (2025, 12),
-                (2025, 11),
-                (2025, 10),
-                (2025, 9),
-                (2025, 8),
-                (2025, 7),
+                (y, m) for y, m, _ in MONTH_SELECTOR_OPTIONS
             ]
             for year, month in MONTHS_WITH_DATA:
                 calls, _, _, _ = load_month_cache_from_s3(year, month)
@@ -9207,10 +9218,15 @@ if "rubric_filter_type" not in st.session_state:
 # Maximum date range allowed (30 days to prevent memory issues)
 MAX_DATE_RANGE_DAYS = 30
 
-# Initialize date range state: default to most recent month (February 2026)
-if "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
-    st.session_state._selected_year = 2026
-    st.session_state._selected_month = 2
+# Initialize date range state: default to most recent month with data (first in MONTH_SELECTOR_OPTIONS)
+_default_y, _default_m, _ = MONTH_SELECTOR_OPTIONS[0]
+if st.session_state.get("_default_month_ui_version", 0) < DEFAULT_MONTH_UI_VERSION:
+    st.session_state._default_month_ui_version = DEFAULT_MONTH_UI_VERSION
+    st.session_state._selected_year = _default_y
+    st.session_state._selected_month = _default_m
+elif "_selected_year" not in st.session_state or "_selected_month" not in st.session_state:
+    st.session_state._selected_year = _default_y
+    st.session_state._selected_month = _default_m
 # Demo mode: ensure Feb 2026 on first load so date filter matches demo data
 if is_anonymous_user and st.session_state.get("_demo_mode"):
     if not st.session_state.get("_demo_month_initialized", False):
@@ -9236,19 +9252,8 @@ month_names = [
     "December",
 ]
 
-# Single source of truth: 9 months with data, most recent first (March 2026 -> July 2025)
-# Format: list of tuples (year, month, display_string)
-month_options = [
-    (2026, 3, "March 2026"),
-    (2026, 2, "February 2026"),
-    (2026, 1, "January 2026"),
-    (2025, 12, "December 2025"),
-    (2025, 11, "November 2025"),
-    (2025, 10, "October 2025"),
-    (2025, 9, "September 2025"),
-    (2025, 8, "August 2025"),
-    (2025, 7, "July 2025"),
-]
+# Single source of truth: same order as MONTH_SELECTOR_OPTIONS (module-level)
+month_options = MONTH_SELECTOR_OPTIONS
 # Build display list from single source so dropdown always matches
 month_display_options = [opt[2] for opt in month_options]
 
@@ -9272,9 +9277,8 @@ st.sidebar.caption(f"Latest: {month_display_options[0]}")
 
 # Map display string -> (year, month) from single source of truth
 month_to_date = {opt[2]: (opt[0], opt[1]) for opt in month_options}
-selected_year, selected_month = month_to_date.get(
-    selected_month_str, (2026, 2)  # Default to February 2026 (most recent) if not found
-)
+_default_ym = (MONTH_SELECTOR_OPTIONS[0][0], MONTH_SELECTOR_OPTIONS[0][1])
+selected_year, selected_month = month_to_date.get(selected_month_str, _default_ym)
 
 # Update state if changed and trigger reload
 if (
