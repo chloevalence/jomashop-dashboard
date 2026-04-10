@@ -97,7 +97,7 @@ LOGO_COLORED = str(PROJECT_ROOT / "logo_colored_transparent.png")
 
 # Month options (must match streamlit month_options for S3 cache keys)
 MONTHS_AVAILABLE = [
-    (2026, 3), (2026, 2), (2026, 1),
+    (2026, 4), (2026, 3), (2026, 2), (2026, 1),
     (2025, 12), (2025, 11), (2025, 10), (2025, 9), (2025, 8), (2025, 7),
 ]
 
