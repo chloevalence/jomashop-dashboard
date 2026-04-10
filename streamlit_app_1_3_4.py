@@ -120,6 +120,7 @@ MONTH_SWITCH_COOLDOWN_SECONDS = 8
 # --- Month dropdown + default load: most recent month with data FIRST (update when a new month is published) ---
 # Used for: initial sidebar selection, S3 month when no range is set yet, MONTHS_WITH_DATA fallback.
 MONTH_SELECTOR_OPTIONS = [
+    (2026, 4, "April 2026"),
     (2026, 3, "March 2026"),
     (2026, 2, "February 2026"),
     (2026, 1, "January 2026"),
@@ -131,7 +132,7 @@ MONTH_SELECTOR_OPTIONS = [
     (2025, 7, "July 2025"),
 ]
 # Bump when MONTH_SELECTOR_OPTIONS[0] changes so existing sessions snap to the new default month once.
-DEFAULT_MONTH_UI_VERSION = 1
+DEFAULT_MONTH_UI_VERSION = 2
 
 
 def filter_calls_by_date_range(call_data, start_date, end_date):
@@ -9301,7 +9302,7 @@ selected_month_str = st.sidebar.selectbox(
     "Select Month",
     options=month_display_options,
     index=current_index,
-    key="month_selector_9months_v1",  # Key updated for 9 months (March 2026 added)
+    key="month_selector_9months_v1",  # Month list grows via MONTH_SELECTOR_OPTIONS (April 2026+)
 )
 st.sidebar.caption(f"Latest: {month_display_options[0]}")
 
